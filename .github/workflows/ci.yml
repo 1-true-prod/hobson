@@ -95,6 +95,14 @@ jobs:
           test "$(git -C "$HOME/.local/share/claudio" rev-parse HEAD)" = "$(git rev-parse HEAD)"
           "$HOME/.local/bin/claudio" doctor
           "$HOME/.local/bin/claudio" uninstall --yes
+          # Pinned to a release tag: installs, and says nothing alarming.
+          git tag -a ci-release -m "ci release"
+          CLAUDIO_REF=ci-release bash < install-remote.sh > "$RUNNER_TEMP/pinned.txt" 2>&1
+          test "$(git -C "$HOME/.local/share/claudio" describe --tags)" = ci-release
+          if grep -Eq "not a commit|detached HEAD" "$RUNNER_TEMP/pinned.txt"; then
+            cat "$RUNNER_TEMP/pinned.txt"; exit 1
+          fi
+          "$HOME/.local/bin/claudio" uninstall --yes
           # Not `! grep`: set -e ignores a negated command, so it could never fail.
           if grep -q claudio "$HOME/.claude/settings.json"; then
             echo "claudio hooks survived uninstall"; exit 1

@@ -61,14 +61,19 @@ main() {
             fi
             git -C "$dir" checkout --quiet -B "$ref" "origin/$ref"
         else
-            git -C "$dir" checkout --quiet "$ref" 2>/dev/null \
+            git -C "$dir" -c advice.detachedHead=false checkout --quiet "$ref" 2>/dev/null \
                 || die "No branch or tag named '$ref' in $repo."
         fi
     else
         echo -e "${dim}Cloning claudio ($ref) into $dir...${nc}"
         mkdir -p "$(dirname "$dir")"
-        git clone --quiet --branch "$ref" "$repo" "$dir" \
-            || die "Could not clone $repo (ref: $ref)."
+        # Not `clone --branch "$ref"`: given a release tag, that prints
+        # "is not a commit!" and git's detached-HEAD lecture, which reads
+        # like a failure to someone who only asked for a version.
+        git clone --quiet --no-checkout "$repo" "$dir" \
+            || die "Could not clone $repo."
+        git -C "$dir" -c advice.detachedHead=false checkout --quiet "$ref" 2>/dev/null \
+            || { rm -rf "$dir"; die "No branch or tag named '$ref' in $repo."; }
     fi
 
     # curl | bash leaves stdin as the pipe that delivered this script, so the

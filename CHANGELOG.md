@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Installing a pinned release (`CLAUDIO_REF=v0.2.0`) no longer prints git's "is not a commit!"
+  warning and detached-HEAD advice
+
 ## 0.2.0 — 2026-09-26
 
 First release for public testing.
