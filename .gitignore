@@ -30,5 +30,13 @@ voice-cache-*/
 # macOS
 .DS_Store
 
+# Claude Code working files: local settings, agent worktrees, session transcripts
+.claude/
+CLAUDE.local.md
+*.jsonl
+
+# Plans and task briefs (scratch, never history)
+plans/
+
 # Config (contains user-specific paths)
 # Users create their own via install.sh

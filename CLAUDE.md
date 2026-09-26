@@ -194,8 +194,8 @@ simulated gate ceiling of 26% and a pre-batching baseline of 74%.
 Repetition does **not** override the gate. A stuck detector ("going in circles") used to force a
 flush when one action repeated three times; replayed over 12,805 real tool calls it caught nothing
 that was genuinely a loop, and all 56 episodes it had announced ended with the agent finishing on
-its own. It was removed (5382735). The replay, `scripts/stuck_replay.py`, is in history at
-a45f158 if the question is reopened — do not bring the detector back without re-running it.
+its own. It was removed (c21f0b5). The replay, `scripts/stuck_replay.py`, is in history at
+433abef if the question is reopened — do not bring the detector back without re-running it.
 
 **Session state** (`scripts/session_state.py`): per-project rolling memory keyed by project label
 (ties to worktree/cwd, survives session restarts) at `~/.claude/hobson-sessions/<hash>.json`.
