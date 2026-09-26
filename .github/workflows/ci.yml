@@ -67,7 +67,7 @@ jobs:
         if: matrix.shell == '/bin/bash'
         run: |
           brew install shellcheck >/dev/null
-          shellcheck -S warning install.sh install-remote.sh uninstall.sh claudio
+          shellcheck -S warning install.sh install-remote.sh uninstall.sh hobson
       - name: curl | bash into a scratch HOME, with someone else's hook already there
         run: |
           bash --version | head -1
@@ -76,36 +76,47 @@ jobs:
           mkdir -p "$HOME/.claude"
           echo '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo other-tool"}]}]}}' \
             > "$HOME/.claude/settings.json"
-          export CLAUDIO_REPO="file://$GITHUB_WORKSPACE" CLAUDIO_REF=ci-under-test
+          # Someone who had claudio: its config and key, and another tool's
+          # `claudio` command, which must survive.
+          echo '{"personality": "alfred", "volume": 7}' > "$HOME/.claude/claudio.json"
+          echo 'OPENROUTER_API_KEY=sk-test' > "$HOME/.claude/claudio.env"
+          mkdir -p "$HOME/.local/bin"
+          printf '#!/bin/sh\necho other-claudio\n' > "$HOME/.local/bin/claudio"
+          chmod +x "$HOME/.local/bin/claudio"
+          export HOBSON_REPO="file://$GITHUB_WORKSPACE" HOBSON_REF=ci-under-test
           bash < install-remote.sh
-          python3 "$HOME/.local/share/claudio/scripts/settings-merge.py" --check
+          python3 -c "import json,os; c=json.load(open(os.path.expanduser('~/.claude/hobson.json'))); assert c == {'personality': 'hobson', 'volume': 7}, c"
+          test ! -e "$HOME/.claude/claudio.json"
+          grep -q sk-test "$HOME/.claude/hobson.env"
+          test "$("$HOME/.local/bin/claudio")" = other-claudio
+          python3 "$HOME/.local/share/hobson/scripts/settings-merge.py" --check
           grep -q other-tool "$HOME/.claude/settings.json"
           # A re-run is an update: settings kept, hooks already current.
           bash < install-remote.sh | tee "$RUNNER_TEMP/rerun.txt"
           grep -q "already current" "$RUNNER_TEMP/rerun.txt"
-          # claudio update, pulling more commits than fit a `| head`: that
+          # hobson update, pulling more commits than fit a `| head`: that
           # pipe once SIGPIPEd under pipefail and the hooks never refreshed.
           git config --global user.email ci@example.com
           git config --global user.name ci
           for i in $(seq 1 20); do git commit -q --allow-empty -m "upstream $i"; done
           git branch -f ci-under-test HEAD
-          "$HOME/.local/bin/claudio" update | tee "$RUNNER_TEMP/update.txt"
+          "$HOME/.local/bin/hobson" update | tee "$RUNNER_TEMP/update.txt"
           grep -q "upstream 20" "$RUNNER_TEMP/update.txt"
-          grep -q "claudio is up to date" "$RUNNER_TEMP/update.txt"
-          test "$(git -C "$HOME/.local/share/claudio" rev-parse HEAD)" = "$(git rev-parse HEAD)"
-          "$HOME/.local/bin/claudio" doctor
-          "$HOME/.local/bin/claudio" uninstall --yes
+          grep -q "Hobson is up to date" "$RUNNER_TEMP/update.txt"
+          test "$(git -C "$HOME/.local/share/hobson" rev-parse HEAD)" = "$(git rev-parse HEAD)"
+          "$HOME/.local/bin/hobson" doctor
+          "$HOME/.local/bin/hobson" uninstall --yes
           # Pinned to a release tag: installs, and says nothing alarming.
           git tag -a ci-release -m "ci release"
-          CLAUDIO_REF=ci-release bash < install-remote.sh > "$RUNNER_TEMP/pinned.txt" 2>&1
-          test "$(git -C "$HOME/.local/share/claudio" describe --tags)" = ci-release
+          HOBSON_REF=ci-release bash < install-remote.sh > "$RUNNER_TEMP/pinned.txt" 2>&1
+          test "$(git -C "$HOME/.local/share/hobson" describe --tags)" = ci-release
           if grep -Eq "not a commit|detached HEAD" "$RUNNER_TEMP/pinned.txt"; then
             cat "$RUNNER_TEMP/pinned.txt"; exit 1
           fi
-          "$HOME/.local/bin/claudio" uninstall --yes
+          "$HOME/.local/bin/hobson" uninstall --yes
           # Not `! grep`: set -e ignores a negated command, so it could never fail.
-          if grep -q claudio "$HOME/.claude/settings.json"; then
-            echo "claudio hooks survived uninstall"; exit 1
+          if grep -q "scripts/hobson" "$HOME/.claude/settings.json"; then
+            echo "Hobson's hooks survived uninstall"; exit 1
           fi
           grep -q other-tool "$HOME/.claude/settings.json"
-          test ! -e "$HOME/.local/share/claudio"
+          test ! -e "$HOME/.local/share/hobson"

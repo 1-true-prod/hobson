@@ -23,7 +23,7 @@ def _jev_config(**overrides):
 
 
 def _log_text(claude_home):
-    log_path = claude_home / "claudio.log"
+    log_path = claude_home / "hobson.log"
     return log_path.read_text(encoding="utf-8") if log_path.exists() else ""
 
 
@@ -52,9 +52,9 @@ def test_jev_backend_no_key_falls_back_to_local(claude_home, fake_decider, monke
     assert "no OPENROUTER_API_KEY found" in _log_text(claude_home)
 
 
-def test_key_falls_back_to_claudio_env_file(claude_home, fake_decider, monkeypatch):
+def test_key_falls_back_to_hobson_env_file(claude_home, fake_decider, monkeypatch):
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    (claude_home / "claudio.env").write_text(f"OPENROUTER_API_KEY={FAKE_KEY}\n", encoding="utf-8")
+    (claude_home / "hobson.env").write_text(f"OPENROUTER_API_KEY={FAKE_KEY}\n", encoding="utf-8")
     cfg = _jev_config()
     fake_decider.respond({
         "answers": {"answer": {"type": "choice", "choice": "a", "probabilities": {"a": 0.9, "b": 0.1}, "confidence": 0.9}}
@@ -222,7 +222,7 @@ def test_key_never_appears_in_logs(claude_home, fake_decider, monkeypatch):
 # ── 8. load_config() merges the decider block without clobbering overrides ─
 
 def test_load_config_merges_decider_block(claude_home):
-    (claude_home / "claudio.json").write_text(
+    (claude_home / "hobson.json").write_text(
         json.dumps({"decider": {"backend": "jev"}}), encoding="utf-8"
     )
 
@@ -352,7 +352,7 @@ def test_missing_probabilities_upholds_the_rejection(
 def test_response_cost_is_logged_for_spend_tracking(claude_home, fake_decider, monkeypatch):
     """The API's own cost figure goes in the log line.
 
-    `claudio monitor` recovers spend to date by summing these, so the log is
+    `hobson monitor` recovers spend to date by summing these, so the log is
     the ledger -- there is no separate tally file that could drift out of
     step with what actually ran.
     """

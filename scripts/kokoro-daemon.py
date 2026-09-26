@@ -178,7 +178,7 @@ def main():
     for path in (model_path, voices_path):
         if not os.path.isfile(path):
             print(f"ERROR: Model file not found: {path}", file=sys.stderr)
-            print("Run: claudio setup kokoro", file=sys.stderr)
+            print("Run: hobson setup kokoro", file=sys.stderr)
             sys.exit(1)
 
     log(f"loading model...")

@@ -1,8 +1,27 @@
 # Changelog
 
-## Unreleased
+## 0.3.0 — 2026-09-26
 
-- Installing a pinned release (`CLAUDIO_REF=v0.2.0`) no longer prints git's "is not a commit!"
+### claudio is now Hobson
+
+A well-mannered butler, and a name of its own. "claudio" was already taken by another
+hook-driven audio tool for Claude Code, with its own `claudio` command, and it leaned on
+Anthropic's "Claude".
+
+- The command is `hobson`, the checkout lives in `~/.local/share/hobson`, and state is
+  `~/.claude/hobson*`. Environment variables are `HOBSON_REF`, `HOBSON_DIR`, `HOBSON_REPO`,
+  `HOBSON_YES`, `HOBSON_PYTHON`
+- **Nothing to do by hand.** `claudio update` or the one-liner moves your config, API key, log and
+  session history across, rewrites the hooks, and replaces the `claudio` command with `hobson`.
+  Nothing under the new names is ever overwritten, and another tool's `claudio` is left alone
+- Hooks still pointing at `scripts/claudio.py` keep working (it hands every event to
+  `scripts/hobson.py`); `hobson doctor` reports them as out of date until the installer runs
+- The default personality is **hobson** (it was **alfred**, billed as Batman's butler); a config
+  naming `alfred` reads as `hobson`, and chatterbox still finds `models/alfred-reference.*`
+
+### Install
+
+- Installing a pinned release (`HOBSON_REF=v0.3.0`) no longer prints git's "is not a commit!"
   warning and detached-HEAD advice
 
 ## 0.2.0 — 2026-09-26

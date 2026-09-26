@@ -6,8 +6,8 @@ import os
 import bark_templates
 
 
-def test_lazy_categories_for_alfred(claude_home, monkeypatch):
-    monkeypatch.setattr(bark_templates, "_get_personality_name", lambda: "alfred")
+def test_lazy_categories_for_hobson(claude_home, monkeypatch):
+    monkeypatch.setattr(bark_templates, "_get_personality_name", lambda: "hobson")
     bark_templates._data = None
     cats = bark_templates.CATEGORIES
     assert {"done", "broken", "question"} <= set(cats)
@@ -17,7 +17,7 @@ def test_lazy_categories_for_alfred(claude_home, monkeypatch):
 def test_missing_personality_falls_back(claude_home, monkeypatch):
     monkeypatch.setattr(bark_templates, "_get_personality_name", lambda: "does-not-exist")
     bark_templates._data = None
-    # Falls back to alfred templates rather than crashing.
+    # Falls back to hobson templates rather than crashing.
     assert bark_templates.CATEGORIES != {}
 
 
@@ -38,7 +38,7 @@ def test_normalize_tool_name_strips_mcp_prefix():
 
 
 def test_all_static_barks_yields_tuples(claude_home, monkeypatch):
-    monkeypatch.setattr(bark_templates, "_get_personality_name", lambda: "alfred")
+    monkeypatch.setattr(bark_templates, "_get_personality_name", lambda: "hobson")
     bark_templates._data = None
     items = list(bark_templates.all_static_barks())
     assert items
@@ -73,9 +73,9 @@ def _load_presets():
         return json.load(f)
 
 
-def test_presets_reference_valid_engines(claudio_entry):
+def test_presets_reference_valid_engines(hobson_entry):
     presets = _load_presets()
-    valid_engines = set(claudio_entry.ENGINES)
+    valid_engines = set(hobson_entry.ENGINES)
     for name, preset in presets.items():
         engine = preset.get("config", {}).get("engine")
         assert engine in valid_engines, f"{name}: bad engine {engine!r}"

@@ -1,27 +1,33 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# claudio CLI — manage voice notifications for Claude Code
+# hobson CLI — manage voice notifications for Claude Code
 #
 # Usage:
-#   claudio status              Show current engine and config
-#   claudio use <engine>        Switch TTS engine
-#   claudio mute                Mute voice notifications
-#   claudio unmute              Unmute voice notifications
-#   claudio test                Play a test bark
-#   claudio recap [minutes]     Speak a summary of recent activity (default 10m)
-#   claudio cache-gen           Generate voice cache for current engine
-#   claudio cache-gen --force   Regenerate entire cache
-#   claudio voice [name]        Switch Kokoro voice
-#   claudio daemon start|stop|status  Manage realtime daemon
+#   hobson status              Show current engine and config
+#   hobson use <engine>        Switch TTS engine
+#   hobson mute                Mute voice notifications
+#   hobson unmute              Unmute voice notifications
+#   hobson test                Play a test bark
+#   hobson recap [minutes]     Speak a summary of recent activity (default 10m)
+#   hobson cache-gen           Generate voice cache for current engine
+#   hobson cache-gen --force   Regenerate entire cache
+#   hobson voice [name]        Switch Kokoro voice
+#   hobson daemon start|stop|status  Manage realtime daemon
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
-CONFIG_FILE="$HOME/.claude/claudio.json"
+CONFIG_FILE="$HOME/.claude/hobson.json"
 
-# Migrate old config if new one doesn't exist
-OLD_CONFIG_FILE="$HOME/.claude/claude-bark.json"
-if [[ ! -f "$CONFIG_FILE" && -f "$OLD_CONFIG_FILE" ]]; then
-    cp "$OLD_CONFIG_FILE" "$CONFIG_FILE"
+# Hobson was claudio until 0.3.0 (claude-bark before that): take over the
+# old config, key, log and sessions the first time the CLI runs without one.
+if [[ ! -f "$CONFIG_FILE" && ( -e "$HOME/.claude/claudio.json" || -e "$HOME/.claude/claude-bark.json" ) ]]; then
+    python3 - "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null || true
+import sys
+sys.path.insert(0, sys.argv[1])
+from engines.base import migrate_legacy_state
+for moved in migrate_legacy_state():
+    print(f"Moved ~/.claude/{moved} (claudio is now Hobson)")
+PY
 fi
 DAEMON_PID_FILE="$HOME/.claude/kokoro-daemon.pid"
 DAEMON_PORT=19849
@@ -47,9 +53,9 @@ get_personality() {
 import json
 try:
     with open('$CONFIG_FILE') as f:
-        print(json.load(f).get('personality', 'alfred'))
+        print(json.load(f).get('personality', 'hobson'))
 except:
-    print('alfred')
+    print('hobson')
 " 2>/dev/null
 }
 
@@ -163,7 +169,7 @@ try:
 except: pass
 if engine == 'kokoro-realtime':
     try:
-        with open(os.path.expanduser('~/.claude/claudio.json')) as f:
+        with open(os.path.expanduser('~/.claude/hobson.json')) as f:
             kv = json.load(f).get('kokoro', {}).get('voice', 'am_puck')
         print(kv + '  (say fallback: ' + say_voice + ')')
     except:
@@ -179,7 +185,7 @@ elif engine == 'chatterbox':
             break
     if not ref:
         for ext in ['wav', 'mp3', 'flac', 'ogg', 'm4a']:
-            p = os.path.join(model_dir, 'alfred-reference.' + ext)
+            p = os.path.join(model_dir, 'hobson-reference.' + ext)
             if os.path.isfile(p):
                 ref = os.path.basename(p)
                 break
@@ -228,7 +234,7 @@ except:
 " 2>/dev/null)
         echo "Volume:      $vol"
         echo "Config:      $CONFIG_FILE"
-        echo "Log:         ~/.claude/claudio.log"
+        echo "Log:         ~/.claude/hobson.log"
 
         # Show daemon status if using a daemon-based engine
         if [[ "$engine" == "kokoro-realtime" ]]; then
@@ -354,7 +360,7 @@ except:
     pass
 " 2>/dev/null
         # Clean up legacy mute file if present
-        rm -f "$HOME/.claude/claudio.muted"
+        rm -f "$HOME/.claude/hobson.muted"
         echo -e "${GREEN}Unmuted${NC}"
         ;;
 
@@ -456,7 +462,7 @@ else:
 PYEOF
         else
             echo '{"hook_event_name":"Notification","message":"test"}' | \
-                python3 "$SCRIPT_DIR/scripts/claudio.py"
+                python3 "$SCRIPT_DIR/scripts/hobson.py"
         fi
         ;;
 
@@ -521,7 +527,7 @@ if not filter_arg:
         ;;
 
     monitor|watch|tail)
-        LOG_FILE="$HOME/.claude/claudio.log"
+        LOG_FILE="$HOME/.claude/hobson.log"
         if [[ ! -f "$LOG_FILE" ]]; then
             echo "No log file yet at $LOG_FILE"
             echo "Start a Claude Code session to generate activity."
@@ -550,7 +556,7 @@ if not filter_arg:
         # log() writes "[ts] [project] [engine] msg" for engine lines and
         # "[ts] [project] msg" for everything else, so the engine is the tag
         # *after* the project. Taking the first single-word tag instead read
-        # a one-word project ("claudio") as the engine, and left the project
+        # a one-word project ("hobson") as the engine, and left the project
         # in `rest`, where none of the patterns below could match it.
         _engine_re='^\[[^]]*\] \[[^]]*\] \[([a-z0-9-]+)\] (.*)$'
         _project_re='^\[[^]]*\] \[[^]]*\] (.*)$'
@@ -836,7 +842,7 @@ print('Models downloaded.')
                 else
                     echo -e "${GREEN}Models already present${NC}"
                 fi
-                echo -e "${GREEN}Kokoro setup complete. Run: claudio daemon start${NC}"
+                echo -e "${GREEN}Kokoro setup complete. Run: hobson daemon start${NC}"
                 ;;
             chatterbox)
                 VENV_DIR="$SCRIPT_DIR/venvs/chatterbox"
@@ -864,12 +870,12 @@ print('Models downloaded.')
                 echo -e "${GREEN}Chatterbox dependencies installed.${NC}"
                 echo ""
 
-                PERSONALITY=$(jq -r '.personality // "alfred"' "$CONFIG_FILE" 2>/dev/null || echo "alfred")
+                PERSONALITY=$(jq -r '.personality // "hobson"' "$CONFIG_FILE" 2>/dev/null || echo "hobson")
                 USER_MODELS="$HOME/.claude/models"
 
                 # Show current ref audio status (mirrors _find_reference_audio lookup order)
                 _found_ref=""
-                for _name in "${PERSONALITY}-reference" "alfred-reference" "reference"; do
+                for _name in "${PERSONALITY}-reference" "hobson-reference" "reference"; do
                     for _ext in wav mp3 flac ogg m4a; do
                         if [[ -f "$SCRIPT_DIR/models/${_name}.${_ext}" ]]; then
                             _found_ref="$SCRIPT_DIR/models/${_name}.${_ext}"; break 2
@@ -924,12 +930,12 @@ print('Models downloaded.')
                 echo "Generating voice cache (this will take a few minutes)..."
                 "$VENV_DIR/bin/python3" "$SCRIPT_DIR/scripts/cache-gen/chatterbox_gen.py" && \
                     echo -e "${GREEN}Cache ready.${NC}" || \
-                    echo -e "${YELLOW}Cache generation failed — run 'claudio cache-gen' manually.${NC}"
+                    echo -e "${YELLOW}Cache generation failed — run 'hobson cache-gen' manually.${NC}"
                 echo ""
-                echo -e "Run: ${YELLOW}claudio test${NC}"
+                echo -e "Run: ${YELLOW}hobson test${NC}"
                 ;;
             *)
-                echo "Usage: claudio setup {kokoro|chatterbox}"
+                echo "Usage: hobson setup {kokoro|chatterbox}"
                 exit 1
                 ;;
         esac
@@ -953,7 +959,7 @@ print('Models downloaded.')
                 if [[ ! -f "$DAEMON_VENV" ]]; then
                     echo -e "${RED}Venv not found: $DAEMON_VENV${NC}"
                     engine_base="${engine%-realtime}"
-                    echo -e "Run: ${YELLOW}claudio setup $engine_base${NC}"
+                    echo -e "Run: ${YELLOW}hobson setup $engine_base${NC}"
                     exit 1
                 fi
                 echo "Starting $DAEMON_NAME daemon..."
@@ -1014,7 +1020,7 @@ for a in ['--port', str(k['daemon_port']),
                 fi
                 ;;
             *)
-                echo "Usage: claudio daemon {start|stop|status}"
+                echo "Usage: hobson daemon {start|stop|status}"
                 exit 1
                 ;;
         esac
@@ -1087,7 +1093,7 @@ with open('$CONFIG_FILE', 'w') as f:
             count=$(find "$cache_dir" -type f -name "*.wav" 2>/dev/null | wc -l | tr -d ' ')
             if [[ "$count" -gt 0 ]]; then
                 echo -e "${YELLOW}Note: $count cached WAVs were generated with a different voice.${NC}"
-                echo -e "${YELLOW}Run 'claudio cache-gen --force' to regenerate with $new_voice.${NC}"
+                echo -e "${YELLOW}Run 'hobson cache-gen --force' to regenerate with $new_voice.${NC}"
             fi
         fi
         ;;
@@ -1196,7 +1202,7 @@ except:
     print('')
 " 2>/dev/null)
                 if [[ " $cur_events " != *" commentary "* ]]; then
-                    echo -e "${YELLOW}Note: commentary itself is off. Run 'claudio commentary on' to enable.${NC}"
+                    echo -e "${YELLOW}Note: commentary itself is off. Run 'hobson commentary on' to enable.${NC}"
                 fi
                 ;;
             chattiness)
@@ -1295,15 +1301,15 @@ except:
                     echo -e "Commentary: ${YELLOW}off${NC} (verbosity: $current_verbosity)"
                 fi
                 echo ""
-                echo "Usage: claudio commentary on|off"
-                echo "       claudio commentary verbosity [terse|normal|chatty|anomaly]"
-                echo "       claudio commentary chattiness [0-1]"
+                echo "Usage: hobson commentary on|off"
+                echo "       hobson commentary verbosity [terse|normal|chatty|anomaly]"
+                echo "       hobson commentary chattiness [0-1]"
                 ;;
         esac
         ;;
 
     doctor|check)
-        echo "claudio doctor"
+        echo "hobson doctor"
         echo "=================="
         echo ""
         errors=0
@@ -1371,7 +1377,7 @@ if issues:
                     echo -e "  ${GREEN}✓${NC} Kokoro venv exists"
                 else
                     echo -e "  ${RED}✗${NC} Kokoro venv not found"
-                    echo -e "    Fix: claudio setup kokoro"
+                    echo -e "    Fix: hobson setup kokoro"
                     errors=$((errors + 1))
                 fi
                 model_found=false
@@ -1385,7 +1391,7 @@ if issues:
                 done
                 if [[ "$model_found" != "true" ]]; then
                     echo -e "  ${RED}✗${NC} Kokoro model not found"
-                    echo -e "    Fix: claudio setup kokoro"
+                    echo -e "    Fix: hobson setup kokoro"
                     errors=$((errors + 1))
                 fi
                 ;;
@@ -1400,7 +1406,7 @@ if issues:
                 ref_found=false
                 for ext in wav mp3 flac ogg m4a; do
                     for d in "$SCRIPT_DIR/models" "$HOME/.claude/models"; do
-                        [[ -f "$d/alfred-reference.$ext" ]] && ref_found=true && break 2
+                        [[ -f "$d/hobson-reference.$ext" ]] && ref_found=true && break 2
                     done
                 done
                 if [[ "$ref_found" == "true" ]]; then
@@ -1422,7 +1428,7 @@ if issues:
                 ollama_models=$(ollama list 2>/dev/null || true)
                 # The fallback is the engine's own default, not a copy of it:
                 # a hard-coded one here went stale and sent people to pull a
-                # model claudio does not use.
+                # model hobson does not use.
                 ollama_model=$(python3 - "$CONFIG_FILE" "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null
 import json, sys
 sys.path.insert(0, sys.argv[2])
@@ -1469,11 +1475,11 @@ PY
         fi
 
         # 7. CLI in PATH
-        if command -v claudio &>/dev/null; then
+        if command -v hobson &>/dev/null; then
             echo -e "  ${GREEN}✓${NC} CLI in PATH"
         else
             echo -e "  ${YELLOW}!${NC} CLI not in PATH"
-            echo -e "    Fix: ln -sf $SCRIPT_DIR/claudio ~/.local/bin/claudio"
+            echo -e "    Fix: ln -sf $SCRIPT_DIR/hobson ~/.local/bin/hobson"
             warnings=$((warnings + 1))
         fi
 
@@ -1498,7 +1504,7 @@ else:
             if [[ "$decider_key_found" == "yes" ]]; then
                 echo -e "  ${GREEN}✓${NC} Decider backend: jev (OPENROUTER_API_KEY found)"
             else
-                echo -e "  ${YELLOW}!${NC} Decider backend: jev, but no OPENROUTER_API_KEY found (env or ~/.claude/claudio.env) — falls back to local"
+                echo -e "  ${YELLOW}!${NC} Decider backend: jev, but no OPENROUTER_API_KEY found (env or ~/.claude/hobson.env) — falls back to local"
                 warnings=$((warnings + 1))
             fi
         elif [[ -n "$decider_backend" ]]; then
@@ -1524,10 +1530,10 @@ else:
                 echo "    venvs/$(basename "$dir")/: $size"
             fi
         done
-        log_file="$HOME/.claude/claudio.log"
+        log_file="$HOME/.claude/hobson.log"
         if [[ -f "$log_file" ]]; then
             log_size=$(du -sh "$log_file" 2>/dev/null | cut -f1)
-            echo "    claudio.log: $log_size"
+            echo "    hobson.log: $log_size"
         fi
 
         # 10. Performance tips
@@ -1539,12 +1545,12 @@ else:
             fi
         fi
         if [[ "$engine" == "kokoro-realtime" ]] && ! daemon_pid "$DAEMON_PID_FILE" >/dev/null 2>&1; then
-            tips+=("Start the daemon for faster first bark: claudio daemon start")
+            tips+=("Start the daemon for faster first bark: hobson daemon start")
         fi
         if [[ "$engine" == "chatterbox" ]]; then
             cache_count=$(find "$HOME/.claude/voice-cache-chatterbox" -name "*.wav" 2>/dev/null | wc -l | tr -d ' ') || true  # no cache dir yet: find fails, and pipefail with it
             if [[ "$cache_count" -lt 100 ]]; then
-                tips+=("Generate voice cache for faster playback: claudio cache-gen")
+                tips+=("Generate voice cache for faster playback: hobson cache-gen")
             fi
         fi
         if [[ ${#tips[@]} -gt 0 ]]; then
@@ -1603,7 +1609,7 @@ with open('$CONFIG_FILE', 'w') as f:
                 echo -e "${GREEN}Config reset to defaults (engine: $engine, personality: $personality)${NC}"
                 ;;
             *)
-                echo "Usage: claudio config show|reset"
+                echo "Usage: hobson config show|reset"
                 exit 1
                 ;;
         esac
@@ -1674,7 +1680,7 @@ with open('$CONFIG_FILE', 'w') as f:
                     count=$(find "$cache_dir" -type f -name "*.wav" 2>/dev/null | wc -l | tr -d ' ')
                     if [[ "$count" -gt 0 ]]; then
                         echo -e "${YELLOW}Note: $count cached WAVs were generated with a different personality's templates.${NC}"
-                        echo -e "${YELLOW}Run 'claudio cache-gen --force' to regenerate.${NC}"
+                        echo -e "${YELLOW}Run 'hobson cache-gen --force' to regenerate.${NC}"
                     fi
                 fi
             fi
@@ -1762,7 +1768,7 @@ with open(config_file, 'w') as f:
         case "$engine" in
             kokoro-realtime)
                 if [[ ! -f "$SCRIPT_DIR/venvs/kokoro/bin/python3" ]]; then
-                    echo -e "  ${YELLOW}Note: kokoro-realtime needs setup. Run: claudio setup kokoro${NC}"
+                    echo -e "  ${YELLOW}Note: kokoro-realtime needs setup. Run: hobson setup kokoro${NC}"
                 fi
                 ;;
             chatterbox)
@@ -1796,7 +1802,7 @@ with open(config_file, 'w') as f:
                 exit 1
             fi
         else
-            echo "Pinned to $(git -C "$SCRIPT_DIR" describe --tags --always); to move, re-run the installer with CLAUDIO_REF=<tag>."
+            echo "Pinned to $(git -C "$SCRIPT_DIR" describe --tags --always); to move, re-run the installer with HOBSON_REF=<tag>."
         fi
         after=$(git -C "$SCRIPT_DIR" rev-parse --short HEAD)
         if [[ "$before" == "$after" ]]; then
@@ -1813,40 +1819,40 @@ with open(config_file, 'w') as f:
         ;;
 
     help|--help|-h)
-        echo "claudio — Voice notifications for Claude Code"
+        echo "Hobson — a well-mannered butler for Claude Code"
         echo ""
         echo "Usage:"
-        echo "  claudio status              Show current engine and config"
-        echo "  claudio on                  Enable voice notifications"
-        echo "  claudio off [duration]      Disable voice, optionally timed: 45, 90s, 30m, 2h"
+        echo "  hobson status              Show current engine and config"
+        echo "  hobson on                  Enable voice notifications"
+        echo "  hobson off [duration]      Disable voice, optionally timed: 45, 90s, 30m, 2h"
         echo "                              (recurring window: set quiet_hours: [start,end] in config)"
-        echo "  claudio use [engine]        Switch engine (say/kokoro-realtime/chatterbox)"
-        echo "  claudio personality [name]  Switch voice personality"
-        echo "  claudio preset [name]       Apply a configuration preset"
-        echo "  claudio events              Configure which events trigger voice"
-        echo "  claudio commentary on|off   Toggle running commentary"
-        echo "  claudio commentary verbosity [terse|normal|chatty|anomaly]  Set commentary verbosity"
-        echo "  claudio commentary chattiness [0-1]  How much commentary Jev lets through (decider on)"
-        echo "  claudio volume [0-10]       Get or set playback volume"
-        echo "  claudio voice [name]        Switch Kokoro voice"
-        echo "  claudio test                Play a test bark"
-        echo "  claudio recap [minutes]     Speak a summary of recent activity (default 10m)"
-        echo "  claudio lines [category]    Show voice lines"
-        echo "  claudio monitor             Watch bark activity in real time"
-        echo "  claudio stats               Show what was spoken, queued, and suppressed"
-        echo "  claudio doctor              Run diagnostics"
-        echo "  claudio config show|reset   Show or reset configuration"
-        echo "  claudio cache-gen [--force] Generate voice cache for current engine"
-        echo "  claudio setup kokoro|chatterbox  Install engine venv + download models"
-        echo "  claudio daemon start|stop   Manage TTS daemon (kokoro)"
-        echo "  claudio version             Print the version"
-        echo "  claudio update              Pull the latest claudio and refresh its hooks"
-        echo "  claudio uninstall [--yes]   Remove claudio (--yes: everything, no prompts)"
+        echo "  hobson use [engine]        Switch engine (say/kokoro-realtime/chatterbox)"
+        echo "  hobson personality [name]  Switch voice personality"
+        echo "  hobson preset [name]       Apply a configuration preset"
+        echo "  hobson events              Configure which events trigger voice"
+        echo "  hobson commentary on|off   Toggle running commentary"
+        echo "  hobson commentary verbosity [terse|normal|chatty|anomaly]  Set commentary verbosity"
+        echo "  hobson commentary chattiness [0-1]  How much commentary Jev lets through (decider on)"
+        echo "  hobson volume [0-10]       Get or set playback volume"
+        echo "  hobson voice [name]        Switch Kokoro voice"
+        echo "  hobson test                Play a test bark"
+        echo "  hobson recap [minutes]     Speak a summary of recent activity (default 10m)"
+        echo "  hobson lines [category]    Show voice lines"
+        echo "  hobson monitor             Watch bark activity in real time"
+        echo "  hobson stats               Show what was spoken, queued, and suppressed"
+        echo "  hobson doctor              Run diagnostics"
+        echo "  hobson config show|reset   Show or reset configuration"
+        echo "  hobson cache-gen [--force] Generate voice cache for current engine"
+        echo "  hobson setup kokoro|chatterbox  Install engine venv + download models"
+        echo "  hobson daemon start|stop   Manage TTS daemon (kokoro)"
+        echo "  hobson version             Print the version"
+        echo "  hobson update              Pull the latest hobson and refresh its hooks"
+        echo "  hobson uninstall [--yes]   Remove hobson (--yes: everything, no prompts)"
         ;;
 
     *)
         echo "Unknown command: $cmd"
-        echo "Run 'claudio help' for usage."
+        echo "Run 'hobson help' for usage."
         exit 1
         ;;
 esac

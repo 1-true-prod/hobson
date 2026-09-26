@@ -191,7 +191,7 @@ def test_clean_phrase_keeps_legitimate_trailing_digit():
 
     The mid-word truncation guard keys on a trailing single character, but
     "I'm implementing Phase 1." and "I reviewed the spec for Task 2." end
-    that way legitimately. Measured against every phrase claudio has
+    that way legitimately. Measured against every phrase hobson has
     spoken: keying on the missing full stop as well takes the guard from
     75 false rejections down to 0, while still catching the real ones.
     """
@@ -238,13 +238,13 @@ def test_a_prompt_at_the_window_edge_is_logged(monkeypatch, claude_home):
     _chat_reporting(monkeypatch, phrase_gen.NUM_CTX - 10)
     text, err = phrase_gen._chat([{"role": "user", "content": "x"}], None, 5, None, num_predict=32)
     assert text == "done | I pushed it." and err is None
-    assert "prompt at the context limit" in (claude_home / "claudio.log").read_text()
+    assert "prompt at the context limit" in (claude_home / "hobson.log").read_text()
 
 
 def test_a_prompt_with_room_is_not_logged(monkeypatch, claude_home):
     _chat_reporting(monkeypatch, 900)
     phrase_gen._chat([{"role": "user", "content": "x"}], None, 5, None, num_predict=32)
-    log = claude_home / "claudio.log"
+    log = claude_home / "hobson.log"
     assert not log.exists() or "context limit" not in log.read_text()
 
 
@@ -256,7 +256,7 @@ def test_a_turn_ending_on_a_question_is_a_question(fake_ollama, claude_home):
         "Stop", "Agent: Both are sketched. A?", "No announcements yet.",
         awaiting_answer=True)
     assert cat == "question" and phrase == "I sketched both approaches."
-    assert "done->question" in (claude_home / "claudio.log").read_text()
+    assert "done->question" in (claude_home / "hobson.log").read_text()
 
 
 def test_a_question_turn_stays_a_question_when_nothing_is_said(fake_ollama, claude_home):

@@ -1,19 +1,19 @@
 {
   "silent-butler": {
     "display_name": "Silent Butler",
-    "description": "Alfred speaks only when tasks finish. Minimal, refined.",
+    "description": "Hobson speaks only when tasks finish. Minimal, refined.",
     "config": {
       "engine": "kokoro-realtime",
-      "personality": "alfred",
+      "personality": "hobson",
       "events": ["stop"]
     }
   },
   "chatty-butler": {
     "display_name": "Chatty Butler",
-    "description": "Alfred comments on everything. Full running commentary.",
+    "description": "Hobson comments on everything. Full running commentary.",
     "config": {
       "engine": "kokoro-realtime",
-      "personality": "alfred",
+      "personality": "hobson",
       "events": ["stop", "permission", "notification", "commentary"],
       "commentary": {
         "cooldown": 6.0,

@@ -77,23 +77,23 @@ _DECIDED_RULES = (
 _TERSE_FEWSHOTS = [
     # SKIP: routine edit
     ({"role": "user", "content": (
-        "Session: Recent: \"I pushed the claudio changes.\"\nSince then: 1 Edit.\nLast announced 30s ago.\n\n"
-        "Event: [PreToolUse] [Project: claudio] Edit: base.py"
+        "Session: Recent: \"I pushed the hobson changes.\"\nSince then: 1 Edit.\nLast announced 30s ago.\n\n"
+        "Event: [PreToolUse] [Project: hobson] Edit: base.py"
     )}, {"role": "assistant", "content": "SKIP"}),
     # SKIP: routine read
     ({"role": "user", "content": (
         "Session: Recent: \"I pushed the changes.\"\n\n"
-        "Event: [PreToolUse] [Project: claudio] Read: config.json"
+        "Event: [PreToolUse] [Project: hobson] Read: config.json"
     )}, {"role": "assistant", "content": "SKIP"}),
     # SKIP: permission request
     ({"role": "user", "content": (
         "Session: Recent: \"I finished reviewing the search filters PR.\"\n\n"
-        "Event: [PermissionRequest] [Project: claudio] Bash"
+        "Event: [PermissionRequest] [Project: hobson] Bash"
     )}, {"role": "assistant", "content": "SKIP"}),
     # SKIP: routine bash
     ({"role": "user", "content": (
         "Session: Recent: \"I started on the auth module.\"\nSince then: 3 Edit, 1 Bash.\n\n"
-        "Event: [PreToolUse] [Project: claudio] Bash: running git status"
+        "Event: [PreToolUse] [Project: hobson] Bash: running git status"
     )}, {"role": "assistant", "content": "SKIP"}),
 ]
 
@@ -102,22 +102,22 @@ _NORMAL_FEWSHOTS = [
     # VOICE: edit on a meaningful file
     ({"role": "user", "content": (
         "Session: Recent: \"I started on the auth refactor.\"\n\n"
-        "Event: [PreToolUse] [Project: claudio] Edit: base.py"
+        "Event: [PreToolUse] [Project: hobson] Edit: base.py"
     )}, {"role": "assistant", "content": "done | I'm editing base."}),
     # VOICE: write a new file
     ({"role": "user", "content": (
         "Session: Recent: \"I'm scaffolding the new module.\"\n\n"
-        "Event: [PreToolUse] [Project: claudio] Write: phrase_gen.py"
+        "Event: [PreToolUse] [Project: hobson] Write: phrase_gen.py"
     )}, {"role": "assistant", "content": "done | I'm writing the phrase generator."}),
     # VOICE: bash with description
     ({"role": "user", "content": (
         "Session: Recent: \"I finished the changes.\"\n\n"
-        "Event: [PreToolUse] [Project: claudio] Bash: running the test suite"
+        "Event: [PreToolUse] [Project: hobson] Bash: running the test suite"
     )}, {"role": "assistant", "content": "done | I'm running the test suite."}),
     # SKIP: pure noise (status check)
     ({"role": "user", "content": (
         "Session: Recent: \"I pushed the changes.\"\n\n"
-        "Event: [PreToolUse] [Project: claudio] Bash: git status"
+        "Event: [PreToolUse] [Project: hobson] Bash: git status"
     )}, {"role": "assistant", "content": "SKIP"}),
 ]
 
@@ -126,9 +126,9 @@ _SHARED_FEWSHOTS = [
     # VOICE: Stop with completion
     ({"role": "user", "content": (
         "Session: No announcements yet.\n\n"
-        "Event: [Stop] [Project: claudio] "
+        "Event: [Stop] [Project: hobson] "
         "Earlier: User: push the changes.\nLast message: Pushed to origin/main."
-    )}, {"role": "assistant", "content": "done | I pushed the claudio changes."}),
+    )}, {"role": "assistant", "content": "done | I pushed the hobson changes."}),
     # VOICE: Stop with PR review done
     ({"role": "user", "content": (
         "Session: Recent: \"I started reviewing the PR.\"\nSince then: 8 Read.\n\n"
@@ -145,14 +145,14 @@ _SHARED_FEWSHOTS = [
     # VOICE: Stop with question
     ({"role": "user", "content": (
         "Session: Recent: \"I started on the auth refactor.\"\nSince then: 5 Edit, 2 Bash.\n\n"
-        "Event: [Stop] [Project: claudio] "
+        "Event: [Stop] [Project: hobson] "
         "Last message: Should I extract the config into a separate module or keep it inline?"
     )}, {"role": "assistant", "content": "question | I need a decision on the config approach."}),
     # VOICE: Notification (always)
     ({"role": "user", "content": (
         "Session: Recent: \"I'm researching token price APIs.\"\nSince then: 2 Edit.\n\n"
-        "Event: [Notification] [Project: claudio] attention_required"
-    )}, {"role": "assistant", "content": "question | I need your attention on claudio."}),
+        "Event: [Notification] [Project: hobson] attention_required"
+    )}, {"role": "assistant", "content": "question | I need your attention on hobson."}),
     # VOICE: dispatching subagent (notable action — voiced in both modes)
     ({"role": "user", "content": (
         "Session: No announcements yet.\n\n"
@@ -640,7 +640,7 @@ def _clean_phrase(raw):
     # cut-off sentence never reached its full stop, while "I'm implementing
     # Phase 1." and "I reviewed the spec for Task 2." are perfectly good
     # speech that happen to end on a bare digit. Checked against every
-    # phrase claudio has actually spoken: without this condition the guard
+    # phrase hobson has actually spoken: without this condition the guard
     # silences 75 real utterances to catch 2 defects; with it, 0 and 2.
     if words and not raw.rstrip().endswith((".", "!", "?")):
         last = words[-1].strip(".,!?;:")
@@ -1150,7 +1150,7 @@ if __name__ == "__main__":
     import time
     text = sys.stdin.read().strip() if not sys.stdin.isatty() else "I fixed the bug and all tests pass now."
     t0 = time.monotonic()
-    cat, phrase = generate_or_skip("Stop", text, "No prior context.", "claudio")
+    cat, phrase = generate_or_skip("Stop", text, "No prior context.", "hobson")
     elapsed = time.monotonic() - t0
     print(f"category: {cat}")
     print(f"phrase:   {phrase}")

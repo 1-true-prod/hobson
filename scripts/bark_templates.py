@@ -22,7 +22,7 @@ _data = None  # cached personality templates
 def _load_personality_templates(personality_name=None):
     """Load templates from the active personality JSON file.
 
-    Falls back to 'alfred' if the requested personality doesn't exist or
+    Falls back to 'hobson' if the requested personality doesn't exist or
     has no templates section.
     """
     if personality_name is None:
@@ -30,8 +30,8 @@ def _load_personality_templates(personality_name=None):
 
     path = os.path.join(_PERSONALITIES_DIR, personality_name, "personality.json")
     if not os.path.isfile(path):
-        # Fallback to alfred
-        path = os.path.join(_PERSONALITIES_DIR, "alfred", "personality.json")
+        # Fallback to hobson
+        path = os.path.join(_PERSONALITIES_DIR, "hobson", "personality.json")
         if not os.path.isfile(path):
             # Ultimate fallback — return empty structure (should never happen)
             return {}
@@ -43,15 +43,15 @@ def _load_personality_templates(personality_name=None):
 
 
 def _get_personality_name():
-    """Read personality name from config file. Returns 'alfred' as default."""
-    config_file = os.path.expanduser("~/.claude/claudio.json")
+    """Read personality name from config file. Returns 'hobson' as default."""
+    config_file = os.path.expanduser("~/.claude/hobson.json")
     old_config_file = os.path.expanduser("~/.claude/claude-bark.json")
     path = config_file if os.path.isfile(config_file) else old_config_file
     try:
         with open(path, encoding="utf-8") as f:
-            return json.load(f).get("personality", "alfred")
+            return json.load(f).get("personality", "hobson")
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return "alfred"
+        return "hobson"
 
 
 def _ensure_loaded():

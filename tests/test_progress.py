@@ -87,7 +87,7 @@ def test_repetition_does_not_force_a_flush_in_normal_mode(
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
                         lambda *a, **k: ("broken", "That test keeps failing."))
     eng = SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "normal", "cooldown": 0,
                        "min_tool_calls": 5, "min_seconds": 600.0},
     })
@@ -134,7 +134,7 @@ def test_anomaly_mode_stays_silent_on_routine_work(claude_home, no_audio, monkey
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
                         lambda *a, **k: ("done", "I did a thing."))
     eng = SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["edit"], "verbosity": "anomaly", "cooldown": 0},
     })
     # first touch of each file is notable; a repeat of an already-seen file is not
@@ -152,7 +152,7 @@ def test_a_repeat_anomaly_is_also_announced_only_once(claude_home, no_audio, mon
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
                         lambda *a, **k: ("done", "I did a thing."))
     eng = SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "anomaly", "cooldown": 0},
     })
     for _ in range(6):
@@ -168,7 +168,7 @@ def test_a_repeat_anomaly_is_also_announced_only_once(claude_home, no_audio, mon
 # on three different temp files -- all "cat /private/tmp/claude-501/
 # -Users-dev-" -- read as one command three times.
 
-_TMP = "/private/tmp/claude-501/-Users-dev-Dev-claudio/d68de1f9/tasks/"
+_TMP = "/private/tmp/claude-501/-Users-dev-Dev-hobson/d68de1f9/tasks/"
 
 
 def _bash(cmd, description="run it"):

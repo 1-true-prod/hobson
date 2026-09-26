@@ -4,7 +4,9 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-claudio adds context-aware voice notifications to Claude Code. It hooks into five events (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), classifies the output via a local Ollama model, selects or generates a personality-driven phrase, and plays it via one of four TTS engines.
+Hobson is a well-mannered butler for Claude Code: he says, out loud, when Claude has finished, needs
+permission, or is waiting on you, and otherwise keeps quiet. It was called **claudio** until 0.3.0
+(and claude-bark before that); see *The rename* under constraints. It hooks into five events (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), classifies the output via a local Ollama model, selects or generates a personality-driven phrase, and plays it via one of four TTS engines.
 
 ## Architecture
 
@@ -12,8 +14,8 @@ Four engines, two modes:
 
 **Static engines** (say, chatterbox) use pre-written templates:
 ```
-claudio.py (entrypoint, reads stdin JSON from Claude Code hooks)
-    -> load_config() from ~/.claude/claudio.json
+hobson.py (entrypoint, reads stdin JSON from Claude Code hooks)
+    -> load_config() from ~/.claude/hobson.json
     -> _is_event_enabled() check against config "events" list
     -> load_engine() via dynamic import
     -> engine.run(hook_input)
@@ -26,7 +28,7 @@ claudio.py (entrypoint, reads stdin JSON from Claude Code hooks)
 
 **Realtime engine** (kokoro-realtime) generates phrases live via Ollama + daemon TTS:
 ```
-claudio.py -> KokoroRealtimeEngine.run(hook_input)
+hobson.py -> KokoroRealtimeEngine.run(hook_input)
     -> _is_event_enabled() check against config "events" list
     -> Stop / PermissionRequest / Notification: phrase_gen.generate_or_skip(event, detail)
        via Ollama (configurable model) -- one call decides and phrases; detail from
@@ -58,8 +60,8 @@ It differs from kokoro in three ways worth knowing:
   take their in-code `.get()` fallback from `DEFAULT_DAEMON_IDLE_TIMEOUT`, so it cannot drift from
   the config default.
 
-Deliberately **not** wired into the interactive picker in `claudio` or `install.sh` — select it by hand-editing `"engine": "pocket-tts"` in
-`~/.claude/claudio.json`. Setup is manual: create `venvs/pocket-tts` and
+Deliberately **not** wired into the interactive picker in `hobson` or `install.sh` — select it by hand-editing `"engine": "pocket-tts"` in
+`~/.claude/hobson.json`. Setup is manual: create `venvs/pocket-tts` and
 `pip install -r requirements-pocket-tts.txt`. Without that venv the engine loads but every
 phrase falls back to macOS `say`, silently and permanently.
 
@@ -128,7 +130,7 @@ workers run outside Claude Code.
 
 **Engine subclass pattern**: `BaseEngine` in `engines/base.py` handles all shared logic (config, logging, event filtering, lock/cooldown, Ollama classification, template selection with cache-preference, playback). Static subclasses set `templates_module`, `cache_dir`, `cache_ext` and implement `backfill(text)`. The realtime engine (kokoro-realtime) overrides `run()` entirely but reuses `_is_event_enabled()` for event filtering.
 
-**Event filtering**: The top-level `events` config key controls which hook events trigger voice. `BaseEngine._is_event_enabled()` maps hook event names to config keys (`Stop`->`stop`, `PermissionRequest`->`permission`, `Notification`->`notification`, `PreToolUse`->`commentary`). All engine `run()` methods call this at the top. `UserPromptSubmit` has no `events` key — it is intercepted in `claudio.py` and never reaches an engine.
+**Event filtering**: The top-level `events` config key controls which hook events trigger voice. `BaseEngine._is_event_enabled()` maps hook event names to config keys (`Stop`->`stop`, `PermissionRequest`->`permission`, `Notification`->`notification`, `PreToolUse`->`commentary`). All engine `run()` methods call this at the top. `UserPromptSubmit` has no `events` key — it is intercepted in `hobson.py` and never reaches an engine.
 
 **Commentary abstraction**: PreToolUse handling lives in `BaseEngine._handle_commentary()` and is shared by all engines. Three verbosity modes (`commentary.verbosity`):
 - `terse` — LLM-gated with SKIP-heavy bias; only voice notable events
@@ -196,19 +198,19 @@ its own. It was removed (5382735). The replay, `scripts/stuck_replay.py`, is in 
 a45f158 if the question is reopened — do not bring the detector back without re-running it.
 
 **Session state** (`scripts/session_state.py`): per-project rolling memory keyed by project label
-(ties to worktree/cwd, survives session restarts) at `~/.claude/claudio-sessions/<hash>.json`.
+(ties to worktree/cwd, survives session restarts) at `~/.claude/hobson-sessions/<hash>.json`.
 Holds the pending queue, the fingerprint ring (anomaly mode only), recently-voiced phrases (for dedup and prompt
 continuity), `last_event_time` and `last_stop_time`.
 
 **Nudge and watchdog** (`scripts/nudge.py`): a short-lived **detached** process, spawned the same
 way `afplay` is so it survives the hook exiting. A repeat-until-acknowledged feature is the fastest
-route to the user disabling claudio entirely, so the design rules are not to be relaxed: escalating
+route to the user disabling Hobson entirely, so the design rules are not to be relaxed: escalating
 gaps (`nudge.delays`, default 45/120/300s), a hard cap of that many re-announcements then silence
 forever, instant cancel via the activity token, `silence_reason()` re-checked before every
 utterance, one nudge per project (lock file), and never the same sentence twice. A nudge means
 exactly one thing — this session is waiting on you — so there is no "stuck" nudge (see the note on
 `_WAITING_PHRASES`). It is started by an `idle_prompt` / `agent_needs_input` Notification, which
-only reaches claudio if the Notification hook's matcher lists those types (see constraints). `--watchdog` is the Task 9 hang detector: it notices a session where nothing has
+only reaches Hobson if the Notification hook's matcher lists those types (see constraints). `--watchdog` is the Task 9 hang detector: it notices a session where nothing has
 moved for `watchdog.minutes` (default 10). "Moved" means any tool call or permission request,
 main session or subagent, which the entrypoint records in a per-project liveness file
 (`nudge.record_alive`) — not just the tools commentary narrates. It stays quiet while the session
@@ -224,12 +226,12 @@ after a Stop recorded `working`: the agent's own subagents or build will wake it
 still nudges.
 
 **Quiet controls**: `silence_reason(config)` in `base.py` is the single gate, called by
-`claudio.py` before any engine is loaded. It returns a reason string for: `muted`, a timed mute
-(`mute_until`, an epoch set by `claudio off 30m`), or `quiet_hours` (`[start, end]` hours, wrapping
+`hobson.py` before any engine is loaded. It returns a reason string for: `muted`, a timed mute
+(`mute_until`, an epoch set by `hobson off 30m`), or `quiet_hours` (`[start, end]` hours, wrapping
 midnight). Everything downstream — including an in-flight nudge — checks it.
 
-**UserPromptSubmit**: handled in `claudio.py` *before* config or engine work — it writes this
-project's activity token (`nudge.activity_path()`, `~/.claude/claudio-activity-<key>`) and
+**UserPromptSubmit**: handled in `hobson.py` *before* config or engine work — it writes this
+project's activity token (`nudge.activity_path()`, `~/.claude/hobson-activity-<key>`) and
 returns. It never speaks; its only job is to cancel nudges the moment the user starts typing. Per
 project on purpose: a single global token meant typing in one tab silenced every other session
 that was waiting on you.
@@ -259,10 +261,10 @@ replaced), warning at P(destructive) ≥ `decider.permission_risk_min` (0.5). Ru
 text and heredoc bodies blanked, except code handed to an interpreter (`bash -c`, `python3 - <<EOF`).
 The log records the reason, never the command. Fitted on 10,760 real Bash commands; the tests pin
 the first draft's false alarms (e.g. `git restore --staged .`, which only unstages).
-The key is `OPENROUTER_API_KEY` from the environment or `~/.claude/claudio.env` — **never**
-`claudio.json`, which `claudio config show` prints. The confirmed wire format, including that
+The key is `OPENROUTER_API_KEY` from the environment or `~/.claude/hobson.env` — **never**
+`hobson.json`, which `hobson config show` prints. The confirmed wire format, including that
 `noul` returns no confidence, is in the module docstring. Each call logs `cost=$…`, which
-`claudio monitor` sums into spend to date.
+`hobson monitor` sums into spend to date.
 
 **Per-project identity**: `project_identity` is **disabled by default and should stay that way**
 unless the mechanism changes. It varied `afplay -r` per project; `-r` resamples, shifting pitch and
@@ -271,12 +273,12 @@ robotic. It also silently degraded the macOS `say` fallback, which renders to AI
 through the same argv. Per-project identity belongs in voice *selection* (the kokoro daemon
 supports a per-request voice), not in resampling the output.
 
-**Recap and stats**: `claudio recap [minutes]` (`scripts/recap.py`) is **pull, not push** — the
+**Recap and stats**: `hobson recap [minutes]` (`scripts/recap.py`) is **pull, not push** — the
 user asked, so it reads recent log lines for the current project, has Ollama summarise them as one
 first-person paragraph, and speaks it once. It deliberately bypasses
 `phrase_gen.generate_or_skip` and calls `_chat` directly: that path's 4–12 word budget, dedup and
 reject-to-silence guards are tuned for notifications nobody asked for, and a pull answer must never
-go silent just because it resembles something said earlier. `claudio stats`
+go silent just because it resembles something said earlier. `hobson stats`
 (`scripts/log_stats.py`) tallies what was spoken, queued and suppressed; `scripts/log_analyse.py`
 measures voice-quality defect rates so every published rate is a command rather than a one-off.
 
@@ -286,36 +288,36 @@ Model choice is validated empirically by `scripts/ab_models.py` (dev-only, needs
 
 **Personality system**: Voice personality is defined by JSON files in `scripts/personalities/<name>/personality.json`. Each personality has a `templates` section (categories, permission leads/actions, notification templates, generic phrases) and an optional `prompts` section (Ollama instructions + few-shot examples for contextual phrase generation). `bark_templates.py` lazy-loads templates from the active personality. `phrase_gen.py` lazy-loads prompts; if the personality has no `prompts` section (like `minimal`), generation functions return None and engines fall back to templates.
 
-**Built-in personalities**: `alfred` (full 507-phrase template set + Ollama prompts), `minimal` (terse ~50 phrases, no prompts), `pirate` (~48 templates + pirate Ollama prompts), `snarky-dev` (~48 templates + sarcastic Ollama prompts).
+**Built-in personalities**: `hobson` (full 507-phrase template set + Ollama prompts), `minimal` (terse ~50 phrases, no prompts), `pirate` (~48 templates + pirate Ollama prompts), `snarky-dev` (~48 templates + sarcastic Ollama prompts).
 
 **Presets**: One-shot config appliers in `scripts/presets.json`. Apply engine + personality + events in one command. After applying, user has normal config they can customize.
 
-**CLI shared picker**: `_pick_menu()` in `claudio` is a reusable arrow-key picker. Callers set `_PICK_OPTIONS[@]` and `_PICK_DESCS[@]`, call `_pick_menu $initial_sel`, and read `PICK_RESULT`. Used by `use`, `voice`, `personality`, and `preset` commands. The `events` command uses a separate multi-select (`_check_menu` in `install.sh`, inline in the CLI).
+**CLI shared picker**: `_pick_menu()` in `hobson` is a reusable arrow-key picker. Callers set `_PICK_OPTIONS[@]` and `_PICK_DESCS[@]`, call `_pick_menu $initial_sel`, and read `PICK_RESULT`. Used by `use`, `voice`, `personality`, and `preset` commands. The `events` command uses a separate multi-select (`_check_menu` in `install.sh`, inline in the CLI).
 
 **Installer UX**: `install.sh` uses its own copies of `_pick_menu()` and `_check_menu()` (multi-select with checkboxes). Walks through engine, personality, and event selection with interactive menus. Checks for Ollama + model availability. Plays a first-run hello bark via `say` after verification.
 
 **Distribution** (`install-remote.sh`, the `curl … | bash` entry point): clones into
-`~/.local/share/claudio` (`CLAUDIO_DIR`) at `CLAUDIO_REF` (default `main`), then execs `install.sh`
+`~/.local/share/hobson` (`HOBSON_DIR`) at `HOBSON_REF` (default `main`), then execs `install.sh`
 with stdin reattached to `/dev/tty` — piped, the pickers would read EOF and `set -e` would end the
 install before any hook was written. No tty at all means `--yes`. Everything is inside `main()` so a
 truncated download runs nothing. `install.sh --yes` never installs anything heavy (uv, Ollama,
 models) — `confirm` answers no unattended. **Re-running is the update path**: an existing
-`claudio.json` is kept, and `settings-merge.py` leaves a `settings.json` that is already current
+`hobson.json` is kept, and `settings-merge.py` leaves a `settings.json` that is already current
 untouched (no rewrite, no backup). The installer writes only `engine`/`personality`/`events`; every
 other key comes from `DEFAULT_CONFIG` at load time, so a default improved later reaches old installs.
-`claudio update` fast-forwards the checkout and runs `install.sh --update`. CI
+`hobson update` fast-forwards the checkout and runs `install.sh --update`. CI
 (`.github/workflows/ci.yml`) runs that whole cycle under bash 3.2 and Homebrew bash 5.
 
 **Cache key**: `bark_hash(text)` = SHA-256 first 16 hex chars. Must be consistent across `bark_templates.py`, `engines/base.py`, and all cache-gen scripts.
 
 ## Configuration
 
-Config lives at `~/.claude/claudio.json`. Key sections:
+Config lives at `~/.claude/hobson.json`. Key sections:
 
 ```json
 {
   "engine": "say|kokoro-realtime|chatterbox|pocket-tts",
-  "personality": "alfred|minimal|pirate|snarky-dev",
+  "personality": "hobson|minimal|pirate|snarky-dev",
   "events": ["stop", "permission", "notification", "commentary"],
   "cooldown": 2.0,
   "volume": 3,
@@ -358,18 +360,18 @@ wraps midnight. Both are read only through `silence_reason()`.
 
 ## Key paths
 
-- Config: `~/.claude/claudio.json` (engine, personality, events, cooldown, volume, Ollama models, per-engine settings)
+- Config: `~/.claude/hobson.json` (engine, personality, events, cooldown, volume, Ollama models, per-engine settings)
 - Personalities: `scripts/personalities/<name>/personality.json` (templates + optional Ollama prompts)
 - Presets: `scripts/presets.json` (one-shot config appliers)
 - Hooks: injected into `~/.claude/settings.json` by `scripts/settings-merge.py`
-- Lock: `~/.claude/claudio.lock` (file-based lock + cooldown timestamp)
-- Commentary lock: `~/.claude/claudio-commentary.lock`
-- Nudge/watchdog locks: `~/.claude/claudio-nudge-<project>.lock`, `claudio-watchdog-<project>.lock` (see `nudge._lock_path`)
-- Session state: `~/.claude/claudio-sessions/<hash>.json` (pending queue, fingerprints, recent phrases)
-- Liveness: `~/.claude/claudio-alive-<key>`, one per project (last tool call or permission request: time, event, tool, timeout — never its contents; read by the watchdog)
-- Activity token: `~/.claude/claudio-activity-<key>`, one per project (written by the UserPromptSubmit hook; cancels that project's nudge)
-- Decider key: `~/.claude/claudio.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider._find_key()`, never logged)
-- Log: `~/.claude/claudio.log` — `[YYYY-MM-DD HH:MM:SS] [project] [engine] msg` (engine lines) or `[…] [project] msg`; older lines have only `HH:MM:SS`
+- Lock: `~/.claude/hobson.lock` (file-based lock + cooldown timestamp)
+- Commentary lock: `~/.claude/hobson-commentary.lock`
+- Nudge/watchdog locks: `~/.claude/hobson-nudge-<project>.lock`, `hobson-watchdog-<project>.lock` (see `nudge._lock_path`)
+- Session state: `~/.claude/hobson-sessions/<hash>.json` (pending queue, fingerprints, recent phrases)
+- Liveness: `~/.claude/hobson-alive-<key>`, one per project (last tool call or permission request: time, event, tool, timeout — never its contents; read by the watchdog)
+- Activity token: `~/.claude/hobson-activity-<key>`, one per project (written by the UserPromptSubmit hook; cancels that project's nudge)
+- Decider key: `~/.claude/hobson.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider._find_key()`, never logged)
+- Log: `~/.claude/hobson.log` — `[YYYY-MM-DD HH:MM:SS] [project] [engine] msg` (engine lines) or `[…] [project] msg`; older lines have only `HH:MM:SS`
 - Daemon pid/log: `~/.claude/{kokoro,pocket-tts}-daemon.{pid,log}`; playback scratch WAVs at `~/.claude/kokoro-playback.wav`, `~/.claude/pocket-tts-playback.wav`
 - Caches: `~/.claude/voice-cache-chatterbox/` (pre-gen), `~/.claude/voice-cache-kokoro-realtime/` (runtime)
 - Venvs: `venvs/{kokoro,chatterbox,pocket-tts,dev}/` (created by install.sh, gitignored)
@@ -378,32 +380,32 @@ wraps midnight. Both are read only through `silence_reason()`.
 ## CLI commands
 
 ```bash
-claudio status              # Show engine, personality, events, config
-claudio on                  # Unmute
-claudio off [duration]      # Mute, optionally timed: 45, 90s, 30m, 2h (recurring: quiet_hours in config)
-claudio use [engine]        # Switch engine (interactive picker; pocket-tts is config-only)
-claudio personality [name]  # Switch voice personality (interactive picker)
-claudio preset [name]       # Apply a configuration preset (interactive picker)
-claudio events              # Configure which events trigger voice (interactive multi-select)
-claudio commentary on|off   # Toggle running commentary
-claudio commentary verbosity [terse|normal|chatty|anomaly]  # Set commentary verbosity (picker if no arg)
-claudio commentary chattiness [0-1]  # How much commentary the decider lets through (picker if no arg)
-claudio volume [0-10]       # Get or set playback volume
-claudio voice [name]        # Switch Kokoro voice (interactive picker)
-claudio test                # Play a test bark
-claudio recap [minutes]     # Speak a summary of recent activity (default 10m)
-claudio lines [category]    # Show voice lines (from active personality)
-claudio monitor             # Watch bark activity in real time (and decider spend to date)
-claudio stats               # Show what was spoken, queued, and suppressed
-claudio doctor              # Run diagnostics (config, hooks, personality, deps, Ollama, daemon, decider, disk, performance tips)
-claudio config show         # Pretty-print full config with defaults
-claudio config reset        # Back up and reset config to defaults
-claudio cache-gen [--force] # Generate voice cache for current engine
-claudio setup kokoro|chatterbox  # Install engine venv + download models
-claudio daemon start|stop|status # Manage TTS daemon (kokoro)
-claudio version             # Print the version
-claudio update              # Fast-forward the checkout, refresh hooks, keep settings
-claudio uninstall [--yes]   # Remove claudio (--yes: everything incl. the managed checkout, no prompts)
+hobson status              # Show engine, personality, events, config
+hobson on                  # Unmute
+hobson off [duration]      # Mute, optionally timed: 45, 90s, 30m, 2h (recurring: quiet_hours in config)
+hobson use [engine]        # Switch engine (interactive picker; pocket-tts is config-only)
+hobson personality [name]  # Switch voice personality (interactive picker)
+hobson preset [name]       # Apply a configuration preset (interactive picker)
+hobson events              # Configure which events trigger voice (interactive multi-select)
+hobson commentary on|off   # Toggle running commentary
+hobson commentary verbosity [terse|normal|chatty|anomaly]  # Set commentary verbosity (picker if no arg)
+hobson commentary chattiness [0-1]  # How much commentary the decider lets through (picker if no arg)
+hobson volume [0-10]       # Get or set playback volume
+hobson voice [name]        # Switch Kokoro voice (interactive picker)
+hobson test                # Play a test bark
+hobson recap [minutes]     # Speak a summary of recent activity (default 10m)
+hobson lines [category]    # Show voice lines (from active personality)
+hobson monitor             # Watch bark activity in real time (and decider spend to date)
+hobson stats               # Show what was spoken, queued, and suppressed
+hobson doctor              # Run diagnostics (config, hooks, personality, deps, Ollama, daemon, decider, disk, performance tips)
+hobson config show         # Pretty-print full config with defaults
+hobson config reset        # Back up and reset config to defaults
+hobson cache-gen [--force] # Generate voice cache for current engine
+hobson setup kokoro|chatterbox  # Install engine venv + download models
+hobson daemon start|stop|status # Manage TTS daemon (kokoro)
+hobson version             # Print the version
+hobson update              # Fast-forward the checkout, refresh hooks, keep settings
+hobson uninstall [--yes]   # Remove hobson (--yes: everything incl. the managed checkout, no prompts)
 ```
 
 ## Testing
@@ -430,48 +432,52 @@ Manual testing:
 
 ```bash
 # Test each event type
-echo '{"hook_event_name":"Notification","message":"test"}' | python3 scripts/claudio.py
-echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}' | python3 scripts/claudio.py
-echo '{"hook_event_name":"Stop"}' | python3 scripts/claudio.py
+echo '{"hook_event_name":"Notification","message":"test"}' | python3 scripts/hobson.py
+echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}' | python3 scripts/hobson.py
+echo '{"hook_event_name":"Stop"}' | python3 scripts/hobson.py
 
 # Check config, diagnostics, personality
-./claudio config show
-./claudio doctor
-./claudio status
+./hobson config show
+./hobson doctor
+./hobson status
 
 # Test personality switching
-claudio personality minimal && claudio test
-claudio personality alfred && claudio test
+hobson personality minimal && hobson test
+hobson personality hobson && hobson test
 
 # Test presets
-claudio preset quick-beep && claudio status
+hobson preset quick-beep && hobson status
 
 # Check event filtering (set events to ["stop"], verify permission doesn't bark)
-# Check Ollama model override (set a different model, check claudio.log)
+# Check Ollama model override (set a different model, check hobson.log)
 
 # Check settings.json hooks
 python3 scripts/settings-merge.py --check
 
 # CLI
-./claudio test
+./hobson test
 ```
 
 ## Important constraints
 
 - macOS only (depends on `afplay` and `say` commands, and `fcntl` for file locking)
 - `bark_hash()` must produce identical output in all files -- changing the hash function breaks all caches
-- `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/claudio.py` in the command (plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word "claudio": that claimed the hooks of anyone whose home is `/Users/claudio`, and uninstall deleted them
+- `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/hobson.py` in the command (or the pre-0.3.0 `…/scripts/claudio.py`, plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word: matching "claudio" claimed the hooks of anyone whose home is `/Users/claudio`, and uninstall deleted them -- and Hobson is a surname too. Another, unrelated tool also ships a `claudio` command; its hooks and its `~/.local/bin/claudio` must never be touched, which is why every legacy cleanup checks for our `scripts/settings-merge.py` first
+- **The rename (claudio → Hobson, 0.3.0) must stay invisible to anyone who had claudio.** Do not remove, without a deliberate migration plan:
+  - `scripts/claudio.py`, a shim that runs `hobson.py`. Running sessions keep their hooks until restarted, and settings.json is rewritten only when the installer runs; `--check` (so `doctor`) reports hooks still on it as out of date
+  - `migrate_legacy_state()` in `engines/base.py`: moves `claudio.json` (else `claude-bark.json`), `claudio.env`, `claudio.log` and `claudio-sessions/` to Hobson's names, only when the target is missing, and turns `personality: alfred` into `hobson`. The installer, the CLI and every hook but UserPromptSubmit call it; it is four `lstat`s once done
+  - `install-remote.sh` moves a checkout from `~/.local/share/claudio`; `uninstall.sh` treats that path as managed and cleans the old state names; the chatterbox lookup still finds `models/alfred-reference.*`
 - The `${CLAUDE_PLUGIN_ROOT}` variable in `hooks/hooks.json` is for future plugin mode; standalone install uses absolute paths via `settings-merge.py --install-dir`
-- Hook commands are `"<python>" "<install_dir>/scripts/claudio.py"`, the interpreter pinned by absolute path at install time: Claude Code runs hooks with its own `PATH`, which from the desktop app or an IDE can resolve `python3` to the Command Line Tools stub. The code must keep running on the stock macOS **Python 3.9** (CI runs the suite on it)
+- Hook commands are `"<python>" "<install_dir>/scripts/hobson.py"`, the interpreter pinned by absolute path at install time: Claude Code runs hooks with its own `PATH`, which from the desktop app or an IDE can resolve `python3` to the Command Line Tools stub. The code must keep running on the stock macOS **Python 3.9** (CI runs the suite on it)
 - `settings-merge.py` writes to `$CLAUDE_CONFIG_DIR/settings.json` when that is set, writes *through* a symlinked settings file, and keeps its mode. It grants no permissions: the `Bash(say:*)` entry old installs added is only removed (on uninstall)
-- The shell scripts run under `set -e` on bash 3.2 *and* Homebrew bash 5. Never `((x++))` or `cond && ((x++))`: from 0 it is a failing command on bash 5 (verified on 5.3; 3.2 lets it pass) and ends the script (it broke the installer's menus and `doctor`). Write `x=$((x + 1))`. Nor `cmd | grep -q` or `cmd | head` under `pipefail` — the early exit SIGPIPEs `cmd` (`git log | head -15` broke `claudio update` past 16 commits; use `-n`). Nor `"${arr[@]}"` on a possibly empty array: bash 3.2 calls it unbound under `set -u`
+- The shell scripts run under `set -e` on bash 3.2 *and* Homebrew bash 5. Never `((x++))` or `cond && ((x++))`: from 0 it is a failing command on bash 5 (verified on 5.3; 3.2 lets it pass) and ends the script (it broke the installer's menus and `doctor`). Write `x=$((x + 1))`. Nor `cmd | grep -q` or `cmd | head` under `pipefail` — the early exit SIGPIPEs `cmd` (`git log | head -15` broke `hobson update` past 16 commits; use `-n`). Nor `"${arr[@]}"` on a possibly empty array: bash 3.2 calls it unbound under `set -u`
 - `settings-merge.py` injects **five** hooks (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), all `async: true` — Stop fires and forgets so TTS doesn't block the user; afplay survives the hook process exiting. `hooks/hooks.json` (plugin mode) now matches: Stop is `async: true` there too
-- The Notification hook carries a matcher, `permission_prompt|idle_prompt|agent_needs_input` (Claude Code matches it exactly, before claudio runs). Drop `idle_prompt` / `agent_needs_input` from it and nudges silently never fire — which is how they went unused until the matcher was fixed. `settings-merge.py --check` fails on a hook that is missing *or* out of date, not only missing
-- `UserPromptSubmit` must stay the cheapest path in `claudio.py` — it returns before config or engine load, writing only the activity token
+- The Notification hook carries a matcher, `permission_prompt|idle_prompt|agent_needs_input` (Claude Code matches it exactly, before Hobson runs). Drop `idle_prompt` / `agent_needs_input` from it and nudges silently never fire — which is how they went unused until the matcher was fixed. `settings-merge.py --check` fails on a hook that is missing *or* out of date, not only missing
+- `UserPromptSubmit` must stay the cheapest path in `hobson.py` — it returns before config or engine load, writing only the activity token
 - Nudge and watchdog run as **detached** processes, so they outlive the hook and cannot be gated by it: each must re-check `silence_reason()` and the activity token before every utterance
 - The commentary lock is acquired at flush time only. Acquiring it at append time silently drops tool calls out of the batch instead of delaying the announcement of them
 - The deprecated `kokoro.realtime_events` config key is auto-migrated to the top-level `events` key by `load_config()`
 - Personality templates are loaded lazily on first access via module-level `__getattr__` in `bark_templates.py` — personality JSON is read once per process
 - If a personality has no `prompts` section, `phrase_gen.py` generation functions return None immediately — engines must handle this by falling back to templates
 - Changing personality invalidates chatterbox cache (different template text = different audio); kokoro-realtime cache is fine (keyed by phrase text, auto-evicted)
-- `chatterbox.py` reference audio lookup: tries `<personality>-reference.wav`, then `alfred-reference.wav`, then `reference.wav`
+- `chatterbox.py` reference audio lookup: tries `<personality>-reference.wav`, then `hobson-reference.wav`, then `reference.wav`

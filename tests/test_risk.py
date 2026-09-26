@@ -186,14 +186,14 @@ _RM = {"hook_event_name": "PermissionRequest", "tool_name": "Bash",
 
 def test_a_static_engine_warns_on_a_destructive_request(claude_home, no_audio):
     from engines.say import SayEngine
-    SayEngine({"engine": "say", "personality": "alfred", "events": ["permission"]}).run(dict(_RM))
+    SayEngine({"engine": "say", "personality": "hobson", "events": ["permission"]}).run(dict(_RM))
     [spoken] = no_audio["say"]
     assert "Careful" in str(spoken) and "deletes files" in str(spoken)
 
 
 def test_an_ordinary_request_keeps_its_usual_announcement(claude_home, no_audio):
     from engines.say import SayEngine
-    SayEngine({"engine": "say", "personality": "alfred", "events": ["permission"]}).run(
+    SayEngine({"engine": "say", "personality": "hobson", "events": ["permission"]}).run(
         {"hook_event_name": "PermissionRequest", "tool_name": "Bash",
          "tool_input": {"command": "git status"}})
     assert no_audio["say"] and "Careful" not in str(no_audio["say"])
@@ -208,13 +208,13 @@ def test_a_realtime_engine_warns_without_the_model(kind, fake_ollama, claude_hom
     spoken = []
     monkeypatch.setattr(Engine, "speak_dynamic",
                         lambda self, phrase, allow_cold_start=True: spoken.append(phrase))
-    Engine({"engine": kind, "personality": "alfred", "events": ["permission"]}).run(dict(_RM))
+    Engine({"engine": kind, "personality": "hobson", "events": ["permission"]}).run(dict(_RM))
     assert fake_ollama.urls == [], "a destructive request is not left to the model's phrasing"
     assert spoken == ["Careful — this one deletes files. It needs your approval."]
 
 
 def test_the_command_never_reaches_the_log(claude_home, no_audio):
     from engines.say import SayEngine
-    SayEngine({"engine": "say", "personality": "alfred", "events": ["permission"]}).run(dict(_RM))
-    log = (claude_home / "claudio.log").read_text()
+    SayEngine({"engine": "say", "personality": "hobson", "events": ["permission"]}).run(dict(_RM))
+    log = (claude_home / "hobson.log").read_text()
     assert "deletes files" in log and "jdoe" not in log and "rm -rf" not in log

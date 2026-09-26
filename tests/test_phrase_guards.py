@@ -127,7 +127,7 @@ def test_is_near_duplicate_decay_keeps_recent_match():
 def test_is_near_duplicate_zero_timestamp_is_unknown_not_infinitely_old():
     # Trap: ts=0.0 means "unknown", not "infinitely old". Unknown must stay
     # conservative and still dedupe -- getting this backwards is exactly
-    # what would make claudio chatty for one session after upgrade.
+    # what would make hobson chatty for one session after upgrade.
     now = 1_000_000.0
     unknown = [("I'm navigating to Account Settings.", 0.0)]
     assert phrase_gen.is_near_duplicate(
@@ -221,10 +221,10 @@ def test_prompt_states_the_missing_rules():
 
 def test_log_line_includes_project(claude_home, monkeypatch):
     import engines.base as base
-    monkeypatch.setattr(base, "derive_project_label", lambda: "claudio")
+    monkeypatch.setattr(base, "derive_project_label", lambda: "hobson")
     base.log("hello")
-    text = (claude_home / "claudio.log").read_text()
-    assert "[claudio]" in text
+    text = (claude_home / "hobson.log").read_text()
+    assert "[hobson]" in text
 
 
 def test_plain_verbs_swaps_concentrated_slop():
@@ -246,7 +246,7 @@ def test_plain_verbs_does_not_match_inside_words():
 # Rejecting a past-tense PreToolUse phrase converted the defect into silence:
 # 77% of generations were being dropped, 31 of them commentary the user would
 # otherwise have heard. Repairing beats discarding. Every verb below was taken
-# from real guard rejections in claudio.log, not invented.
+# from real guard rejections in hobson.log, not invented.
 
 @pytest.mark.parametrize("verb,want", [
     ("checked", "checking"),      # 22 real occurrences
@@ -312,7 +312,7 @@ def test_unrepairable_past_tense_still_rejected(monkeypatch):
 # ── Compound-tense repair ──────────────────────────────────────────────────
 # Repairing only the leading verb produced broken grammar on compound
 # sentences: 3 of 21 real repaired phrases read "I'm checking X and updated
-# Y". All cases below are from claudio.log.
+# Y". All cases below are from hobson.log.
 
 @pytest.mark.parametrize("phrase,want", [
     ("I'm compiling and ran Android unit tests.",
@@ -333,7 +333,7 @@ def test_repair_tense_fixes_lead_and_trailing_together():
 
 def test_repair_tense_leaves_participle_adjectives_alone():
     # "polluted" modifies "tests" -- it is not a verb and must not be touched.
-    assert phrase_gen.repair_tense("I'm finding polluted tests in claudio.") is None
+    assert phrase_gen.repair_tense("I'm finding polluted tests in hobson.") is None
 
 
 def test_repair_tense_returns_none_when_nothing_to_do():
@@ -443,7 +443,7 @@ def test_duplicate_global_elapsed_no_longer_gates_a_fresh_match(monkeypatch):
 # working as designed -- not a failure to parse the model's output. Before
 # this, both cases left last_raw holding the raw model reply, so
 # describe_generation_failure() read it as UNUSABLE ("could not parse a
-# phrase from ..."), which is false and double-counted in claudio stats.
+# phrase from ..."), which is false and double-counted in hobson stats.
 
 def test_rejected_generation_sets_last_raw_marker(monkeypatch):
     monkeypatch.setattr(phrase_gen, "_chat",

@@ -4,9 +4,9 @@
 
 ## Testing
 
-- [ ] Tested with `claudio test`
+- [ ] Tested with `hobson test`
 - [ ] Tested affected event types (Stop/Permission/Notification/PreToolUse)
-- [ ] Ran `claudio doctor` with no new warnings
+- [ ] Ran `hobson doctor` with no new warnings
 
 ## Checklist
 

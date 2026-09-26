@@ -1,10 +1,10 @@
-"""session_state.py — Per-session rolling memory for claudio.
+"""session_state.py — Per-session rolling memory for hobson.
 
 Tracks what's been voiced and what's happened since, so the Ollama prompt
 has continuity across events. State is keyed by project label (ties to
 worktree/cwd, survives session restarts).
 
-State file: ~/.claude/claudio-sessions/<hash>.json
+State file: ~/.claude/hobson-sessions/<hash>.json
 """
 
 import hashlib
@@ -12,7 +12,7 @@ import json
 import os
 import time
 
-SESSIONS_DIR = os.path.expanduser("~/.claude/claudio-sessions")
+SESSIONS_DIR = os.path.expanduser("~/.claude/hobson-sessions")
 MAX_RECENT_VOICED = 6
 
 

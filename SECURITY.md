@@ -12,10 +12,10 @@ You should receive a response within 48 hours. Please include:
 
 ## Scope
 
-claudio runs locally on macOS. By default it talks only to a local Ollama server and makes no
+Hobson runs locally on macOS. By default it talks only to a local Ollama server and makes no
 external network requests. The one exception is opt-in: with `"decider": {"backend": "jev"}` it
 sends redacted phrase and command summaries to OpenRouter, using a key you put in
-`~/.claude/claudio.env` (see the README's Jev section for exactly what is sent). The primary
+`~/.claude/hobson.env` (see the README's Jev section for exactly what is sent). The primary
 security surface is:
 
 - Hook scripts executed by Claude Code on every tool call, permission prompt, stop and prompt

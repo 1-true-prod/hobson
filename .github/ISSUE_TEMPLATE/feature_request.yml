@@ -1,5 +1,5 @@
 name: Feature Request
-description: Suggest an idea for claudio
+description: Suggest an idea for hobson
 labels: ["enhancement"]
 body:
   - type: markdown

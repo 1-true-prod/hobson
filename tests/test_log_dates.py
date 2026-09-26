@@ -13,15 +13,15 @@ import log_analyse
 def test_log_writes_dated_format(claude_home, monkeypatch):
     import engines.base as base
 
-    monkeypatch.setattr(base, "derive_project_label", lambda: "claudio")
+    monkeypatch.setattr(base, "derive_project_label", lambda: "hobson")
     base.log("hello")
-    text = (claude_home / "claudio.log").read_text()
-    assert re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[claudio\] hello\n$", text)
+    text = (claude_home / "hobson.log").read_text()
+    assert re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[hobson\] hello\n$", text)
 
 
 def test_gen_regex_matches_dated_and_legacy_lines():
-    dated = "[2026-09-22 14:26:11] [claudio] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'I shipped it.'"
-    legacy = "[14:26:11] [claudio] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'I shipped it.'"
+    dated = "[2026-09-22 14:26:11] [hobson] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'I shipped it.'"
+    legacy = "[14:26:11] [hobson] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'I shipped it.'"
 
     m1 = log_analyse.GEN.match(dated)
     m2 = log_analyse.GEN.match(legacy)
@@ -32,9 +32,9 @@ def test_gen_regex_matches_dated_and_legacy_lines():
 
 
 def test_trace_regex_matches_dated_and_legacy_lines():
-    dated = ("[2026-09-22 15:00:13] [claudio] gen[PreToolUse] 0.59s attempt=1/1 "
+    dated = ("[2026-09-22 15:00:13] [hobson] gen[PreToolUse] 0.59s attempt=1/1 "
               "model=llama3.2:3b detail='x' raw='done | I fixed a Bash issue.' -> done")
-    legacy = ("[15:00:13] [claudio] gen[PreToolUse] 0.59s attempt=1/1 "
+    legacy = ("[15:00:13] [hobson] gen[PreToolUse] 0.59s attempt=1/1 "
               "model=llama3.2:3b detail='x' raw='done | I fixed a Bash issue.' -> done")
 
     m1 = log_analyse.TRACE.match(dated)
@@ -46,10 +46,10 @@ def test_trace_regex_matches_dated_and_legacy_lines():
 
 
 def test_parse_extracts_date_and_none_for_legacy(tmp_path):
-    log_path = tmp_path / "claudio.log"
+    log_path = tmp_path / "hobson.log"
     log_path.write_text(
-        "[2026-09-22 14:26:11] [claudio] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'dated line.'\n"
-        "[14:26:11] [claudio] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'legacy line.'\n"
+        "[2026-09-22 14:26:11] [hobson] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'dated line.'\n"
+        "[14:26:11] [hobson] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'legacy line.'\n"
     )
     rows = log_analyse.parse(str(log_path))
     assert rows[0][0] == "2026-09-22"
@@ -77,7 +77,7 @@ def test_since_none_is_a_noop_and_keeps_undated_rows():
 
 
 def test_gen_regex_reads_a_flush_the_decider_let_through():
-    line = ("[2026-09-25 17:10:00] [claudio] [pocket-tts] [PreToolUse] batch of 5 "
+    line = ("[2026-09-25 17:10:00] [hobson] [pocket-tts] [PreToolUse] batch of 5 "
             "(llama3.2:3b, normal, worth=0.72) -> done -> 'I'm pushing the retry fix.'")
     m = log_analyse.GEN.match(line)
     assert m is not None and m.group(8) == "'I'm pushing the retry fix.'"

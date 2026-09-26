@@ -105,7 +105,7 @@ def _said(text):
 
 def test_injected_user_entries_are_not_turns(tmp_path):
     """The Stop that finished the Jev gate was spoken as "I finished grabbing
-    attention in claudio": the grab-attention skill's body had taken a turn."""
+    attention in hobson": the grab-attention skill's body had taken a turn."""
     f = tmp_path / "t.jsonl"
     _jsonl(f, [
         _prompt("let jev decide which batches are worth hearing"),

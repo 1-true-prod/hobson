@@ -118,7 +118,7 @@ def _engine(monkeypatch, spoken):
         # drives this same engine through a Stop event, and _is_event_enabled()
         # would otherwise short-circuit it before the pending queue is ever
         # touched.
-        "engine": "pocket-tts", "events": ["commentary", "stop"], "personality": "alfred",
+        "engine": "pocket-tts", "events": ["commentary", "stop"], "personality": "hobson",
         "commentary": {"tools": ["bash", "edit", "write"], "verbosity": "normal",
                        "cooldown": 0, "min_tool_calls": 3, "min_seconds": 15.0},
     })

@@ -8,7 +8,7 @@ silence_reason() and a user-activity token, so muting or typing a prompt
 stops it immediately.
 
 Design rules (do not relax — a repeat-until-acknowledged feature is the
-fastest route to the user disabling claudio entirely):
+fastest route to the user disabling hobson entirely):
   - Escalating gaps, never constant (NUDGE_DELAYS).
   - Hard cap of len(NUDGE_DELAYS) re-announcements, then silence forever.
   - Instant cancel: the UserPromptSubmit hook writes this project's
@@ -76,7 +76,7 @@ def _project_key(project):
 def _lock_path(kind, project):
     """kind is 'nudge' or 'watchdog' — separate lock namespaces, since a
     project may reasonably have one of each running at once."""
-    return os.path.join(LOCK_DIR, f"claudio-{kind}-{_project_key(project)}.lock")
+    return os.path.join(LOCK_DIR, f"hobson-{kind}-{_project_key(project)}.lock")
 
 
 def activity_path(project):
@@ -88,7 +88,7 @@ def activity_path(project):
     silenced "this session is waiting on you" at exactly the moment you were
     busy somewhere else.
     """
-    return os.path.join(LOCK_DIR, f"claudio-activity-{_project_key(project)}")
+    return os.path.join(LOCK_DIR, f"hobson-activity-{_project_key(project)}")
 
 
 # Tools that park the session on the user. While one is the last thing that
@@ -107,7 +107,7 @@ def alive_path(project):
     total silence. And a write on every tool call, subagents included, must
     not read-modify-write the file that holds the commentary queue.
     """
-    return os.path.join(LOCK_DIR, f"claudio-alive-{_project_key(project)}")
+    return os.path.join(LOCK_DIR, f"hobson-alive-{_project_key(project)}")
 
 
 def record_alive(project, hook_input):
@@ -156,8 +156,8 @@ def _phrase_for(step):
 
 
 def _speak(config, text):
-    import claudio
-    engine = claudio.load_engine(config)
+    import hobson
+    engine = hobson.load_engine(config)
     engine.speak_dynamic(text, allow_cold_start=True)
 
 
@@ -192,7 +192,7 @@ def _run(project, subject):
                 return
 
             # Re-read config on every step, not just at startup — a live
-            # `claudio off` mid-escalation must be able to silence an
+            # `hobson off` mid-escalation must be able to silence an
             # already-running nudge, not just future ones.
             live_config = load_config()
             reason = silence_reason(live_config)

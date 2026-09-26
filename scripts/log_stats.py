@@ -1,15 +1,15 @@
 #!/usr/bin/env python3
-"""log_stats.py — Tally what claudio spoke, queued, and suppressed.
+"""log_stats.py — Tally what hobson spoke, queued, and suppressed.
 
 Answers the question the log can already answer but nobody reads it to:
-how much did claudio actually say, and what stopped it saying more.
+how much did hobson actually say, and what stopped it saying more.
 """
 
 import os
 import re
 import sys
 
-LOG_FILE = os.path.expanduser("~/.claude/claudio.log")
+LOG_FILE = os.path.expanduser("~/.claude/hobson.log")
 
 # Negative lookbehind excludes phrase_gen's own trace lines, which use a
 # "gen[EventName]" prefix (see phrase_gen.py) that would otherwise collide

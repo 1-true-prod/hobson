@@ -18,7 +18,7 @@ def test_trace_records_the_context_the_model_was_given(fake_ollama, claude_home)
         "PreToolUse", "Bash: Push branch to origin", session_context="",
         model="llama3.2:3b",
     )
-    log_text = (claude_home / "claudio.log").read_text()
+    log_text = (claude_home / "hobson.log").read_text()
     assert "detail=" in log_text
     assert "Push branch to origin" in log_text
 

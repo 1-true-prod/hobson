@@ -28,14 +28,14 @@ def test_merge_quotes_install_path(settings_merge):
     sm.merge_hooks("/install dir/with space")
     data = _read(sm)
     cmd = data["hooks"]["Stop"][0]["hooks"][0]["command"]
-    assert cmd == '"python3" "/install dir/with space/scripts/claudio.py"'
+    assert cmd == '"python3" "/install dir/with space/scripts/hobson.py"'
 
 
 def test_merge_pins_the_interpreter_it_is_given(settings_merge):
     sm = settings_merge
     sm.merge_hooks("/d", python="/opt/homebrew/bin/python3")
     cmd = _read(sm)["hooks"]["Stop"][0]["hooks"][0]["command"]
-    assert cmd == '"/opt/homebrew/bin/python3" "/d/scripts/claudio.py"'
+    assert cmd == '"/opt/homebrew/bin/python3" "/d/scripts/hobson.py"'
 
 
 def test_merge_is_idempotent(settings_merge):
@@ -56,7 +56,7 @@ def test_merge_preserves_foreign_hooks(settings_merge):
     data = _read(sm)
     cmds = [h["command"] for e in data["hooks"]["Stop"] for h in e["hooks"]]
     assert "echo other" in cmds
-    assert any("claudio.py" in c for c in cmds)
+    assert any("hobson.py" in c for c in cmds)
 
 
 def test_remove_strips_ours_keeps_foreign(settings_merge):
@@ -69,7 +69,7 @@ def test_remove_strips_ours_keeps_foreign(settings_merge):
     data = _read(sm)
     cmds = [h["command"] for e in data["hooks"].get("Stop", []) for h in e["hooks"]]
     assert "echo other" in cmds
-    assert not any("claudio.py" in c for c in cmds)
+    assert not any("hobson.py" in c for c in cmds)
 
 
 def test_remove_strips_legacy_claude_bark(settings_merge):
@@ -154,26 +154,26 @@ def test_remove_drops_the_say_permission_old_installs_added(settings_merge):
     assert _read(sm)["permissions"]["allow"] == ["Bash(ls:*)"]
 
 
-# ── Someone called Claudio ────────────────────────────────────────────────
+# ── Someone called Hobson ────────────────────────────────────────────────
 #
-# Hooks were claimed by the substring "claudio" anywhere in the command, so a
-# user whose home is /Users/claudio lost their own hooks: install replaced
-# them in claudio's five events, uninstall deleted them from every event.
+# Hooks were claimed by the substring "hobson" anywhere in the command, so a
+# user whose home is /Users/hobson lost their own hooks: install replaced
+# them in hobson's five events, uninstall deleted them from every event.
 
 def _theirs(cmd):
     return {"hooks": [{"type": "command", "command": cmd}]}
 
 
-def test_a_hook_under_a_home_named_claudio_is_not_ours(settings_merge):
+def test_a_hook_under_a_home_named_hobson_is_not_ours(settings_merge):
     sm = settings_merge
-    assert sm._is_our_hook(_theirs("/Users/claudio/bin/guard.sh")) is False
-    assert sm._is_our_hook(_theirs('"/usr/bin/python3" "/Users/claudio/.local/share/claudio/scripts/claudio.py"')) is True
+    assert sm._is_our_hook(_theirs("/Users/hobson/bin/guard.sh")) is False
+    assert sm._is_our_hook(_theirs('"/usr/bin/python3" "/Users/hobson/.local/share/hobson/scripts/hobson.py"')) is True
 
 
-def test_install_and_uninstall_leave_a_claudio_named_users_hooks(settings_merge):
+def test_install_and_uninstall_leave_a_hobson_named_users_hooks(settings_merge):
     sm = settings_merge
-    guard = _theirs("/Users/claudio/bin/guard.sh")
-    start = _theirs("/Users/claudio/bin/on-start.sh")
+    guard = _theirs("/Users/hobson/bin/guard.sh")
+    start = _theirs("/Users/hobson/bin/on-start.sh")
     with open(sm.SETTINGS_FILE, "w", encoding="utf-8") as f:
         json.dump({"hooks": {"PreToolUse": [guard], "SessionStart": [start]}}, f)
 
@@ -183,7 +183,7 @@ def test_install_and_uninstall_leave_a_claudio_named_users_hooks(settings_merge)
     assert _read(sm)["hooks"] == {"PreToolUse": [guard], "SessionStart": [start]}
 
 
-# ── Shapes claudio never wrote ────────────────────────────────────────────
+# ── Shapes hobson never wrote ────────────────────────────────────────────
 
 @pytest.mark.parametrize("settings", [
     {"hooks": None},
@@ -236,7 +236,7 @@ def test_load_settings_invalid_json_exits(settings_merge):
 
 def test_is_our_hook(settings_merge):
     sm = settings_merge
-    assert sm._is_our_hook({"hooks": [{"command": "python3 /x/scripts/claudio.py"}]}) is True
+    assert sm._is_our_hook({"hooks": [{"command": "python3 /x/scripts/hobson.py"}]}) is True
     assert sm._is_our_hook({"hooks": [{"command": "python3 ~/claude-bark/b.py"}]}) is True
     assert sm._is_our_hook({"hooks": [{"command": "echo unrelated"}]}) is False
     assert sm._is_our_hook({}) is False
@@ -254,7 +254,7 @@ def test_check_hooks_reports_state(settings_merge, capsys):
 # nudge.py spawns on idle_prompt / agent_needs_input notifications, but the
 # installer registered the Notification hook with matcher "permission_prompt"
 # (unchanged since the initial commit), so Claude Code never delivered those
-# notifications to claudio at all. Across the whole log: 0 of either type,
+# notifications to hobson at all. Across the whole log: 0 of either type,
 # 0 nudges ever. Two lists had drifted apart, so pin them together.
 
 def _notification_matcher_types(entries):
@@ -282,14 +282,14 @@ def test_plugin_hooks_json_notification_matcher_admits_every_nudge_trigger():
 
 
 def test_installer_still_admits_permission_prompts(settings_merge):
-    """Widening the matcher must not drop what claudio already speaks on."""
+    """Widening the matcher must not drop what hobson already speaks on."""
     admitted = _notification_matcher_types(settings_merge.HOOKS_TO_INJECT["Notification"])
     assert "permission_prompt" in admitted
 
 
 # ── --check passed a partial install ──────────────────────────────────────
 #
-# check_hooks returned True if it found ANY claudio hook, and doctor trusts
+# check_hooks returned True if it found ANY hobson hook, and doctor trusts
 # its exit code. This machine had four of five hooks -- UserPromptSubmit,
 # which writes the activity token that cancels a nudge the moment the user
 # types, was never installed -- and doctor reported "Hooks installed".
@@ -339,3 +339,49 @@ def test_remerge_repairs_a_stale_partial_install(settings_merge):
 
     sm.merge_hooks("/d")
     assert sm.check_hooks() is True
+
+
+# ── Hooks installed before the rename ─────────────────────────────────────
+#
+# claudio's hooks run .../scripts/claudio.py. They are Hobson's -- an update
+# must replace them, not add a second set -- and they are out of date.
+
+def _claudio_install(sm):
+    old = '"/usr/bin/python3" "/Users/x/.local/share/claudio/scripts/claudio.py"'
+    sm.merge_hooks("/d")
+    settings = _read(sm)
+    for entries in settings["hooks"].values():
+        for e in entries:
+            for h in e["hooks"]:
+                h["command"] = old
+    sm.save_settings(settings)
+
+
+def test_claudio_era_hooks_are_ours_and_replaced(settings_merge):
+    sm = settings_merge
+    _claudio_install(sm)
+    sm.merge_hooks("/new", python="/usr/bin/python3")
+    stop = _read(sm)["hooks"]["Stop"]
+    assert len(stop) == 1
+    assert stop[0]["hooks"][0]["command"] == '"/usr/bin/python3" "/new/scripts/hobson.py"'
+
+
+def test_check_reports_claudio_era_hooks_as_out_of_date(settings_merge, capsys):
+    sm = settings_merge
+    _claudio_install(sm)
+    assert sm.check_hooks() is False
+    assert "out of date" in capsys.readouterr().out
+
+
+def test_uninstall_removes_claudio_era_hooks(settings_merge):
+    sm = settings_merge
+    _claudio_install(sm)
+    sm.remove_hooks()
+    assert "hooks" not in _read(sm) or not _read(sm)["hooks"]
+
+
+def test_another_tools_claudio_command_is_not_ours(settings_merge):
+    """A different project also ships a `claudio` command; its hooks stay."""
+    sm = settings_merge
+    assert sm._is_our_hook({"hooks": [{"command": "claudio hook PreToolUse"}]}) is False
+    assert sm._is_our_hook({"hooks": [{"command": "/usr/local/bin/claudio play"}]}) is False

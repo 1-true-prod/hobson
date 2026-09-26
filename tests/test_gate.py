@@ -85,7 +85,7 @@ def test_the_local_backend_asks_nobody(fake_decider):
 def _engine(verbosity="normal", **commentary):
     from engines.say import SayEngine
     return SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash", "edit"], "verbosity": verbosity, "cooldown": 0,
                        "min_tool_calls": 1, "min_seconds": 600.0, **commentary},
     })
@@ -114,7 +114,7 @@ def test_below_the_bar_is_held_back_without_ollama(claude_home, no_audio, asked,
     _engine().run(dict(_BASH))
     assert generated == [], "a batch the decider holds back never reaches Ollama"
     assert not no_audio["say"]
-    log = (claude_home / "claudio.log").read_text()
+    log = (claude_home / "hobson.log").read_text()
     assert "held back" in log and "0.20 < 0.40" in log
 
 

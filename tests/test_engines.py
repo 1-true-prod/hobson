@@ -15,7 +15,7 @@ import engines.base as base
 def _cfg(engine="say"):
     return {
         "engine": engine,
-        "personality": "alfred",
+        "personality": "hobson",
         "events": ["stop", "permission", "notification", "commentary"],
         "cooldown": 0,
         "commentary": {"cooldown": 0, "tools": ["Bash", "Edit", "Write", "Agent"],
@@ -35,13 +35,13 @@ def _transcript(tmp_path, text="all done"):
 
 # ── registry ────────────────────────────────────────────────────────────────
 
-def test_load_engine_known(claude_home, claudio_entry):
-    eng = claudio_entry.load_engine(_cfg("say"))
+def test_load_engine_known(claude_home, hobson_entry):
+    eng = hobson_entry.load_engine(_cfg("say"))
     assert eng.engine_name == "say"
 
 
-def test_load_engine_unknown_falls_back_to_say(claude_home, claudio_entry):
-    eng = claudio_entry.load_engine(_cfg("nonsense-engine"))
+def test_load_engine_unknown_falls_back_to_say(claude_home, hobson_entry):
+    eng = hobson_entry.load_engine(_cfg("nonsense-engine"))
     assert eng.engine_name == "say"
 
 

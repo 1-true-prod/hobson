@@ -1,10 +1,10 @@
 from recap import build_prompt, recent_activity
 
 LINES = [
-    "[10:00:00] [claudio] [pocket-tts] [PreToolUse] batch of 3 (m, normal) -> done -> 'I edited the parser.'",
+    "[10:00:00] [hobson] [pocket-tts] [PreToolUse] batch of 3 (m, normal) -> done -> 'I edited the parser.'",
     "[10:02:00] [other proj] [pocket-tts] [Stop] (m) -> done -> 'Not my project.'",
-    "[10:05:00] [claudio] gen[Stop] 0.4s attempt=1/1 model=m detail='Bash: run the tests' raw='x' -> done spoken='I ran the tests.'",
-    "[09:00:00] [claudio] [pocket-tts] [Stop] (m) -> done -> 'Too old.'",
+    "[10:05:00] [hobson] gen[Stop] 0.4s attempt=1/1 model=m detail='Bash: run the tests' raw='x' -> done spoken='I ran the tests.'",
+    "[09:00:00] [hobson] [pocket-tts] [Stop] (m) -> done -> 'Too old.'",
     "garbage line",
 ]
 
@@ -15,18 +15,18 @@ def _now(h, m):
 
 
 def test_only_this_project_is_included():
-    items = recent_activity(LINES, "claudio", minutes=10, now=_now(10, 6))
+    items = recent_activity(LINES, "hobson", minutes=10, now=_now(10, 6))
     assert not any("Not my project" in i for i in items)
 
 
 def test_only_the_window_is_included():
-    items = recent_activity(LINES, "claudio", minutes=10, now=_now(10, 6))
+    items = recent_activity(LINES, "hobson", minutes=10, now=_now(10, 6))
     assert not any("Too old" in i for i in items)
     assert any("parser" in i for i in items)
 
 
 def test_junk_lines_never_raise():
-    assert recent_activity(["", "garbage", "[oops"], "claudio", now=_now(10, 6)) == []
+    assert recent_activity(["", "garbage", "[oops"], "hobson", now=_now(10, 6)) == []
 
 
 def test_empty_activity_produces_no_prompt():

@@ -1,4 +1,4 @@
-"""Shared pytest fixtures for the claudio suite.
+"""Shared pytest fixtures for the hobson suite.
 
 All tests run offline and silent: external side-effects (Ollama HTTP, afplay/say
 subprocesses) are mocked, and all ~/.claude state is redirected into a tmp dir.
@@ -58,12 +58,11 @@ def claude_home(tmp_path, monkeypatch):
     import nudge
     import decider
 
-    monkeypatch.setattr(base, "CONFIG_FILE", str(claude / "claudio.json"))
-    monkeypatch.setattr(base, "OLD_CONFIG_FILE", str(claude / "claude-bark.json"))
-    monkeypatch.setattr(base, "BARK_LOCK_FILE", str(claude / "claudio.lock"))
-    monkeypatch.setattr(base, "COMMENTARY_LOCK_FILE", str(claude / "claudio-commentary.lock"))
-    monkeypatch.setattr(base, "LOG_FILE", str(claude / "claudio.log"))
-    monkeypatch.setattr(session_state, "SESSIONS_DIR", str(claude / "claudio-sessions"))
+    monkeypatch.setattr(base, "CONFIG_FILE", str(claude / "hobson.json"))
+    monkeypatch.setattr(base, "BARK_LOCK_FILE", str(claude / "hobson.lock"))
+    monkeypatch.setattr(base, "COMMENTARY_LOCK_FILE", str(claude / "hobson-commentary.lock"))
+    monkeypatch.setattr(base, "LOG_FILE", str(claude / "hobson.log"))
+    monkeypatch.setattr(session_state, "SESSIONS_DIR", str(claude / "hobson-sessions"))
     # nudge.py's LOCK_DIR is an import-time constant (and the per-project
     # activity tokens live in it too, via activity_path), evaluated
     # against the real $HOME the moment any test module first does
@@ -73,8 +72,8 @@ def claude_home(tmp_path, monkeypatch):
     monkeypatch.setattr(nudge, "LOCK_DIR", str(claude))
     # decider.py's ENV_FILE is the same kind of import-time constant — patch
     # it so a test can never read or write the developer's real
-    # ~/.claude/claudio.env (which is where a real OPENROUTER_API_KEY lives).
-    monkeypatch.setattr(decider, "ENV_FILE", str(claude / "claudio.env"))
+    # ~/.claude/hobson.env (which is where a real OPENROUTER_API_KEY lives).
+    monkeypatch.setattr(decider, "ENV_FILE", str(claude / "hobson.env"))
     # The "no key" warning is once-per-process; reset it so each test sees a
     # fresh process rather than inheriting a previous test's warning state.
     monkeypatch.setattr(decider, "_warned_no_key", False)
@@ -239,6 +238,6 @@ def settings_merge(tmp_path, monkeypatch):
 
 
 @pytest.fixture
-def claudio_entry():
-    """The claudio.py entrypoint module (importing it does not run main())."""
-    return _load_hyphenated("claudio_entry", "claudio.py")
+def hobson_entry():
+    """The hobson.py entrypoint module (importing it does not run main())."""
+    return _load_hyphenated("hobson_entry", "hobson.py")

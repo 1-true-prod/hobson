@@ -58,7 +58,7 @@ def _popen_calls(no_audio, needle):
 
 def test_waiting_notification_spawns_a_nudge(claude_home, no_audio):
     from engines.say import SayEngine
-    eng = SayEngine({"engine": "say", "personality": "alfred", "events": ["notification"]})
+    eng = SayEngine({"engine": "say", "personality": "hobson", "events": ["notification"]})
     eng.run({"hook_event_name": "Notification", "notification_type": "idle_prompt",
              "message": "waiting"})
     assert len(_popen_calls(no_audio, "nudge.py")) == 1
@@ -66,7 +66,7 @@ def test_waiting_notification_spawns_a_nudge(claude_home, no_audio):
 
 def test_non_waiting_notification_does_not_spawn_a_nudge(claude_home, no_audio):
     from engines.say import SayEngine
-    eng = SayEngine({"engine": "say", "personality": "alfred", "events": ["notification"]})
+    eng = SayEngine({"engine": "say", "personality": "hobson", "events": ["notification"]})
     eng.run({"hook_event_name": "Notification", "notification_type": "agent_completed",
              "message": "done"})
     assert _popen_calls(no_audio, "nudge.py") == []
@@ -74,7 +74,7 @@ def test_non_waiting_notification_does_not_spawn_a_nudge(claude_home, no_audio):
 
 def test_nudge_disabled_via_config_never_spawns(claude_home, no_audio):
     from engines.say import SayEngine
-    eng = SayEngine({"engine": "say", "personality": "alfred", "events": ["notification"],
+    eng = SayEngine({"engine": "say", "personality": "hobson", "events": ["notification"],
                      "nudge": {"enabled": False}})
     eng.run({"hook_event_name": "Notification", "notification_type": "idle_prompt"})
     assert _popen_calls(no_audio, "nudge.py") == []
@@ -88,7 +88,7 @@ def test_a_failed_spawn_never_raises(claude_home, monkeypatch):
         raise OSError("no fork slots")
 
     monkeypatch.setattr(base.subprocess, "Popen", boom)
-    eng = SayEngine({"engine": "say", "personality": "alfred", "events": ["notification"]})
+    eng = SayEngine({"engine": "say", "personality": "hobson", "events": ["notification"]})
     # Must not raise.
     eng.run({"hook_event_name": "Notification", "notification_type": "idle_prompt"})
 
@@ -96,18 +96,18 @@ def test_a_failed_spawn_never_raises(claude_home, monkeypatch):
 # ── UserPromptSubmit hook: records the cancel-activity token ───────────────
 
 
-def test_user_prompt_submit_records_activity(claude_home, claudio_entry, monkeypatch):
+def test_user_prompt_submit_records_activity(claude_home, hobson_entry, monkeypatch):
     import io
     import json as _json
     import os
 
-    (claude_home / "claudio.json").write_text(_json.dumps({"engine": "say", "muted": False}))
-    monkeypatch.setattr(claudio_entry.sys, "stdin",
+    (claude_home / "hobson.json").write_text(_json.dumps({"engine": "say", "muted": False}))
+    monkeypatch.setattr(hobson_entry.sys, "stdin",
                         io.StringIO('{"hook_event_name": "UserPromptSubmit"}'))
     called = {"n": 0}
-    monkeypatch.setattr(claudio_entry, "load_engine",
+    monkeypatch.setattr(hobson_entry, "load_engine",
                         lambda cfg: called.__setitem__("n", called["n"] + 1))
-    claudio_entry.main()
+    hobson_entry.main()
     assert called["n"] == 0, "UserPromptSubmit must not dispatch to a speaking engine"
     import nudge
     from engines.base import derive_project_label
@@ -116,15 +116,15 @@ def test_user_prompt_submit_records_activity(claude_home, claudio_entry, monkeyp
     float(open(activity_file).read())  # must parse as a timestamp
 
 
-def test_user_prompt_submit_records_activity_even_while_muted(claude_home, claudio_entry, monkeypatch):
+def test_user_prompt_submit_records_activity_even_while_muted(claude_home, hobson_entry, monkeypatch):
     import io
     import json as _json
     import os
 
-    (claude_home / "claudio.json").write_text(_json.dumps({"engine": "say", "muted": True}))
-    monkeypatch.setattr(claudio_entry.sys, "stdin",
+    (claude_home / "hobson.json").write_text(_json.dumps({"engine": "say", "muted": True}))
+    monkeypatch.setattr(hobson_entry.sys, "stdin",
                         io.StringIO('{"hook_event_name": "UserPromptSubmit"}'))
-    claudio_entry.main()
+    hobson_entry.main()
     import nudge
     from engines.base import derive_project_label
     assert os.path.isfile(nudge.activity_path(derive_project_label()))
@@ -169,7 +169,7 @@ def test_watchdog_spawn_is_gated_by_config(claude_home, no_audio, monkeypatch):
                         lambda *a, **k: ("done", "I did a thing."))
 
     eng = SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "normal", "cooldown": 0},
         "watchdog": {"enabled": False},
     })
@@ -199,7 +199,7 @@ def test_watchdog_does_not_spawn_when_one_already_holds_the_lock(
     fcntl.flock(held, fcntl.LOCK_EX | fcntl.LOCK_NB)
     try:
         eng = SayEngine({
-            "engine": "say", "personality": "alfred", "events": ["commentary"],
+            "engine": "say", "personality": "hobson", "events": ["commentary"],
             "commentary": {"tools": ["bash"], "verbosity": "normal", "cooldown": 0},
         })
         eng.run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -217,7 +217,7 @@ def test_watchdog_spawns_on_a_flush_by_default(claude_home, no_audio, monkeypatc
                         lambda *a, **k: ("done", "I did a thing."))
 
     eng = SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "normal", "cooldown": 0},
     })
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -241,7 +241,7 @@ def test_watchdog_spawn_carries_the_parents_in_memory_baseline(
 
     before = time.time()
     eng = SayEngine({
-        "engine": "say", "personality": "alfred", "events": ["commentary"],
+        "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "normal", "cooldown": 0},
     })
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
@@ -264,7 +264,7 @@ def test_maybe_start_watchdog_omits_baseline_when_none(claude_home, no_audio):
     in instead of parsing a bogus value."""
     from engines.say import SayEngine
 
-    eng = SayEngine({"engine": "say", "personality": "alfred", "events": []})
+    eng = SayEngine({"engine": "say", "personality": "hobson", "events": []})
     eng._maybe_start_watchdog()
     watchdog_calls = [c for c in no_audio["popen"]
                       if any("--watchdog" in str(a) for a in c)]
@@ -315,7 +315,7 @@ def test_activity_token_and_lock_share_one_project_key(claude_home):
     import os
     import nudge
     key = lambda p: os.path.basename(p).rsplit("-", 1)[-1].split(".")[0]
-    for project in ("claudio", "mobile app, dark mode theming", ""):
+    for project in ("hobson", "mobile app, dark mode theming", ""):
         assert key(nudge.activity_path(project)) == key(nudge._lock_path("nudge", project))
 
 
@@ -324,17 +324,17 @@ def test_distinct_projects_get_distinct_tokens(claude_home):
     assert nudge.activity_path("project a") != nudge.activity_path("project b")
 
 
-def test_user_prompt_submit_returns_before_loading_config(claude_home, claudio_entry, monkeypatch):
+def test_user_prompt_submit_returns_before_loading_config(claude_home, hobson_entry, monkeypatch):
     """CLAUDE.md: UserPromptSubmit is the cheapest path -- it writes the token
     and returns before config or engine load. It used to call load_config()
     first; this pins the documented contract."""
     import io
-    monkeypatch.setattr(claudio_entry.sys, "stdin",
+    monkeypatch.setattr(hobson_entry.sys, "stdin",
                         io.StringIO('{"hook_event_name": "UserPromptSubmit"}'))
     def no_config():
         raise AssertionError("UserPromptSubmit must not load config")
-    monkeypatch.setattr(claudio_entry, "load_config", no_config)
-    claudio_entry.main()
+    monkeypatch.setattr(hobson_entry, "load_config", no_config)
+    hobson_entry.main()
 
 
 # ── The parent's argv must be accepted by the child's parser ──────────────
@@ -360,7 +360,7 @@ def _child_accepts(argv, monkeypatch):
 
 def test_nudge_argv_round_trips_through_the_child_parser(claude_home, no_audio, monkeypatch):
     from engines.say import SayEngine
-    eng = SayEngine({"engine": "say", "personality": "alfred", "events": ["notification"]})
+    eng = SayEngine({"engine": "say", "personality": "hobson", "events": ["notification"]})
     eng.run({"hook_event_name": "Notification", "notification_type": "idle_prompt"})
     [argv] = _popen_calls(no_audio, "nudge.py")
     assert "run" in _child_accepts(argv, monkeypatch)
@@ -369,7 +369,7 @@ def test_nudge_argv_round_trips_through_the_child_parser(claude_home, no_audio, 
 def test_watchdog_argv_round_trips_through_the_child_parser(claude_home, no_audio, monkeypatch):
     import engines.base as base
     from engines.say import SayEngine
-    eng = SayEngine({"engine": "say", "personality": "alfred"})
+    eng = SayEngine({"engine": "say", "personality": "hobson"})
     eng._maybe_start_watchdog(baseline=1234.5)
     [argv] = _popen_calls(no_audio, "--watchdog")
     seen = _child_accepts(argv, monkeypatch)
@@ -395,7 +395,7 @@ def _realtime(kind, monkeypatch, spoken, events=("notification", "stop")):
                         lambda self, phrase, allow_cold_start=True: spoken.append(phrase))
     monkeypatch.setattr(Engine, "_speak_live",
                         lambda self, phrase, allow_cold_start=True: spoken.append(phrase))
-    return Engine({"engine": kind, "personality": "alfred", "events": list(events),
+    return Engine({"engine": kind, "personality": "hobson", "events": list(events),
                    "nudge": {"enabled": False}})
 
 
@@ -471,7 +471,7 @@ def _seed_last_turn(category):
 
 def _say_engine():
     from engines.say import SayEngine
-    return SayEngine({"engine": "say", "personality": "alfred", "events": ["notification", "stop"]})
+    return SayEngine({"engine": "say", "personality": "hobson", "events": ["notification", "stop"]})
 
 
 def test_idle_after_a_finished_turn_does_not_nudge(claude_home, no_audio):
@@ -668,20 +668,20 @@ def test_a_corrupt_alive_file_reads_as_nothing(claude_home):
 
 
 @pytest.mark.parametrize("event", ["PreToolUse", "PermissionRequest"])
-def test_the_entrypoint_marks_the_session_alive(event, claude_home, claudio_entry, monkeypatch, no_audio):
+def test_the_entrypoint_marks_the_session_alive(event, claude_home, hobson_entry, monkeypatch, no_audio):
     import io
     from engines.base import derive_project_label
-    monkeypatch.setattr(claudio_entry.sys, "stdin", io.StringIO(json.dumps(
+    monkeypatch.setattr(hobson_entry.sys, "stdin", io.StringIO(json.dumps(
         {"hook_event_name": event, "tool_name": "Read", "agent_id": "sub-1"})))
-    claudio_entry.main()
+    hobson_entry.main()
     assert nudge.read_alive(derive_project_label())["event"] == event
 
 
 # ── A question dialog is announced as a question ───────────────────────────
 #
-# AskUserQuestion reaches claudio as a PermissionRequest -- 87 of them in the
+# AskUserQuestion reaches hobson as a PermissionRequest -- 87 of them in the
 # log -- and was phrased by the model from "Tool: AskUserQuestion" alone:
-# "I finished fixing claudio.", "I'm applying review fixes." The static
+# "I finished fixing hobson.", "I'm applying review fixes." The static
 # engines said their permission template for a tool called AskUserQuestion.
 
 
@@ -698,7 +698,7 @@ _ASK = {"hook_event_name": "PermissionRequest", "tool_name": "AskUserQuestion",
 @pytest.mark.parametrize("tool", ["AskUserQuestion", "ExitPlanMode"])
 def test_a_static_engine_announces_a_question_dialog_as_a_question(tool, claude_home, no_audio):
     from engines.say import SayEngine
-    SayEngine({"engine": "say", "personality": "alfred", "events": ["permission"]}).run(
+    SayEngine({"engine": "say", "personality": "hobson", "events": ["permission"]}).run(
         {**_ASK, "tool_name": tool})
     spoken = " ".join(map(str, no_audio["say"]))
     assert any(p in spoken for p in _question_phrases())
@@ -709,7 +709,7 @@ def test_a_static_engine_announces_a_question_dialog_as_a_question(tool, claude_
 def test_a_realtime_engine_announces_it_without_the_model(kind, fake_ollama, claude_home, monkeypatch):
     spoken = []
     eng = _realtime(kind, monkeypatch, spoken, events=["permission"])
-    fake_ollama.chat("done | I finished fixing claudio.")
+    fake_ollama.chat("done | I finished fixing hobson.")
     eng.run(dict(_ASK))
     assert fake_ollama.urls == []
     assert len(spoken) == 1 and spoken[0] in _question_phrases()

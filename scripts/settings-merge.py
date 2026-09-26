@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""settings-merge.py — Safely merge claudio hooks into ~/.claude/settings.json.
+"""settings-merge.py — Safely merge hobson hooks into ~/.claude/settings.json.
 
 Used by install.sh. Can also be run standalone:
     python3 settings-merge.py              # merge hooks
@@ -27,7 +27,7 @@ SETTINGS_FILE = os.path.join(CLAUDE_CONFIG_DIR, "settings.json")
 # IDE that PATH can resolve `python3` to something else entirely -- on a Mac
 # without the Command Line Tools, to a stub that pops an install dialog on
 # every hook. Bare `python3` remains the default for a manual run.
-HOOK_COMMAND_TEMPLATE = '"{python}" "{install_dir}/scripts/claudio.py"'
+HOOK_COMMAND_TEMPLATE = '"{python}" "{install_dir}/scripts/hobson.py"'
 DEFAULT_PYTHON = "python3"
 
 HOOKS_TO_INJECT = {
@@ -49,7 +49,7 @@ HOOKS_TO_INJECT = {
         # permission_prompt is spoken on directly. idle_prompt and
         # agent_needs_input are nudge.WAITING_TYPES -- the signal that a
         # session is blocked on the user. The matcher is applied by Claude
-        # Code before claudio runs, so a type left off this list never
+        # Code before hobson runs, so a type left off this list never
         # arrives at all: nudges shipped with both of theirs filtered out
         # here and never fired once. tests/test_settings_merge.py pins this
         # list to WAITING_TYPES so they cannot drift apart again.
@@ -125,7 +125,7 @@ def _drop_say_permission(settings):
 def save_settings(settings):
     # Write atomically: a crash or disk-full mid-write must never leave the
     # user's global settings.json as truncated/invalid JSON (it gates *all* of
-    # Claude Code's hooks, not just claudio's).
+    # Claude Code's hooks, not just hobson's).
     #
     # Write through a symlink, not over it: dotfile managers (stow, chezmoi,
     # a synced repo) keep settings.json as a link, and os.replace on the link
@@ -152,15 +152,19 @@ def backup_settings():
     return backup
 
 
-# What marks a hook as claudio's: its entrypoint, not the word. Matching any
-# command containing "claudio" claimed hooks of people whose home directory
-# is /Users/claudio -- install replaced them, uninstall deleted them.
-_OUR_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\]claudio\.py\b")
+# What marks a hook as Hobson's: its entrypoint, not the word. Matching any
+# command containing "claudio" (the old name) claimed the hooks of anyone
+# whose home is /Users/claudio -- install replaced them, uninstall deleted
+# them -- and Hobson is a surname too.
+# claudio.py is the entrypoint's name before 0.3.0: a hook still running it
+# is Hobson's (install replaces it, uninstall removes it), just out of date.
+_OUR_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\](?:hobson|claudio)\.py\b")
+_OLD_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\]claudio\.py\b")
 _LEGACY_MARKERS = ("claude-bark", "voice-bark")  # names from before the rename
 
 
 def _is_our_hook(hook_entry):
-    """Check if a hook entry belongs to claudio (or legacy claude-bark)."""
+    """Check if a hook entry belongs to hobson (or legacy claude-bark)."""
     if not isinstance(hook_entry, dict):
         return False
     for h in hook_entry.get("hooks") or []:
@@ -171,21 +175,21 @@ def _is_our_hook(hook_entry):
 
 
 def merge_hooks(install_dir, python=DEFAULT_PYTHON):
-    """Add claudio hooks to settings.json."""
+    """Add hobson hooks to settings.json."""
     command = HOOK_COMMAND_TEMPLATE.format(python=python, install_dir=install_dir)
 
     settings = load_settings()
     before = json.dumps(settings, sort_keys=True)
 
     if _drop_say_permission(settings):
-        print(f"  Removed permission {PERMISSION_ENTRY} (added by older claudio installs)")
+        print(f"  Removed permission {PERMISSION_ENTRY} (added by older hobson installs)")
 
     # Merge hooks
     hooks = _hooks_of(settings)
     for event, new_entries in HOOKS_TO_INJECT.items():
         existing = _entries(hooks, event)
 
-        # Remove any existing claudio/claude-bark hooks
+        # Remove any existing hobson/claude-bark hooks
         existing = [e for e in existing if not _is_our_hook(e)]
 
         # Add our hooks with the correct command
@@ -198,7 +202,7 @@ def merge_hooks(install_dir, python=DEFAULT_PYTHON):
 
         hooks[event] = existing
 
-    # Re-running the installer is how claudio updates, so an unchanged file
+    # Re-running the installer is how hobson updates, so an unchanged file
     # is left alone: no rewrite, and no backup piling up per run.
     if json.dumps(settings, sort_keys=True) == before:
         print(f"  Hooks already current in {SETTINGS_FILE}")
@@ -212,7 +216,7 @@ def merge_hooks(install_dir, python=DEFAULT_PYTHON):
 
 
 def remove_hooks():
-    """Remove claudio hooks from settings.json."""
+    """Remove hobson hooks from settings.json."""
     if not os.path.isfile(SETTINGS_FILE):
         print("  No settings.json found, nothing to remove")
         return
@@ -225,11 +229,11 @@ def remove_hooks():
     for event in list(hooks.keys()):
         entries = hooks[event]
         if not isinstance(entries, list):
-            continue  # not a shape claudio ever wrote; leave it be
+            continue  # not a shape hobson ever wrote; leave it be
         kept = [e for e in entries if not _is_our_hook(e)]
         if len(kept) < len(entries):
             removed.append(event)
-            # Drop an event claudio emptied; one that was already empty is theirs
+            # Drop an event hobson emptied; one that was already empty is theirs
             if kept:
                 hooks[event] = kept
             else:
@@ -245,7 +249,7 @@ def remove_hooks():
         save_settings(settings)
         print(f"  Removed: {', '.join(removed)}")
     else:
-        print("  No claudio hooks found in settings")
+        print("  No hobson hooks found in settings")
 
 
 def _shape(entry):
@@ -253,7 +257,7 @@ def _shape(entry):
 
     The command differs by install location and by quoting era, neither of
     which is staleness. The matcher and hook flags are what change what
-    claudio receives, so those are what an install is compared on.
+    hobson receives, so those are what an install is compared on.
     """
     return {
         "matcher": entry.get("matcher") or "",
@@ -272,10 +276,10 @@ def _interpreter(command):
 
 
 def check_hooks():
-    """True only if every claudio hook is installed and current.
+    """True only if every hobson hook is installed and current.
 
-    Finding *some* claudio hooks is not enough. This used to return True on
-    any match, and `claudio doctor` trusts the exit code -- so a machine
+    Finding *some* hobson hooks is not enough. This used to return True on
+    any match, and `hobson doctor` trusts the exit code -- so a machine
     that had never received UserPromptSubmit (the hook that cancels a nudge
     the moment the user types) reported "Hooks installed" for a month.
     Now each expected event must be present, and shaped the way the current
@@ -295,7 +299,9 @@ def check_hooks():
             missing.append(event)
             continue
         found.append(event)
-        if [_shape(e) for e in ours] != [_shape(e) for e in expected_entries]:
+        if [_shape(e) for e in ours] != [_shape(e) for e in expected_entries] \
+                or any(_OLD_ENTRYPOINT.search(h.get("command") or "")
+                       for e in ours for h in e.get("hooks") or [] if isinstance(h, dict)):
             stale.append(event)
         for e in ours:
             for h in e.get("hooks") or []:
@@ -317,17 +323,17 @@ def check_hooks():
         # without a word; this is the only place it can be seen.
         print(f"interpreter missing: {', '.join(sorted(gone))}")
     if missing or stale or gone:
-        print("fix: re-run settings-merge.py (it replaces claudio's hooks in place)")
+        print("fix: re-run settings-merge.py (it replaces hobson's hooks in place)")
         return False
     return True
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Manage claudio hooks in settings.json")
+    parser = argparse.ArgumentParser(description="Manage hobson hooks in settings.json")
     parser.add_argument("--remove", action="store_true", help="Remove hooks")
     parser.add_argument("--check", action="store_true", help="Check if hooks are installed")
     parser.add_argument("--install-dir", default=None,
-                        help="claudio install directory (for hook command paths)")
+                        help="hobson install directory (for hook command paths)")
     parser.add_argument("--python", default=DEFAULT_PYTHON,
                         help="interpreter the hooks run (absolute path recommended)")
     args = parser.parse_args()

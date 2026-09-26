@@ -3,7 +3,7 @@
 
 def _engine(**over):
     from engines.say import SayEngine
-    cfg = {"engine": "say", "personality": "alfred", "volume": 3}
+    cfg = {"engine": "say", "personality": "hobson", "volume": 3}
     cfg.update(over)
     return SayEngine(cfg)
 
@@ -52,17 +52,17 @@ from engines.base import project_rate
 
 
 def test_rate_is_deterministic_for_a_label():
-    assert project_rate("claudio") == project_rate("claudio")
+    assert project_rate("hobson") == project_rate("hobson")
 
 
 def test_different_projects_usually_differ():
     rates = {project_rate(n) for n in
-             ("claudio", "mobile app", "dark mode migration", "notes", "dev")}
+             ("hobson", "mobile app", "dark mode migration", "notes", "dev")}
     assert len(rates) >= 3, "labels should spread across the available steps"
 
 
 def test_rate_stays_in_a_natural_band():
-    for name in ("a", "b", "c", "claudio", "very-long-project-label-here"):
+    for name in ("a", "b", "c", "hobson", "very-long-project-label-here"):
         assert 0.9 <= project_rate(name) <= 1.1
 
 
@@ -74,7 +74,8 @@ def test_one_step_is_exactly_unity():
 
 def test_rate_flag_reaches_afplay_when_enabled(monkeypatch):
     import engines.base as base
-    monkeypatch.setattr(base, "derive_project_label", lambda: "claudio")
+    # A label whose rate is not exactly 1.0 ("hobson" hashes to 1.0, no -r).
+    monkeypatch.setattr(base, "derive_project_label", lambda: "butler")
     eng = _engine(project_identity={"enabled": True, "spread": 0.06})
     args = eng._afplay_args("/tmp/x.wav")
     assert "-r" in args

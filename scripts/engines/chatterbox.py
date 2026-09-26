@@ -6,12 +6,13 @@ import subprocess
 from .base import BaseEngine, ROOT
 
 
-def _find_reference_audio(personality="alfred"):
-    """Find reference audio: try <personality>-reference, then alfred-reference, then reference."""
+def _find_reference_audio(personality="hobson"):
+    """Find reference audio: try <personality>-reference, then hobson-reference (alfred-reference before 0.3.0), then reference."""
     search_names = []
-    if personality and personality != "alfred":
+    if personality and personality != "hobson":
         search_names.append(f"{personality}-reference")
-    search_names.append("alfred-reference")
+    search_names.append("hobson-reference")
+    search_names.append("alfred-reference")  # its name before 0.3.0
     search_names.append("reference")
 
     for name in search_names:
@@ -22,7 +23,7 @@ def _find_reference_audio(personality="alfred"):
             p2 = os.path.expanduser(f"~/.claude/models/{name}.{ext}")
             if os.path.isfile(p2):
                 return p2
-    return os.path.join(ROOT, "models", "alfred-reference.wav")
+    return os.path.join(ROOT, "models", "hobson-reference.wav")
 
 
 class ChatterboxEngine(BaseEngine):
@@ -41,7 +42,7 @@ class ChatterboxEngine(BaseEngine):
         self.cache_dir = os.path.expanduser("~/.claude/voice-cache-chatterbox")
         self._venv_python = os.path.join(ROOT, "venvs", "chatterbox", "bin", "python3")
         self._cache_gen = os.path.join(ROOT, "scripts", "cache-gen", "chatterbox_gen.py")
-        self._reference_audio = _find_reference_audio(config.get("personality", "alfred"))
+        self._reference_audio = _find_reference_audio(config.get("personality", "hobson"))
 
     def backfill(self, text):
         """Spawn background process to generate WAV via Chatterbox for a cache miss."""

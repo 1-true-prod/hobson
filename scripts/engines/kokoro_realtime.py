@@ -26,12 +26,12 @@ DEFAULT_SAY_VOICE = "Daniel"
 def _personality_say_voice():
     """Get the say voice from the active personality JSON."""
     personalities_dir = os.path.join(ROOT, "scripts", "personalities")
-    config_file = os.path.expanduser("~/.claude/claudio.json")
+    config_file = os.path.expanduser("~/.claude/hobson.json")
     old_config_file = os.path.expanduser("~/.claude/claude-bark.json")
     path = config_file if os.path.isfile(config_file) else old_config_file
     try:
         with open(path, encoding="utf-8") as f:
-            name = json.load(f).get("personality", "alfred")
+            name = json.load(f).get("personality", "hobson")
     except (FileNotFoundError, json.JSONDecodeError):
         return DEFAULT_SAY_VOICE
     path = os.path.join(personalities_dir, name, "personality.json")

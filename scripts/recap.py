@@ -1,4 +1,4 @@
-"""recap.py — build and speak a summary of recent activity for `claudio recap`.
+"""recap.py — build and speak a summary of recent activity for `hobson recap`.
 
 Pull, not push: the user asked "what have you been up to", so this reads
 recent log lines for the current project, has Ollama summarise them as one
@@ -272,8 +272,8 @@ def main():
         print(f"(not spoken — {reason})")
         return
 
-    import claudio
-    engine = claudio.load_engine(config)
+    import hobson
+    engine = hobson.load_engine(config)
     engine.speak_dynamic(text, allow_cold_start=True)
 
 

@@ -6,7 +6,7 @@ import engines.base as base
 def _cfg(verbosity="normal", cooldown=0.0):
     return {
         "engine": "say",
-        "personality": "alfred",
+        "personality": "hobson",
         "events": ["commentary"],
         "commentary": {"cooldown": cooldown, "tools": ["Bash", "Edit", "Write", "Agent"],
                        "verbosity": verbosity},

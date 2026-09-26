@@ -1,4 +1,4 @@
-"""Controls that keep claudio quiet: subagent suppression, timed mute, quiet hours."""
+"""Controls that keep hobson quiet: subagent suppression, timed mute, quiet hours."""
 
 import time
 
@@ -8,7 +8,7 @@ from engines.base import parse_duration, silence_reason
 
 def _cfg(**over):
     cfg = {
-        "engine": "say", "personality": "alfred", "events": ["commentary", "stop"],
+        "engine": "say", "personality": "hobson", "events": ["commentary", "stop"],
         "commentary": {"tools": ["bash", "edit"], "verbosity": "normal", "cooldown": 0,
                        "min_tool_calls": 1, "min_seconds": 60.0},
     }
@@ -128,15 +128,15 @@ def test_duration_parsing():
         assert parse_duration(bad) is None
 
 
-def test_entrypoint_stays_silent_when_muted(claude_home, claudio_entry, monkeypatch):
+def test_entrypoint_stays_silent_when_muted(claude_home, hobson_entry, monkeypatch):
     """The silence check must run before any engine work."""
     import io
     import json
-    (claude_home / "claudio.json").write_text(json.dumps({"mute_until": time.time() + 300}))
+    (claude_home / "hobson.json").write_text(json.dumps({"mute_until": time.time() + 300}))
     called = []
-    monkeypatch.setattr(claudio_entry, "load_engine", lambda cfg: called.append(cfg))
-    monkeypatch.setattr(claudio_entry.sys, "stdin", io.StringIO('{"hook_event_name":"Stop"}'))
-    claudio_entry.main()
+    monkeypatch.setattr(hobson_entry, "load_engine", lambda cfg: called.append(cfg))
+    monkeypatch.setattr(hobson_entry.sys, "stdin", io.StringIO('{"hook_event_name":"Stop"}'))
+    hobson_entry.main()
     assert called == [], "engine must not be constructed while silenced"
 
 

@@ -17,7 +17,7 @@ on both sets. Its misses lean the other way: starting big work (dispatching
 an agent, booting an emulator) scores high.
 
 A PreToolUse batch describes what the agent is about to do, never how it
-turned out — claudio does not hook tool results — so "tests passed" or "it
+turned out — hobson does not hook tool results — so "tests passed" or "it
 failed" cannot appear here; the Stop announcement is where those land.
 """
 

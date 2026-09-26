@@ -1,12 +1,12 @@
 {
-  "description": "claudio: Context-aware voice notifications for Claude Code",
+  "description": "hobson: Context-aware voice notifications for Claude Code",
   "hooks": {
     "PermissionRequest": [
       {
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claudio.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hobson.py",
             "async": true
           }
         ]
@@ -17,7 +17,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claudio.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hobson.py",
             "async": true
           }
         ]
@@ -29,7 +29,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claudio.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hobson.py",
             "async": true
           }
         ]
@@ -40,7 +40,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claudio.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hobson.py",
             "async": true
           }
         ]
@@ -51,7 +51,7 @@
         "hooks": [
           {
             "type": "command",
-            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/claudio.py",
+            "command": "python3 ${CLAUDE_PLUGIN_ROOT}/scripts/hobson.py",
             "async": true
           }
         ]

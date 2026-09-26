@@ -1,4 +1,4 @@
-# Contributing to claudio
+# Contributing to Hobson
 
 Thanks for your interest in contributing! Here's how to get started.
 
@@ -29,14 +29,14 @@ Then test manually:
 
 ```bash
 # Test each event type
-echo '{"hook_event_name":"Notification","message":"test"}' | python3 scripts/claudio.py
-echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}' | python3 scripts/claudio.py
-echo '{"hook_event_name":"Stop"}' | python3 scripts/claudio.py
+echo '{"hook_event_name":"Notification","message":"test"}' | python3 scripts/hobson.py
+echo '{"hook_event_name":"PermissionRequest","tool_name":"Bash"}' | python3 scripts/hobson.py
+echo '{"hook_event_name":"Stop"}' | python3 scripts/hobson.py
 
 # Diagnostics
-./claudio doctor
-./claudio status
-./claudio test
+./hobson doctor
+./hobson status
+./hobson test
 ```
 
 ## Adding a Personality
@@ -45,7 +45,7 @@ echo '{"hook_event_name":"Stop"}' | python3 scripts/claudio.py
 2. Follow the structure of an existing personality (start with `minimal` for templates-only, or `pirate` for templates + Ollama prompts)
 3. Required sections: `templates` with `categories`, `permission`, `notification`, `generic`
 4. Optional section: `prompts` with `system_prompt` and `examples` for AI-generated phrases
-5. Test with `claudio personality <name> && claudio test`
+5. Test with `hobson personality <name> && hobson test`
 
 ## Adding an Engine
 
@@ -55,7 +55,7 @@ For a **static** (cached-template) engine:
 2. Subclass `BaseEngine` from `engines/base.py`
 3. Set `templates_module`, `cache_dir`, `cache_ext`
 4. Implement `backfill(text)` for audio generation
-5. Add the engine to the CLI picker in `claudio` and to `install.sh`
+5. Add the engine to the CLI picker in `hobson` and to `install.sh`
 
 For a **realtime** engine, override `speak_dynamic(phrase, allow_cold_start)` instead — that single
 seam is what routes speech through your daemon, and it means commentary, batching, nudges and the
@@ -64,7 +64,7 @@ reference; `pocket_tts_realtime.py` is the same shape.
 
 ## Code Style
 
-- Bash: follow existing patterns in `claudio` and `install.sh`
+- Bash: follow existing patterns in `hobson` and `install.sh`
 - Python: no strict formatter, just keep it readable and consistent with existing code
 - Keep dependencies minimal — this runs on every Claude Code hook event
 

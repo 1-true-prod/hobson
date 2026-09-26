@@ -1,4 +1,4 @@
-"""Base engine — shared logic for all claudio TTS engines.
+"""Base engine — shared logic for all hobson TTS engines.
 
 Handles: config loading, logging, transcript lookup, Ollama classification,
 lock/cooldown, template selection (with cache-preference), and playback.
@@ -27,11 +27,69 @@ ROOT = os.environ.get(
 
 sys.path.insert(0, os.path.join(ROOT, "scripts"))
 
-CONFIG_FILE = os.path.expanduser("~/.claude/claudio.json")
-OLD_CONFIG_FILE = os.path.expanduser("~/.claude/claude-bark.json")
-BARK_LOCK_FILE = os.path.expanduser("~/.claude/claudio.lock")
-COMMENTARY_LOCK_FILE = os.path.expanduser("~/.claude/claudio-commentary.lock")
-LOG_FILE = os.path.expanduser("~/.claude/claudio.log")
+CONFIG_FILE = os.path.expanduser("~/.claude/hobson.json")
+BARK_LOCK_FILE = os.path.expanduser("~/.claude/hobson.lock")
+COMMENTARY_LOCK_FILE = os.path.expanduser("~/.claude/hobson-commentary.lock")
+LOG_FILE = os.path.expanduser("~/.claude/hobson.log")
+
+# Hobson was called claudio until 0.3.0, and claude-bark before that. State
+# kept under an old name, oldest name last, is moved to the new one the
+# first time it is needed. Only a missing target is ever written: nothing is
+# overwritten, and the config, the API key, months of log and session
+# history all come across. Paths are resolved against CONFIG_FILE's
+# directory so the test fixture's tmp home covers them too.
+_LEGACY_NAMES = (
+    # (new name, old names to take it from, newest first)
+    ("hobson.json", ("claudio.json", "claude-bark.json")),
+    ("hobson.log", ("claudio.log",)),
+    ("hobson.env", ("claudio.env",)),
+    ("hobson-sessions", ("claudio-sessions",)),
+)
+
+# The default personality was "alfred" until it became Hobson himself.
+_PERSONALITY_ALIASES = {"alfred": "hobson"}
+
+
+def migrate_legacy_state():
+    """Move claudio / claude-bark state to Hobson's names. Returns what moved."""
+    home = os.path.dirname(CONFIG_FILE)
+    moved = []
+    for new, olds in _LEGACY_NAMES:
+        target = os.path.join(home, new)
+        if os.path.lexists(target):
+            continue
+        for old in olds:
+            source = os.path.join(home, old)
+            if not os.path.lexists(source):
+                continue
+            try:
+                os.rename(source, target)  # atomic; keeps claudio.env at 600
+            except OSError:
+                break  # another hook got there first, or the disk refused
+            moved.append(f"{old} -> {new}")
+            break
+    if any(m.endswith("-> hobson.json") for m in moved):
+        _rename_legacy_personality()
+    return moved
+
+
+def _rename_legacy_personality():
+    """A migrated config naming "alfred" now names "hobson"."""
+    try:
+        with open(CONFIG_FILE, encoding="utf-8") as f:
+            config = json.load(f)
+    except (OSError, ValueError):
+        return
+    if not isinstance(config, dict):
+        return
+    new = _PERSONALITY_ALIASES.get(config.get("personality"))
+    if new:
+        config["personality"] = new
+        tmp = f"{CONFIG_FILE}.tmp-{os.getpid()}"
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(config, f, indent=2)
+            f.write("\n")
+        os.replace(tmp, CONFIG_FILE)
 
 from ollama_client import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, build_request
 
@@ -66,7 +124,7 @@ DEFAULT_DAEMON_IDLE_TIMEOUT = 600
 
 DEFAULT_CONFIG = {
     "engine": "say",
-    "personality": "alfred",
+    "personality": "hobson",
     "events": ["stop", "permission", "notification"],
     "cooldown": 2.0,
     "volume": 3,
@@ -215,12 +273,10 @@ NOTIFICATION_LABELS = {
 
 
 def load_config():
-    """Load config from ~/.claude/claudio.json, merged with defaults."""
+    """Load config from ~/.claude/hobson.json, merged with defaults."""
     config = dict(DEFAULT_CONFIG)
-    # Migrate old config if new one doesn't exist
-    if not os.path.isfile(CONFIG_FILE) and os.path.isfile(OLD_CONFIG_FILE):
-        import shutil
-        shutil.copy2(OLD_CONFIG_FILE, CONFIG_FILE)
+    if not os.path.isfile(CONFIG_FILE):
+        migrate_legacy_state()
     try:
         with open(CONFIG_FILE, encoding="utf-8") as f:
             user_config = json.load(f)
@@ -242,6 +298,8 @@ def load_config():
     # Clean up deprecated key from merged config
     config.get("kokoro", {}).pop("realtime_events", None)
 
+    config["personality"] = _PERSONALITY_ALIASES.get(config.get("personality"),
+                                                     config.get("personality"))
     return config
 
 
@@ -314,7 +372,7 @@ def _user_prompt_text(entry):
     `!` command's echo (<command-name>, <local-command-stdout>,
     <bash-input>), and the interruption marker. Counting those as turns is
     how a Stop that finished the Jev commentary gate came out as "I finished
-    grabbing attention in claudio": the grab-attention skill's body had
+    grabbing attention in hobson": the grab-attention skill's body had
     taken one of its four turns.
 
     Recent Claude Code marks what was typed with origin {"kind": "human"};
@@ -628,7 +686,7 @@ def works_on_its_own(text):
 
 _LAST_MESSAGE = "Last message:"
 
-# `claudio stats` counts this line.
+# `hobson stats` counts this line.
 STILL_WORKING_LOG = "[Stop] still working — waiting on its own work, not announced"
 
 
@@ -779,7 +837,7 @@ def silence_reason(config, now=None):
     """Why voice is suppressed right now, or None if it may speak.
 
     Checked cheapest-first. The returned string is logged, so the user can
-    always find out why claudio went quiet — a detector that silences without
+    always find out why hobson went quiet — a detector that silences without
     saying so is the worse bug.
     """
     now = time.time() if now is None else now
@@ -1154,7 +1212,7 @@ class BaseEngine(ABC):
     def _load_say_voice(config):
         """Get the macOS say voice from the active personality JSON."""
         personalities_dir = os.path.join(ROOT, "scripts", "personalities")
-        name = config.get("personality", "alfred")
+        name = config.get("personality", "hobson")
         path = os.path.join(personalities_dir, name, "personality.json")
         try:
             with open(path, encoding="utf-8") as f:
@@ -1404,11 +1462,11 @@ class BaseEngine(ABC):
 
     def _speak_question(self, hook_input, state=None):
         """Announce a question dialog -- AskUserQuestion or ExitPlanMode, which
-        reach claudio as a PermissionRequest -- with the personality's
+        reach hobson as a PermissionRequest -- with the personality's
         "question" phrases, never the model. True if this was one.
 
         87 of them in the log, phrased by the model from "Tool:
-        AskUserQuestion" alone: "I finished fixing claudio.", "I'm applying
+        AskUserQuestion" alone: "I finished fixing hobson.", "I'm applying
         review fixes." The static engines said their permission template
         for a tool named AskUserQuestion.
 
@@ -1466,7 +1524,7 @@ class BaseEngine(ABC):
         import shlex
         import tempfile
         tmp = tempfile.NamedTemporaryFile(
-            prefix="claudio-say-", suffix=".aiff", delete=False
+            prefix="hobson-say-", suffix=".aiff", delete=False
         )
         tmp.close()
         afplay_cmd = " ".join(shlex.quote(a) for a in self._afplay_args(tmp.name))
@@ -1927,7 +1985,7 @@ class BaseEngine(ABC):
         return None
 
     def run(self, hook_input):
-        """Main dispatch — called by claudio.py entrypoint."""
+        """Main dispatch — called by hobson.py entrypoint."""
         if not self._is_event_enabled(hook_input):
             return
 

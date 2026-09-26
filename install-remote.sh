@@ -1,17 +1,17 @@
 #!/usr/bin/env bash
-# claudio remote installer
+# hobson remote installer
 #
-#   curl -fsSL https://raw.githubusercontent.com/1-true-prod/claudio/main/install-remote.sh | bash
+#   curl -fsSL https://raw.githubusercontent.com/1-true-prod/hobson/main/install-remote.sh | bash
 #
 # No prompts (defaults: macOS `say` voice, nothing heavy installed):
-#   curl -fsSL https://raw.githubusercontent.com/1-true-prod/claudio/main/install-remote.sh | bash -s -- --yes
+#   curl -fsSL https://raw.githubusercontent.com/1-true-prod/hobson/main/install-remote.sh | bash -s -- --yes
 #
 # Re-running it updates an existing install and keeps its settings.
 #
 # Environment:
-#   CLAUDIO_REF   branch or tag to install (default: main)
-#   CLAUDIO_DIR   where to keep the checkout (default: ~/.local/share/claudio)
-#   CLAUDIO_REPO  git URL to clone (default: the GitHub repo)
+#   HOBSON_REF   branch or tag to install (default: main)
+#   HOBSON_DIR   where to keep the checkout (default: ~/.local/share/hobson)
+#   HOBSON_REPO  git URL to clone (default: the GitHub repo)
 #
 # Everything is inside main(), called on the last line, so a download cut off
 # halfway runs nothing at all.
@@ -19,29 +19,39 @@
 set -euo pipefail
 
 main() {
-    local repo="${CLAUDIO_REPO:-https://github.com/1-true-prod/claudio.git}"
-    local ref="${CLAUDIO_REF:-main}"
-    local dir="${CLAUDIO_DIR:-$HOME/.local/share/claudio}"
+    local repo="${HOBSON_REPO:-https://github.com/1-true-prod/hobson.git}"
+    local ref="${HOBSON_REF:-main}"
+    local dir="${HOBSON_DIR:-$HOME/.local/share/hobson}"
 
     local red='\033[0;31m' green='\033[0;32m' dim='\033[2m' nc='\033[0m'
     die() { echo -e "${red}Error:${nc} $1" >&2; exit 1; }
 
     echo ""
-    echo -e "  ${green}claudio${nc} installer"
-    echo -e "  ${dim}Context-aware voice notifications for Claude Code${nc}"
+    echo -e "  ${green}Hobson${nc} installer"
+    echo -e "  ${dim}A well-mannered butler for Claude Code${nc}"
     echo ""
 
-    [[ "$(uname)" == "Darwin" ]] || die "claudio requires macOS."
+    [[ "$(uname)" == "Darwin" ]] || die "Hobson requires macOS."
 
     # /usr/bin/git is only a stub until the Command Line Tools are installed.
     git --version &>/dev/null \
         || die "git is required. Install the Xcode Command Line Tools: xcode-select --install"
 
+    # Hobson was claudio until 0.3.0, kept in ~/.local/share/claudio. Move a
+    # checkout of ours from there (another tool also calls itself claudio,
+    # hence the check) and point it at the renamed repo.
+    local legacy="$HOME/.local/share/claudio"
+    if [[ -z "${HOBSON_DIR:-}" && ! -e "$dir" && -d "$legacy/.git" && -f "$legacy/scripts/settings-merge.py" ]]; then
+        echo -e "${dim}Moving $legacy to $dir (claudio is now Hobson)...${nc}"
+        mv "$legacy" "$dir"
+        git -C "$dir" remote set-url origin "$repo"
+    fi
+
     # Updating fetches, switches branch and runs whatever install.sh is there,
-    # so it must be claudio's checkout and not some other repo CLAUDIO_DIR
+    # so it must be hobson's checkout and not some other repo HOBSON_DIR
     # happens to name.
     if [[ -e "$dir" ]] && ! [[ -d "$dir/.git" && -f "$dir/scripts/settings-merge.py" && -f "$dir/install.sh" ]]; then
-        die "$dir exists but is not a claudio checkout. Move it aside, or set CLAUDIO_DIR."
+        die "$dir exists but is not a Hobson checkout. Move it aside, or set HOBSON_DIR."
     fi
 
     if [[ -d "$dir/.git" ]]; then
@@ -65,7 +75,7 @@ main() {
                 || die "No branch or tag named '$ref' in $repo."
         fi
     else
-        echo -e "${dim}Cloning claudio ($ref) into $dir...${nc}"
+        echo -e "${dim}Cloning Hobson ($ref) into $dir...${nc}"
         mkdir -p "$(dirname "$dir")"
         # Not `clone --branch "$ref"`: given a release tag, that prints
         # "is not a commit!" and git's detached-HEAD lecture, which reads

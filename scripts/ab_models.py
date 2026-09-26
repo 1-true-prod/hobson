@@ -2,7 +2,7 @@
 """ab_models.py — dev-only A/B harness for Ollama model selection.
 
 Compares candidate models against the LIVE Ollama server on the two jobs
-claudio actually asks of them:
+hobson actually asks of them:
 
   1. classify  — done/broken/question accuracy over base.EXAMPLES
   2. first-person — do generated Stop phrases natively start with "I "

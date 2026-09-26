@@ -1,21 +1,21 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# claudio installer
+# hobson installer
 #
 # Usage:
 #   ./install.sh            Interactive: pick an engine, personality and events
 #   ./install.sh --yes      No prompts. A new install gets the defaults (macOS `say`,
-#                           alfred, stop/permission/notification) and installs nothing
+#                           hobson, stop/permission/notification) and installs nothing
 #                           heavy; an existing install keeps its settings
-#   ./install.sh --update   Keep the current settings, refresh hooks (used by `claudio update`)
+#   ./install.sh --update   Keep the current settings, refresh hooks (used by `hobson update`)
 #
-# Remote one-liner (clones into ~/.local/share/claudio, then runs this):
-#   curl -fsSL https://raw.githubusercontent.com/1-true-prod/claudio/main/install-remote.sh | bash
+# Remote one-liner (clones into ~/.local/share/hobson, then runs this):
+#   curl -fsSL https://raw.githubusercontent.com/1-true-prod/hobson/main/install-remote.sh | bash
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
-CLAUDE_DIR="$HOME/.claude"   # claudio's own state lives here, whatever CLAUDE_CONFIG_DIR says
-CONFIG_FILE="$CLAUDE_DIR/claudio.json"
+CLAUDE_DIR="$HOME/.claude"   # hobson's own state lives here, whatever CLAUDE_CONFIG_DIR says
+CONFIG_FILE="$CLAUDE_DIR/hobson.json"
 
 # Colors
 RED='\033[0;31m'
@@ -51,7 +51,7 @@ while [[ $# -gt 0 ]]; do
     esac
     shift
 done
-[[ "${CLAUDIO_YES:-}" == "1" ]] && ASSUME_YES=true
+[[ "${HOBSON_YES:-}" == "1" ]] && ASSUME_YES=true
 
 # The pickers read single keys from stdin. With no terminal there (CI, a
 # pipe) the first read hits EOF and `set -e` ends the install before any hook
@@ -201,7 +201,7 @@ _check_menu() {
 # ── Pre-flight checks ────────────────────────────────────────────────
 
 if [[ "$(uname)" != "Darwin" ]]; then
-    error "claudio requires macOS (uses afplay and say)."
+    error "Hobson requires macOS (uses afplay and say)."
     exit 1
 fi
 
@@ -210,7 +210,7 @@ fi
 # wrong choice: it disappears with the project.
 _python_ok() { "$1" -c 'import sys; sys.exit(0 if sys.version_info >= (3, 9) else 1)' 2>/dev/null; }
 
-PYTHON="${CLAUDIO_PYTHON:-$(command -v python3 || true)}"
+PYTHON="${HOBSON_PYTHON:-$(command -v python3 || true)}"
 if [[ -n "$PYTHON" && -n "${VIRTUAL_ENV:-}" && "$PYTHON" == "$VIRTUAL_ENV"/* ]]; then
     for candidate in /opt/homebrew/bin/python3 /usr/local/bin/python3 /usr/bin/python3; do
         if [[ -x "$candidate" ]] && _python_ok "$candidate"; then
@@ -243,7 +243,7 @@ fi
 # Claude Code reads settings.json from $CLAUDE_CONFIG_DIR when set.
 SETTINGS_DIR="${CLAUDE_CONFIG_DIR:-$HOME/.claude}"
 if ! command -v claude &>/dev/null && [[ ! -d "$SETTINGS_DIR" ]]; then
-    warn "Claude Code not found. claudio's hooks will take effect once it is installed."
+    warn "Claude Code not found. Hobson's hooks will take effect once it is installed."
 fi
 mkdir -p "$CLAUDE_DIR"
 
@@ -263,20 +263,30 @@ _ensure_uv() {
 echo ""
 echo -e "${GREEN}"
 cat << 'LOGO'
-       _                 _ _
-   ___| | __ _ _   _  __| (_) ___
-  / __| |/ _` | | | |/ _` | |/ _ \
- | (__| | (_| | |_| | (_| | | (_) |
-  \___|_|\__,_|\__,_|\__,_|_|\___/
+ _           _
+| |__   ___ | |__  ___  ___  _ __
+| '_ \ / _ \| '_ \/ __|/ _ \| '_ \
+| | | | (_) | |_) \__ \ (_) | | | |
+|_| |_|\___/|_.__/|___/\___/|_| |_|
 LOGO
 echo -e "${NC}"
-echo -e "  ${DIM}Voice notifications for Claude Code${NC}"
+echo -e "  ${DIM}A well-mannered butler for Claude Code${NC}"
 echo ""
 
 # ── Existing installation ────────────────────────────────────────────
 #
-# Re-running the installer is how claudio updates, so an existing config is
+# Re-running the installer is how hobson updates, so an existing config is
 # kept by default and only the hooks are refreshed.
+
+# Hobson was claudio until 0.3.0: take over its config, API key, log and
+# session history before looking for an existing install.
+"$PYTHON" - "$SCRIPT_DIR/scripts" <<'PY' || warn "Could not move claudio's settings over; see ~/.claude"
+import sys
+sys.path.insert(0, sys.argv[1])
+from engines.base import migrate_legacy_state
+for moved in migrate_legacy_state():
+    print(f"  Moved ~/.claude/{moved} (claudio is now Hobson)")
+PY
 
 KEEP_CONFIG=false
 if [[ -f "$CONFIG_FILE" ]]; then
@@ -285,7 +295,7 @@ if [[ -f "$CONFIG_FILE" ]]; then
         info "Keeping your settings in $CONFIG_FILE"
     else
         info "Existing settings found at $CONFIG_FILE"
-        if confirm "Keep them and just update claudio?" Y; then
+        if confirm "Keep them and just update Hobson?" Y; then
             KEEP_CONFIG=true
         fi
     fi
@@ -306,11 +316,11 @@ PY
 
 if [[ "$KEEP_CONFIG" == true ]]; then
     ENGINE=$(_config_value engine say)
-    PERSONALITY=$(_config_value personality alfred)
+    PERSONALITY=$(_config_value personality hobson)
     EVENTS=$(_config_value events "stop permission notification")
 elif [[ "$ASSUME_YES" == true ]]; then
     ENGINE="say"
-    PERSONALITY="alfred"
+    PERSONALITY="hobson"
     EVENTS="stop permission notification"
 else
     # ── Engine selection ─────────────────────────────────────────────
@@ -344,10 +354,10 @@ else
         _PICK_DESCS+=("$pdesc")
     done
 
-    # Default to alfred
+    # Default to hobson
     sel=0
     for i in "${!_PICK_OPTIONS[@]}"; do
-        [[ "${_PICK_OPTIONS[$i]}" == "alfred" ]] && sel=$i
+        [[ "${_PICK_OPTIONS[$i]}" == "hobson" ]] && sel=$i
     done
     _pick_menu "$sel"
     PERSONALITY="$PICK_RESULT"
@@ -378,7 +388,7 @@ setup_kokoro() {
     info "Setting up Kokoro..."
 
     if ! _ensure_uv; then
-        warn "Skipping Kokoro setup; run 'claudio setup kokoro' once uv is installed."
+        warn "Skipping Kokoro setup; run 'hobson setup kokoro' once uv is installed."
         return 0
     fi
 
@@ -432,7 +442,7 @@ setup_chatterbox() {
     info "Setting up Chatterbox..."
 
     if ! _ensure_uv; then
-        warn "Skipping Chatterbox setup; run 'claudio setup chatterbox' once uv is installed."
+        warn "Skipping Chatterbox setup; run 'hobson setup chatterbox' once uv is installed."
         return 0
     fi
 
@@ -454,7 +464,7 @@ setup_chatterbox() {
 
     has_ref=false
     for ext in wav mp3 flac ogg m4a; do
-        if [[ -f "$MODEL_DIR/alfred-reference.$ext" ]]; then
+        if [[ -f "$MODEL_DIR/hobson-reference.$ext" || -f "$MODEL_DIR/alfred-reference.$ext" ]]; then
             has_ref=true
             break
         fi
@@ -464,12 +474,12 @@ setup_chatterbox() {
         echo ""
         warn "Chatterbox needs a reference audio file for voice cloning."
         echo "  Place a 5-10 second audio clip at:"
-        echo "  $MODEL_DIR/alfred-reference.wav"
+        echo "  $MODEL_DIR/hobson-reference.wav"
         echo ""
         read -rp "Path to your reference audio file (or press Enter to skip): " ref_path
         if [[ -n "$ref_path" && -f "$ref_path" ]]; then
             ext="${ref_path##*.}"
-            cp "$ref_path" "$MODEL_DIR/alfred-reference.$ext"
+            cp "$ref_path" "$MODEL_DIR/hobson-reference.$ext"
             ok "Reference audio copied"
         else
             warn "No reference audio provided. You'll need to add one before generating cache."
@@ -489,7 +499,7 @@ fi
 
 # ── Ollama (optional) ────────────────────────────────────────────────
 #
-# Without it claudio still speaks, from templates. With it, Stops are
+# Without it hobson still speaks, from templates. With it, Stops are
 # classified (done / broken / waiting on you) and phrases fit the moment.
 # An Ollama the user already runs is never upgraded or restarted unasked, and
 # an update (existing settings kept) only reports -- it does not re-ask what
@@ -521,7 +531,7 @@ _ollama_pull() {
 }
 
 if ! command -v ollama &>/dev/null; then
-    info "Ollama is optional: it makes claudio's phrases fit what just happened."
+    info "Ollama is optional: it makes Hobson's phrases fit what just happened."
     if _offer "Install Ollama with Homebrew now?" Y; then
         _ollama_brew_install && ok "Ollama installed" || true
     fi
@@ -594,9 +604,9 @@ fi
 
 # ── Symlink CLI to PATH ────────────────────────────────────────────
 
-CLI_SOURCE="$SCRIPT_DIR/claudio"
+CLI_SOURCE="$SCRIPT_DIR/hobson"
 BIN_DIR="$HOME/.local/bin"
-CLI_TARGET="$BIN_DIR/claudio"
+CLI_TARGET="$BIN_DIR/hobson"
 mkdir -p "$BIN_DIR"
 if [[ -e "$CLI_TARGET" && ! -L "$CLI_TARGET" ]]; then
     warn "$CLI_TARGET exists and is not a symlink; left it alone. The CLI is at $CLI_SOURCE"
@@ -605,6 +615,12 @@ else
 fi
 # Clean up old symlink from previous installs
 [[ -L "$BIN_DIR/claude-bark" ]] && rm -f "$BIN_DIR/claude-bark"
+# The command was `claudio` until 0.3.0. Remove that link only when it points
+# into a checkout of ours: another tool also ships a `claudio` command.
+if [[ -L "$BIN_DIR/claudio" && -f "$(dirname "$(readlink "$BIN_DIR/claudio")")/scripts/settings-merge.py" ]]; then
+    rm -f "$BIN_DIR/claudio"
+    ok "The command is now 'hobson' (removed the old 'claudio' link)"
+fi
 
 # ── Optional: generate voice cache ───────────────────────────────────
 
@@ -635,11 +651,11 @@ if [[ -f "$CONFIG_FILE" ]] && ! "$PYTHON" -c "import json,sys; json.load(open(sy
     INSTALL_OK=false
 fi
 if ! "$PYTHON" "$SCRIPT_DIR/scripts/settings-merge.py" --check >/dev/null 2>&1; then
-    error "Hooks not detected in settings.json. Run: claudio doctor"
+    error "Hooks not detected in settings.json. Run: hobson doctor"
     INSTALL_OK=false
 fi
 # A hook that cannot even start fails silently inside Claude Code; catch it here.
-if ! echo '{"hook_event_name":"UserPromptSubmit"}' | HOME="$(mktemp -d)" "$PYTHON" "$SCRIPT_DIR/scripts/claudio.py" 2>/dev/null; then
+if ! echo '{"hook_event_name":"UserPromptSubmit"}' | HOME="$(mktemp -d)" "$PYTHON" "$SCRIPT_DIR/scripts/hobson.py" 2>/dev/null; then
     error "The hook script failed to run with $PYTHON"
     INSTALL_OK=false
 fi
@@ -649,7 +665,7 @@ fi
 if [[ "$KEEP_CONFIG" != true && "$INSTALL_OK" == true ]]; then
     SAY_VOICE=$("$PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1])).get('say_voice', 'Daniel'))" \
         "$SCRIPT_DIR/scripts/personalities/$PERSONALITY/personality.json" 2>/dev/null || echo "Daniel")
-    HELLO_PHRASE="Hello. This is Claudio. Nice to meet you."
+    HELLO_PHRASE="Good day. Hobson, at your service."
     _hello_spoken=false
 
     # For kokoro-realtime, start daemon and use it for the hello bark
@@ -682,7 +698,7 @@ if [[ "$KEEP_CONFIG" != true && "$INSTALL_OK" == true ]]; then
                 "$CONFIG_FILE" 2>/dev/null || echo "am_puck")
             # A directory, not mktemp …XXXXXX.wav: BSD mktemp does not fill in
             # the X's when a suffix follows, so that name was a fixed literal.
-            HELLO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/claudio-hello.XXXXXX")
+            HELLO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hobson-hello.XXXXXX")
             HELLO_WAV="$HELLO_DIR/hello.wav"
             if curl -s --max-time 10 -X POST "http://127.0.0.1:$DAEMON_PORT/generate" \
                 -H "Content-Type: application/json" \
@@ -705,12 +721,12 @@ fi
 echo ""
 if [[ "$INSTALL_OK" == true ]]; then
     if [[ "$KEEP_CONFIG" == true ]]; then
-        echo -e "${GREEN}  claudio is up to date.${NC}"
+        echo -e "${GREEN}  Hobson is up to date.${NC}"
     else
         echo -e "${GREEN}  Installation complete!${NC}"
     fi
 else
-    echo -e "${YELLOW}  Installed with problems — see the errors above, or run: claudio doctor${NC}"
+    echo -e "${YELLOW}  Installed with problems — see the errors above, or run: hobson doctor${NC}"
 fi
 echo ""
 echo -e "  Engine:      ${GREEN}$ENGINE${NC}"
@@ -724,11 +740,11 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
         */bash) rc="$HOME/.bash_profile" ;;
         *)      rc="your shell profile" ;;
     esac
-    echo -e "  ${YELLOW}To use the claudio command, add this to $rc:${NC}"
+    echo -e "  ${YELLOW}To use the hobson command, add this to $rc:${NC}"
     echo "    export PATH=\"\$HOME/.local/bin:\$PATH\""
     echo ""
 fi
 echo -e "  ${DIM}Start a new Claude Code session to hear it (running sessions keep their old hooks).${NC}"
-echo -e "  ${DIM}claudio status · claudio doctor · claudio update · claudio uninstall${NC}"
+echo -e "  ${DIM}hobson status · hobson doctor · hobson update · hobson uninstall${NC}"
 echo ""
 [[ "$INSTALL_OK" == true ]]

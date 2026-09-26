@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Tests to verify the claude-bark → claudio rename didn't break anything.
+"""The renames (claude-bark → claudio → Hobson) broke nothing, and lost nothing.
 
 Run: python3 -m pytest tests/ -v
   or: python3 tests/test_rename.py
@@ -21,111 +21,124 @@ sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 # ── Config paths ──────────────────────────────────────────────────────
 
 class TestConfigPaths(unittest.TestCase):
-    """Verify all modules reference the new claudio.json config path."""
+    """Verify all modules reference the new hobson.json config path."""
 
     def test_base_config_file(self):
         from engines.base import CONFIG_FILE
-        self.assertIn("claudio.json", CONFIG_FILE)
+        self.assertIn("hobson.json", CONFIG_FILE)
         self.assertNotIn("claude-bark", CONFIG_FILE)
-
-    def test_base_old_config_file(self):
-        from engines.base import OLD_CONFIG_FILE
-        self.assertIn("claude-bark.json", OLD_CONFIG_FILE)
 
     def test_lock_file(self):
         from engines.base import BARK_LOCK_FILE
-        self.assertIn("claudio.lock", BARK_LOCK_FILE)
+        self.assertIn("hobson.lock", BARK_LOCK_FILE)
         self.assertNotIn("voice-bark", BARK_LOCK_FILE)
 
     def test_commentary_lock_file(self):
         from engines.base import COMMENTARY_LOCK_FILE
-        self.assertIn("claudio-commentary.lock", COMMENTARY_LOCK_FILE)
+        self.assertIn("hobson-commentary.lock", COMMENTARY_LOCK_FILE)
         self.assertNotIn("voice-bark", COMMENTARY_LOCK_FILE)
 
     def test_log_file(self):
         from engines.base import LOG_FILE
-        self.assertIn("claudio.log", LOG_FILE)
+        self.assertIn("hobson.log", LOG_FILE)
         self.assertNotIn("voice-bark", LOG_FILE)
 
 
-# ── Config migration ─────────────────────────────────────────────────
+# ── Migration from claudio (and claude-bark) ─────────────────────────
+#
+# Hobson was claudio until 0.3.0. Everything a user had under the old name
+# must come across the first time it is needed, and nothing under the new
+# name may ever be overwritten.
 
-class TestConfigMigration(unittest.TestCase):
-    """Verify load_config() auto-migrates old claude-bark.json."""
+def _write(path, data):
+    with open(path, "w", encoding="utf-8") as f:
+        json.dump(data, f)
 
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.new_config = os.path.join(self.tmpdir, "claudio.json")
-        self.old_config = os.path.join(self.tmpdir, "claude-bark.json")
 
-    def tearDown(self):
-        shutil.rmtree(self.tmpdir)
+def test_migration_moves_config_key_log_and_sessions(claude_home):
+    import engines.base as base
+    _write(claude_home / "claudio.json", {"engine": "kokoro-realtime", "volume": 7})
+    (claude_home / "claudio.env").write_text("OPENROUTER_API_KEY=sk-test\n")
+    os.chmod(claude_home / "claudio.env", 0o600)
+    (claude_home / "claudio.log").write_text("[2026-09-26 10:00:00] [x] spoke\n")
+    (claude_home / "claudio-sessions").mkdir()
+    (claude_home / "claudio-sessions" / "abc.json").write_text("{}")
 
-    def test_migration_copies_old_to_new(self):
-        """If claudio.json missing but claude-bark.json exists, copy it."""
-        import engines.base as base
+    moved = base.migrate_legacy_state()
 
-        # Write old config
-        old_data = {"engine": "kokoro-realtime", "personality": "pirate"}
-        with open(self.old_config, "w") as f:
-            json.dump(old_data, f)
+    assert len(moved) == 4
+    assert json.load(open(claude_home / "hobson.json"))["volume"] == 7
+    assert (claude_home / "hobson.env").read_text() == "OPENROUTER_API_KEY=sk-test\n"
+    assert os.stat(claude_home / "hobson.env").st_mode & 0o777 == 0o600
+    assert "spoke" in (claude_home / "hobson.log").read_text()
+    assert (claude_home / "hobson-sessions" / "abc.json").exists()
+    assert not any(p.name.startswith("claudio") for p in claude_home.iterdir())
 
-        # Patch paths
-        orig_config = base.CONFIG_FILE
-        orig_old = base.OLD_CONFIG_FILE
-        try:
-            base.CONFIG_FILE = self.new_config
-            base.OLD_CONFIG_FILE = self.old_config
 
-            config = base.load_config()
-            self.assertEqual(config["engine"], "kokoro-realtime")
-            self.assertEqual(config["personality"], "pirate")
-            # New file should have been created
-            self.assertTrue(os.path.isfile(self.new_config))
-        finally:
-            base.CONFIG_FILE = orig_config
-            base.OLD_CONFIG_FILE = orig_old
+def test_migration_never_overwrites_hobson_state(claude_home):
+    import engines.base as base
+    _write(claude_home / "hobson.json", {"engine": "say"})
+    _write(claude_home / "claudio.json", {"engine": "chatterbox"})
+    assert base.migrate_legacy_state() == []
+    assert json.load(open(claude_home / "hobson.json"))["engine"] == "say"
+    assert (claude_home / "claudio.json").exists()  # left for the user
 
-    def test_no_migration_if_new_exists(self):
-        """If claudio.json exists, don't touch old config."""
-        import engines.base as base
 
-        new_data = {"engine": "say", "personality": "alfred"}
-        old_data = {"engine": "chatterbox", "personality": "pirate"}
-        with open(self.new_config, "w") as f:
-            json.dump(new_data, f)
-        with open(self.old_config, "w") as f:
-            json.dump(old_data, f)
+def test_migration_is_idempotent(claude_home):
+    import engines.base as base
+    _write(claude_home / "claudio.json", {"engine": "say"})
+    assert base.migrate_legacy_state()
+    assert base.migrate_legacy_state() == []
 
-        orig_config = base.CONFIG_FILE
-        orig_old = base.OLD_CONFIG_FILE
-        try:
-            base.CONFIG_FILE = self.new_config
-            base.OLD_CONFIG_FILE = self.old_config
 
-            config = base.load_config()
-            # Should use new config, not old
-            self.assertEqual(config["engine"], "say")
-        finally:
-            base.CONFIG_FILE = orig_config
-            base.OLD_CONFIG_FILE = orig_old
+def test_claude_bark_config_still_migrates(claude_home):
+    import engines.base as base
+    _write(claude_home / "claude-bark.json", {"engine": "kokoro-realtime", "personality": "pirate"})
+    config = base.load_config()
+    assert config["engine"] == "kokoro-realtime"
+    assert config["personality"] == "pirate"
+    assert (claude_home / "hobson.json").exists()
 
-    def test_defaults_if_neither_exists(self):
-        """If no config exists, return defaults without error."""
-        import engines.base as base
 
-        orig_config = base.CONFIG_FILE
-        orig_old = base.OLD_CONFIG_FILE
-        try:
-            base.CONFIG_FILE = os.path.join(self.tmpdir, "nonexistent.json")
-            base.OLD_CONFIG_FILE = os.path.join(self.tmpdir, "also-nonexistent.json")
+def test_claudio_config_wins_over_claude_bark(claude_home):
+    import engines.base as base
+    _write(claude_home / "claudio.json", {"engine": "say"})
+    _write(claude_home / "claude-bark.json", {"engine": "chatterbox"})
+    base.migrate_legacy_state()
+    assert json.load(open(claude_home / "hobson.json"))["engine"] == "say"
 
-            config = base.load_config()
-            self.assertEqual(config["engine"], "say")
-            self.assertEqual(config["personality"], "alfred")
-        finally:
-            base.CONFIG_FILE = orig_config
-            base.OLD_CONFIG_FILE = orig_old
+
+def test_the_alfred_personality_becomes_hobson(claude_home):
+    """Alfred was the default persona; the migrated config names Hobson."""
+    import engines.base as base
+    _write(claude_home / "claudio.json", {"personality": "alfred", "volume": 4})
+    base.migrate_legacy_state()
+    on_disk = json.load(open(claude_home / "hobson.json"))
+    assert on_disk == {"personality": "hobson", "volume": 4}
+
+
+def test_load_config_reads_alfred_as_hobson(claude_home):
+    import engines.base as base
+    _write(claude_home / "hobson.json", {"personality": "alfred"})
+    assert base.load_config()["personality"] == "hobson"
+
+
+def test_defaults_when_there_is_no_config_at_all(claude_home):
+    import engines.base as base
+    config = base.load_config()
+    assert config["engine"] == "say"
+    assert config["personality"] == "hobson"
+
+
+def test_old_entrypoint_runs_hobson(claude_home, monkeypatch):
+    """Hooks installed as claudio run scripts/claudio.py until rewritten."""
+    import io
+    import runpy
+    event = {"hook_event_name": "UserPromptSubmit", "cwd": str(claude_home)}
+    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
+    runpy.run_path(os.path.join(REPO_ROOT, "scripts", "claudio.py"), run_name="__main__")
+    # The prompt path writes the activity token -- proof hobson.py ran.
+    assert any(p.name.startswith("hobson-activity-") for p in claude_home.iterdir())
 
 
 # ── bark_hash consistency ─────────────────────────────────────────────
@@ -275,8 +288,8 @@ class TestIsOurHook(unittest.TestCase):
         spec.loader.exec_module(mod)
         return mod._is_our_hook(entry)
 
-    def test_new_claudio_hook(self):
-        entry = {"hooks": [{"type": "command", "command": "python3 /path/scripts/claudio.py"}]}
+    def test_new_hobson_hook(self):
+        entry = {"hooks": [{"type": "command", "command": "python3 /path/scripts/hobson.py"}]}
         self.assertTrue(self._is_our_hook(entry))
 
     def test_legacy_claude_bark_hook(self):
@@ -361,13 +374,13 @@ class TestPhraseGenParsing(unittest.TestCase):
 # ── Entrypoint engine registry ────────────────────────────────────────
 
 class TestEngineRegistry(unittest.TestCase):
-    """Verify the engine registry in claudio.py is intact."""
+    """Verify the engine registry in hobson.py is intact."""
 
     def test_engines_dict(self):
         import importlib.util
         spec = importlib.util.spec_from_file_location(
-            "claudio_entry",
-            os.path.join(REPO_ROOT, "scripts", "claudio.py"),
+            "hobson_entry",
+            os.path.join(REPO_ROOT, "scripts", "hobson.py"),
         )
         mod = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(mod)
@@ -397,7 +410,7 @@ class TestPersonalityLoading(unittest.TestCase):
     """Verify personality templates load correctly."""
 
     def test_alfred_personality_exists(self):
-        path = os.path.join(REPO_ROOT, "scripts", "personalities", "alfred", "personality.json")
+        path = os.path.join(REPO_ROOT, "scripts", "personalities", "hobson", "personality.json")
         self.assertTrue(os.path.isfile(path))
         with open(path) as f:
             data = json.load(f)
@@ -416,7 +429,7 @@ class TestPersonalityLoading(unittest.TestCase):
     def test_bark_templates_lazy_load(self):
         """Verify template attributes are accessible."""
         import bark_templates
-        bark_templates.reload_personality("alfred")
+        bark_templates.reload_personality("hobson")
         cats = bark_templates.CATEGORIES
         self.assertIn("done", cats)
         self.assertIn("broken", cats)
@@ -428,18 +441,18 @@ class TestPersonalityLoading(unittest.TestCase):
 # ── hooks.json ────────────────────────────────────────────────────────
 
 class TestHooksJson(unittest.TestCase):
-    """Verify hooks.json references claudio.py."""
+    """Verify hooks.json references hobson.py."""
 
     def test_hooks_json_commands(self):
         path = os.path.join(REPO_ROOT, "hooks", "hooks.json")
         with open(path) as f:
             data = json.load(f)
 
-        self.assertIn("claudio", data["description"])
+        self.assertIn("hobson", data["description"])
         for event, entries in data["hooks"].items():
             for entry in entries:
                 for hook in entry["hooks"]:
-                    self.assertIn("claudio.py", hook["command"],
+                    self.assertIn("hobson.py", hook["command"],
                                   f"Hook for {event} still references old name")
                     self.assertNotIn("voice-bark", hook["command"])
 
@@ -453,8 +466,8 @@ class TestNoStaleReferences(unittest.TestCase):
         with open(os.path.join(REPO_ROOT, relpath), encoding="utf-8") as f:
             return f.read()
 
-    def test_claudio_py_no_old_refs(self):
-        content = self._read_file("scripts/claudio.py")
+    def test_hobson_py_no_old_refs(self):
+        content = self._read_file("scripts/hobson.py")
         self.assertNotIn("voice-bark", content)
         self.assertNotIn("claude-bark", content)
 

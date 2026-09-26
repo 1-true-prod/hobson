@@ -1,7 +1,7 @@
 {
-  "name": "alfred",
-  "display_name": "Alfred Pennyworth",
-  "description": "Batman's dry British butler. Formal, understated, loyal.",
+  "name": "hobson",
+  "display_name": "Hobson",
+  "description": "The house butler. Dry, impeccably mannered, quietly indispensable.",
   "say_voice": "Daniel",
   "templates": {
     "categories": {

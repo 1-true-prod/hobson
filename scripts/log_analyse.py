@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
-"""log_analyse.py — measure voice-quality defect rates from claudio.log.
+"""log_analyse.py — measure voice-quality defect rates from hobson.log.
 
 Reproduces the baseline numbers in plans/2026-08-19-coworker-voice-design.md
 so every rate is a command rather than a one-off.
 
     python3 scripts/log_analyse.py              # last 300 generations
     python3 scripts/log_analyse.py --n 1000
-    python3 scripts/log_analyse.py --project claudio
+    python3 scripts/log_analyse.py --project hobson
 """
 import argparse
 import os
@@ -18,7 +18,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import phrase_gen
 
-LOG = os.path.expanduser("~/.claude/claudio.log")
+LOG = os.path.expanduser("~/.claude/hobson.log")
 
 # Matches the old (untagged), new (project-tagged), and batched (commentary
 # batching, e.g. "batch of 5 (model, verbosity) -> ...") line formats.
@@ -33,9 +33,9 @@ GEN = re.compile(
 
 # Matches the "gen[...]" trace line generate_or_skip() writes for every
 # Ollama call -- the only place the model's *unrepaired* raw output survives.
-# e.g. [2026-09-22 15:00:13] [claudio] gen[PreToolUse] 0.59s attempt=1/1
+# e.g. [2026-09-22 15:00:13] [hobson] gen[PreToolUse] 0.59s attempt=1/1
 #      model=llama3.2:3b detail='...' raw='done | I fixed a Bash issue on
-#      claudio.' -> done ...
+#      hobson.' -> done ...
 # (older lines lack the date prefix -- see GEN above.)
 TRACE = re.compile(
     r"^\[(?:(\d{4}-\d{2}-\d{2}) )?(\d\d:\d\d:\d\d)\] (?:\[([^\]]+)\] )?gen\[(\w+)\] .*?"

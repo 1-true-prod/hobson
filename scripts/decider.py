@@ -1,4 +1,4 @@
-"""decider.py — the seam for claudio's optional remote decision model (Jev).
+"""decider.py — the seam for hobson's optional remote decision model (Jev).
 
 Jev is a non-generative classifier reached through OpenRouter's Decisions
 API. It answers one of three typed question shapes with a calibrated
@@ -54,9 +54,9 @@ is indistinguishable from working. Hence NoulResult.confidence is None.
 ## Key handling
 
 Read from the OPENROUTER_API_KEY environment variable, falling back to
-~/.claude/claudio.env parsed as simple KEY=value lines. Never read from, or
-written to, ~/.claude/claudio.json -- that file is printed verbatim by
-`claudio config show`. Never logged, in whole or in part.
+~/.claude/hobson.env parsed as simple KEY=value lines. Never read from, or
+written to, ~/.claude/hobson.json -- that file is printed verbatim by
+`hobson config show`. Never logged, in whole or in part.
 """
 
 import json
@@ -67,7 +67,7 @@ from urllib.request import Request, urlopen
 
 import engines.base as base
 
-ENV_FILE = os.path.expanduser("~/.claude/claudio.env")
+ENV_FILE = os.path.expanduser("~/.claude/hobson.env")
 
 # Set once the "no key" warning has been logged, so a standing condition is
 # reported once per process rather than on every decision.
@@ -87,9 +87,9 @@ NoulResult = namedtuple("NoulResult", ["probability", "confidence"])
 
 
 def _find_key():
-    """OPENROUTER_API_KEY from the environment, else ~/.claude/claudio.env.
+    """OPENROUTER_API_KEY from the environment, else ~/.claude/hobson.env.
 
-    Never reads claudio.json. Returns None, never an empty string, when no
+    Never reads hobson.json. Returns None, never an empty string, when no
     key is found.
     """
     key = os.environ.get("OPENROUTER_API_KEY")
@@ -113,7 +113,7 @@ def _find_key():
 def _decider_config(config):
     """Resolve the decider sub-config, defaulting anything the caller left out.
 
-    Accepts a full claudio config dict (as load_config() returns) or None,
+    Accepts a full hobson config dict (as load_config() returns) or None,
     in which case load_config() is called. Never mutates the config passed
     in -- load_config()'s DEFAULT_CONFIG is a shared object across calls.
     """
@@ -144,12 +144,12 @@ def _ask(question, decider_cfg):
     if not key:
         # Once per process, not once per question. A missing key is a
         # standing condition, not an event: repeating it on every decision
-        # would bury the log it shares with everything else claudio reports.
+        # would bury the log it shares with everything else hobson reports.
         global _warned_no_key
         if not _warned_no_key:
             _warned_no_key = True
             base.log("[decider] jev backend selected but no OPENROUTER_API_KEY "
-                     "found (checked env and claudio.env) -- falling back to "
+                     "found (checked env and hobson.env) -- falling back to "
                      "local for the rest of this process")
         return None
 
@@ -197,7 +197,7 @@ def _ask(question, decider_cfg):
 
     # The cost of this call, as the API reports it, goes in the log line so
     # spend to date is recoverable by summing the log -- no separate tally
-    # file to drift out of step with what actually happened. `claudio
+    # file to drift out of step with what actually happened. `hobson
     # monitor` reads it back out.
     usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
     cost = usage.get("cost")

@@ -1,6 +1,6 @@
 {
   "engine": "say",
-  "personality": "alfred",
+  "personality": "hobson",
   "events": ["stop", "permission", "notification"],
   "cooldown": 2.0,
   "volume": 3,

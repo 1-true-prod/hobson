@@ -8,7 +8,7 @@ Usage:
     <venv>/bin/python3 chatterbox_gen.py --device cpu
 
 Requires: chatterbox-tts, torch, torchaudio (in chatterbox venv)
-Reference audio: <repo>/models/alfred-reference.wav (or any supported format)
+Reference audio: <repo>/models/hobson-reference.wav (or any supported format)
 """
 
 import argparse
@@ -26,12 +26,13 @@ CACHE_DIR = os.path.expanduser("~/.claude/voice-cache-chatterbox")
 ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 
-def _find_reference_audio(personality="alfred"):
-    """Find reference audio matching engine lookup order: personality-specific, alfred, generic."""
+def _find_reference_audio(personality="hobson"):
+    """Find reference audio matching engine lookup order: personality-specific, hobson, generic."""
     search_names = []
-    if personality and personality != "alfred":
+    if personality and personality != "hobson":
         search_names.append(f"{personality}-reference")
-    search_names.append("alfred-reference")
+    search_names.append("hobson-reference")
+    search_names.append("alfred-reference")  # its name before 0.3.0
     search_names.append("reference")
     for name in search_names:
         for base_dir in [os.path.join(ROOT, "models"), os.path.expanduser("~/.claude/models")]:
@@ -39,11 +40,11 @@ def _find_reference_audio(personality="alfred"):
                 p = os.path.join(base_dir, f"{name}.{ext}")
                 if os.path.isfile(p):
                     return p
-    return os.path.join(ROOT, "models", "alfred-reference.wav")
+    return os.path.join(ROOT, "models", "hobson-reference.wav")
 
 
 _config = load_config()
-REFERENCE_AUDIO = _find_reference_audio(_config.get("personality", "alfred"))
+REFERENCE_AUDIO = _find_reference_audio(_config.get("personality", "hobson"))
 
 
 def cache_path_wav(text):
@@ -92,7 +93,7 @@ def main():
 
     if not os.path.isfile(REFERENCE_AUDIO):
         print(f"ERROR: Reference audio not found: {REFERENCE_AUDIO}", file=sys.stderr)
-        print("Place a 5-10s audio clip at models/alfred-reference.wav", file=sys.stderr)
+        print("Place a 5-10s audio clip at models/hobson-reference.wav", file=sys.stderr)
         sys.exit(1)
 
     os.makedirs(CACHE_DIR, exist_ok=True)

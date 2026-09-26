@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# claudio uninstaller
+# hobson uninstaller
 #
 #   ./uninstall.sh          Remove hooks, config and state; ask about caches,
 #                           venvs, the log, the API key file and the checkout
@@ -9,13 +9,15 @@ set -euo pipefail
 #
 # Other entries in settings.json are never touched, and settings.json is
 # backed up before it is changed. A checkout is deleted only when it is the
-# one the remote installer manages (~/.local/share/claudio, or CLAUDIO_DIR),
+# one the remote installer manages (~/.local/share/hobson, or HOBSON_DIR),
 # never a clone you made yourself.
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
-CLI_SYMLINK="$HOME/.local/bin/claudio"
-MANAGED_DIR="${CLAUDIO_DIR:-$HOME/.local/share/claudio}"
+CLI_SYMLINK="$HOME/.local/bin/hobson"
+MANAGED_DIR="${HOBSON_DIR:-$HOME/.local/share/hobson}"
+# A checkout `claudio update` kept updating in place still lives at the old path.
+[[ -z "${HOBSON_DIR:-}" && "$SCRIPT_DIR" == "$HOME/.local/share/claudio" ]] && MANAGED_DIR="$SCRIPT_DIR"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -46,8 +48,8 @@ PYTHON=python3
 command -v python3 &>/dev/null || PYTHON=/usr/bin/python3
 
 echo ""
-echo "claudio uninstaller"
-echo "==================="
+echo "Hobson uninstaller"
+echo "=================="
 echo ""
 
 # ── Stop daemons and detached nudges ─────────────────────────────────
@@ -68,7 +70,7 @@ for spec in "kokoro:19849" "pocket-tts:19850"; do
 done
 
 # A nudge or watchdog outlives the hook that started it; without this, one
-# already counting down would still speak after claudio is gone.
+# already counting down would still speak after hobson is gone.
 if pkill -f "$SCRIPT_DIR/scripts/nudge.py" 2>/dev/null; then
     ok "Stopped pending nudges"
 fi
@@ -83,6 +85,19 @@ ok "Hooks removed"
 
 shopt -s nullglob
 state=(
+    "$CLAUDE_DIR/hobson.json"
+    "$CLAUDE_DIR/hobson.muted"
+    "$CLAUDE_DIR/hobson.lock"
+    "$CLAUDE_DIR/hobson-commentary.lock"
+    "$CLAUDE_DIR"/hobson-nudge-*.lock
+    "$CLAUDE_DIR"/hobson-watchdog-*.lock
+    "$CLAUDE_DIR"/hobson-activity-*
+    "$CLAUDE_DIR"/hobson-alive-*
+    "$CLAUDE_DIR/kokoro-daemon.log"
+    "$CLAUDE_DIR/pocket-tts-daemon.log"
+    "$CLAUDE_DIR/kokoro-playback.wav"
+    "$CLAUDE_DIR/pocket-tts-playback.wav"
+    # Names from before 0.3.0, when Hobson was claudio
     "$CLAUDE_DIR/claudio.json"
     "$CLAUDE_DIR/claudio.muted"
     "$CLAUDE_DIR/claudio.lock"
@@ -91,10 +106,6 @@ state=(
     "$CLAUDE_DIR"/claudio-watchdog-*.lock
     "$CLAUDE_DIR"/claudio-activity-*
     "$CLAUDE_DIR"/claudio-alive-*
-    "$CLAUDE_DIR/kokoro-daemon.log"
-    "$CLAUDE_DIR/pocket-tts-daemon.log"
-    "$CLAUDE_DIR/kokoro-playback.wav"
-    "$CLAUDE_DIR/pocket-tts-playback.wav"
     # Legacy names from claude-bark installs
     "$CLAUDE_DIR/claude-bark.json"
     "$CLAUDE_DIR/voice-bark.muted"
@@ -109,10 +120,12 @@ for f in "${state[@]}"; do
         removed=$((removed + 1))
     fi
 done
-if [[ -d "$CLAUDE_DIR/claudio-sessions" ]]; then
-    rm -rf "$CLAUDE_DIR/claudio-sessions"
-    removed=$((removed + 1))
-fi
+for dir in "$CLAUDE_DIR/hobson-sessions" "$CLAUDE_DIR/claudio-sessions"; do
+    if [[ -d "$dir" ]]; then
+        rm -rf "$dir"
+        removed=$((removed + 1))
+    fi
+done
 ok "Removed config and state ($removed items)"
 
 # ── Optional: caches, venvs, log, key ────────────────────────────────
@@ -138,20 +151,21 @@ if [[ -d "$SCRIPT_DIR/venvs" && "$SCRIPT_DIR" != "$MANAGED_DIR" ]]; then
     fi
 fi
 
-if [[ -f "$CLAUDE_DIR/claudio.log" ]] && ask "Remove the log ($CLAUDE_DIR/claudio.log)?"; then
-    rm -f "$CLAUDE_DIR/claudio.log"
+if [[ -f "$CLAUDE_DIR/hobson.log" ]] && ask "Remove the log ($CLAUDE_DIR/hobson.log)?"; then
+    rm -f "$CLAUDE_DIR/hobson.log"
     ok "Log removed"
 fi
 
-if [[ -f "$CLAUDE_DIR/claudio.env" ]] && ask "Remove $CLAUDE_DIR/claudio.env (your OpenRouter key for Jev)?"; then
-    rm -f "$CLAUDE_DIR/claudio.env"
+if [[ -f "$CLAUDE_DIR/hobson.env" ]] && ask "Remove $CLAUDE_DIR/hobson.env (your OpenRouter key for Jev)?"; then
+    rm -f "$CLAUDE_DIR/hobson.env"
     ok "Key file removed"
 fi
 
 # ── CLI symlinks ─────────────────────────────────────────────────────
 
-for link in "$CLI_SYMLINK" "$HOME/.local/bin/claude-bark"; do
-    if [[ -L "$link" ]]; then
+for link in "$CLI_SYMLINK" "$HOME/.local/bin/claudio" "$HOME/.local/bin/claude-bark"; do
+    # Only links into a checkout of ours: another tool ships a `claudio` too.
+    if [[ -L "$link" && -f "$(dirname "$(readlink "$link")")/scripts/settings-merge.py" ]]; then
         rm -f "$link"
         ok "Removed $link"
     fi
@@ -161,7 +175,7 @@ done
 
 echo ""
 if [[ "$SCRIPT_DIR" == "$MANAGED_DIR" ]]; then
-    if ask "Delete the claudio checkout at $SCRIPT_DIR (including venvs and models)?"; then
+    if ask "Delete the Hobson checkout at $SCRIPT_DIR (including venvs and models)?"; then
         # Last step: this script is being read from inside that directory.
         rm -rf "$SCRIPT_DIR"
         ok "Removed $SCRIPT_DIR"
@@ -172,5 +186,5 @@ else
     echo "  The checkout at $SCRIPT_DIR was left in place (not installer-managed)."
 fi
 
-ok "claudio uninstalled. Running Claude Code sessions keep their hooks until restarted."
+ok "Hobson uninstalled. Running Claude Code sessions keep their hooks until restarted."
 echo ""
