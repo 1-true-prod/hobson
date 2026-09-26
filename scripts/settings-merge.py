@@ -182,7 +182,7 @@ def merge_hooks(install_dir, python=DEFAULT_PYTHON):
     before = json.dumps(settings, sort_keys=True)
 
     if _drop_say_permission(settings):
-        print(f"  Removed permission {PERMISSION_ENTRY} (added by older hobson installs)")
+        print(f"  Removed permission {PERMISSION_ENTRY} (added by older claudio installs)")
 
     # Merge hooks
     hooks = _hooks_of(settings)
@@ -323,7 +323,7 @@ def check_hooks():
         # without a word; this is the only place it can be seen.
         print(f"interpreter missing: {', '.join(sorted(gone))}")
     if missing or stale or gone:
-        print("fix: re-run settings-merge.py (it replaces hobson's hooks in place)")
+        print("fix: re-run the installer, or: hobson update (it replaces Hobson's hooks in place)")
         return False
     return True
 
