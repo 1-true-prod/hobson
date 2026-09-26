@@ -1,0 +1,42 @@
+{
+  "silent-butler": {
+    "display_name": "Silent Butler",
+    "description": "Alfred speaks only when tasks finish. Minimal, refined.",
+    "config": {
+      "engine": "kokoro-realtime",
+      "personality": "alfred",
+      "events": ["stop"]
+    }
+  },
+  "chatty-butler": {
+    "display_name": "Chatty Butler",
+    "description": "Alfred comments on everything. Full running commentary.",
+    "config": {
+      "engine": "kokoro-realtime",
+      "personality": "alfred",
+      "events": ["stop", "permission", "notification", "commentary"],
+      "commentary": {
+        "cooldown": 6.0,
+        "tools": ["Agent", "Edit", "Write", "Bash", "Read", "Grep"]
+      }
+    }
+  },
+  "quick-beep": {
+    "display_name": "Quick Beep",
+    "description": "Minimal voice, macOS say. Just the essentials.",
+    "config": {
+      "engine": "say",
+      "personality": "minimal",
+      "events": ["stop", "permission"]
+    }
+  },
+  "pirate-ship": {
+    "display_name": "Pirate Ship",
+    "description": "AI-generated pirate commentary on your code.",
+    "config": {
+      "engine": "kokoro-realtime",
+      "personality": "pirate",
+      "events": ["stop", "permission", "commentary"]
+    }
+  }
+}

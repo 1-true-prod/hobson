@@ -1,0 +1,86 @@
+{
+  "name": "minimal",
+  "display_name": "Minimal",
+  "description": "Terse, no-nonsense notifications. Quick and quiet.",
+  "say_voice": "Samantha",
+  "templates": {
+    "categories": {
+      "done": {
+        "lead": [
+          "Done.",
+          "Finished.",
+          "Complete.",
+          "All done.",
+          "Wrapped up."
+        ],
+        "tail": [
+          "Ready for you.",
+          "Good to go.",
+          "All clear.",
+          "No issues.",
+          "Checks out."
+        ]
+      },
+      "broken": {
+        "lead": [
+          "Error.",
+          "Failed.",
+          "Problem.",
+          "Issue found.",
+          "Trouble."
+        ],
+        "tail": [
+          "Needs attention.",
+          "Take a look.",
+          "Something broke.",
+          "Check the output.",
+          "Not right."
+        ]
+      },
+      "question": {
+        "lead": [
+          "Question.",
+          "Input needed.",
+          "Your call.",
+          "Heads up.",
+          "Decision time."
+        ],
+        "tail": [
+          "Waiting on you.",
+          "What do you think?",
+          "Over to you.",
+          "Need your input.",
+          "Pick one."
+        ]
+      }
+    },
+    "permission_leads": [
+      "Permission needed.",
+      "Requesting access.",
+      "Need approval."
+    ],
+    "permission_actions": [
+      "Allow {tool}?",
+      "{tool} access requested.",
+      "Approve {tool}?"
+    ],
+    "notification_templates": [
+      "You're needed.",
+      "Attention please.",
+      "Claude is waiting.",
+      "Check in when ready.",
+      "Notification."
+    ],
+    "generic_permission_phrases": [
+      "Permission needed. Approve?",
+      "Requesting access. Go ahead?",
+      "Need approval to continue.",
+      "Standing by for the go-ahead.",
+      "Waiting for permission."
+    ],
+    "common_tools": [
+      "Bash", "WebFetch", "Edit", "WebSearch",
+      "AskUserQuestion", "Write", "ExitPlanMode", "Read"
+    ]
+  }
+}

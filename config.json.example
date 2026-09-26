@@ -1,0 +1,26 @@
+{
+  "engine": "say",
+  "personality": "alfred",
+  "events": ["stop", "permission", "notification"],
+  "cooldown": 2.0,
+  "volume": 3,
+  "muted": false,
+  "ollama": {
+    "model": "llama3.2:3b",
+    "url": "http://localhost:11434"
+  },
+  "kokoro": {
+    "voice": "am_puck",
+    "speed": 1.1,
+    "daemon_port": 19849,
+    "daemon_idle_timeout": 600
+  },
+  "chatterbox": {
+    "device": "mps",
+    "exaggeration": 1.0
+  },
+  "commentary": {
+    "cooldown": 8.0,
+    "tools": ["Agent", "Edit", "Write", "Bash"]
+  }
+}

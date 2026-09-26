@@ -1,0 +1,103 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+# A run step with no shell key gets `bash -e`, without pipefail, so a failing
+# command piped into tee would pass. `shell: bash` adds -o pipefail.
+defaults:
+  run:
+    shell: bash
+
+jobs:
+  test:
+    name: pytest (${{ matrix.name }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          # The interpreter a stock Mac has. The hooks must run on it.
+          - name: system python
+            python: /usr/bin/python3
+          - name: python 3.13
+            python: "3.13"
+    steps:
+      - uses: actions/checkout@v4
+      - if: matrix.python != '/usr/bin/python3'
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Run the suite
+        run: |
+          py="${{ matrix.python }}"
+          [[ "$py" == /* ]] || py=python
+          "$py" -m venv "$RUNNER_TEMP/venv"
+          "$RUNNER_TEMP/venv/bin/python" -V
+          "$RUNNER_TEMP/venv/bin/pip" install -q -r requirements-dev.txt
+          "$RUNNER_TEMP/venv/bin/python" -m pytest tests/ -q
+
+  install:
+    name: install lifecycle (${{ matrix.shell }})
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # macOS ships bash 3.2; Homebrew's bash 5 treats a failing (( )) as an
+        # error under set -e, which is how the pickers and doctor once broke.
+        shell: [/bin/bash, homebrew-bash]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Put the shell under test first on PATH
+        run: |
+          mkdir -p "$RUNNER_TEMP/bin"
+          if [[ "${{ matrix.shell }}" == homebrew-bash ]]; then
+            brew install bash >/dev/null
+            ln -s "$(brew --prefix)/bin/bash" "$RUNNER_TEMP/bin/bash"
+          else
+            ln -s /bin/bash "$RUNNER_TEMP/bin/bash"
+          fi
+          echo "$RUNNER_TEMP/bin" >> "$GITHUB_PATH"
+      - name: shellcheck
+        if: matrix.shell == '/bin/bash'
+        run: |
+          brew install shellcheck >/dev/null
+          shellcheck -S warning install.sh install-remote.sh uninstall.sh claudio
+      - name: curl | bash into a scratch HOME, with someone else's hook already there
+        run: |
+          bash --version | head -1
+          git branch -f ci-under-test HEAD
+          export HOME="$RUNNER_TEMP/home"
+          mkdir -p "$HOME/.claude"
+          echo '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo other-tool"}]}]}}' \
+            > "$HOME/.claude/settings.json"
+          export CLAUDIO_REPO="file://$GITHUB_WORKSPACE" CLAUDIO_REF=ci-under-test
+          bash < install-remote.sh
+          python3 "$HOME/.local/share/claudio/scripts/settings-merge.py" --check
+          grep -q other-tool "$HOME/.claude/settings.json"
+          # A re-run is an update: settings kept, hooks already current.
+          bash < install-remote.sh | tee "$RUNNER_TEMP/rerun.txt"
+          grep -q "already current" "$RUNNER_TEMP/rerun.txt"
+          # claudio update, pulling more commits than fit a `| head`: that
+          # pipe once SIGPIPEd under pipefail and the hooks never refreshed.
+          git config --global user.email ci@example.com
+          git config --global user.name ci
+          for i in $(seq 1 20); do git commit -q --allow-empty -m "upstream $i"; done
+          git branch -f ci-under-test HEAD
+          "$HOME/.local/bin/claudio" update | tee "$RUNNER_TEMP/update.txt"
+          grep -q "upstream 20" "$RUNNER_TEMP/update.txt"
+          grep -q "claudio is up to date" "$RUNNER_TEMP/update.txt"
+          test "$(git -C "$HOME/.local/share/claudio" rev-parse HEAD)" = "$(git rev-parse HEAD)"
+          "$HOME/.local/bin/claudio" doctor
+          "$HOME/.local/bin/claudio" uninstall --yes
+          # Not `! grep`: set -e ignores a negated command, so it could never fail.
+          if grep -q claudio "$HOME/.claude/settings.json"; then
+            echo "claudio hooks survived uninstall"; exit 1
+          fi
+          grep -q other-tool "$HOME/.claude/settings.json"
+          test ! -e "$HOME/.local/share/claudio"

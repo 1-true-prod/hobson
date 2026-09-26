@@ -1,0 +1,289 @@
+"""decider.py — the seam for claudio's optional remote decision model (Jev).
+
+Jev is a non-generative classifier reached through OpenRouter's Decisions
+API. It answers one of three typed question shapes with a calibrated
+probability, instead of generating text. This module exposes those three
+shapes -- choice(), score(), noul() -- and dispatches on
+config["decider"]["backend"]:
+
+  - "local" (the default): return None, i.e. "no opinion". Callers keep
+    whatever local heuristic they already have. This module never
+    reimplements that heuristic (e.g. Ollama classification) itself.
+  - "jev": make the HTTP call below.
+
+Two questions are asked today. phrase_gen._p_restates: does this phrase
+restate one just spoken? (releases a phrase the near-duplicate guard
+rejected, or blocks commentary it missed as reworded). And
+risk.remote_destructive_probability: is this shell command destructive?
+(only for a Bash permission request the local rules cannot place, and only
+ever on the command as risk.redact() leaves it). With the default config
+this module makes zero network calls.
+
+Fails closed, always. Every failure path -- no key, timeout, URLError,
+non-200, unparseable body, a response shape that doesn't match what we
+expect -- logs one line and returns None so the caller falls back to its own
+local result. This must never raise into a caller: a hook that hangs or
+crashes is far worse than one that stays quiet.
+
+## Wire format (confirmed against the live API, 2026-09-22)
+
+    POST https://openrouter.ai/api/alpha/decisions
+    Authorization: Bearer $OPENROUTER_API_KEY
+
+    {"model": "typesafe/jev-1.13", "state": "<context>",
+     "questions": {"answer": {"type": ..., "instructions": ..., "criteria": ...}}}
+
+`instructions` is required on every question. `criteria` is a record
+{key: description} for choice, an array of ordered levels for score, and
+absent for noul (whose `instructions` is the yes/no statement itself).
+
+Responses key the per-question result by the question name, and the value
+by the question TYPE, not by "answer":
+
+    noul   -> {"type": "noul",   "noul": 0.27}
+    choice -> {"type": "choice", "choice": "progress",
+               "probabilities": {...}, "confidence": 0.66}
+    score  -> {"type": "score",  "score": 0.98, "legend": {"0": ...},
+               "probabilities": {...}, "confidence": 0.96}
+
+Note noul carries NO confidence field -- only choice and score do. An
+earlier version of this module required confidence on all three, which
+made every noul call fail parsing and fall back to local silently, which
+is indistinguishable from working. Hence NoulResult.confidence is None.
+
+## Key handling
+
+Read from the OPENROUTER_API_KEY environment variable, falling back to
+~/.claude/claudio.env parsed as simple KEY=value lines. Never read from, or
+written to, ~/.claude/claudio.json -- that file is printed verbatim by
+`claudio config show`. Never logged, in whole or in part.
+"""
+
+import json
+import os
+from collections import namedtuple
+from urllib.error import URLError
+from urllib.request import Request, urlopen
+
+import engines.base as base
+
+ENV_FILE = os.path.expanduser("~/.claude/claudio.env")
+
+# Set once the "no key" warning has been logged, so a standing condition is
+# reported once per process rather than on every decision.
+_warned_no_key = False
+
+DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
+DEFAULT_MODEL = "typesafe/jev-1.13"
+DEFAULT_TIMEOUT_MS = 2000
+
+# Three result shapes mirroring Jev's three question types. `None` (not one
+# of these) is how every function spells "no opinion" -- local backend, or
+# any failure at all.
+ChoiceResult = namedtuple("ChoiceResult", ["choice", "probs", "confidence"])
+ScoreResult = namedtuple("ScoreResult", ["score", "legend", "probs", "confidence"])
+# noul returns no confidence -- see the wire-format note above.
+NoulResult = namedtuple("NoulResult", ["probability", "confidence"])
+
+
+def _find_key():
+    """OPENROUTER_API_KEY from the environment, else ~/.claude/claudio.env.
+
+    Never reads claudio.json. Returns None, never an empty string, when no
+    key is found.
+    """
+    key = os.environ.get("OPENROUTER_API_KEY")
+    if key:
+        return key
+    try:
+        with open(ENV_FILE, encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == "OPENROUTER_API_KEY":
+                    v = v.strip().strip('"').strip("'")
+                    return v or None
+    except OSError:
+        pass
+    return None
+
+
+def _decider_config(config):
+    """Resolve the decider sub-config, defaulting anything the caller left out.
+
+    Accepts a full claudio config dict (as load_config() returns) or None,
+    in which case load_config() is called. Never mutates the config passed
+    in -- load_config()'s DEFAULT_CONFIG is a shared object across calls.
+    """
+    config = config if config is not None else base.load_config()
+    decider_cfg = config.get("decider") or {}
+    return {
+        "backend": decider_cfg.get("backend", "local"),
+        "model": decider_cfg.get("model", DEFAULT_MODEL),
+        "timeout_ms": decider_cfg.get("timeout_ms", DEFAULT_TIMEOUT_MS),
+        "endpoint": decider_cfg.get("endpoint", DEFAULT_ENDPOINT),
+    }
+
+
+def _ask(question, decider_cfg):
+    """POST one question to the Decisions API.
+
+    `question` is the body of a single entry in the "questions" dict (e.g.
+    {"type": "choice", "options": [...]}) plus a "state" key already mixed
+    in by the caller. Returns the parsed per-question answer dict on
+    success, or None on any failure -- already logged, never raised.
+
+    Never logs the key. Never logs the state text -- it is whatever the
+    caller chose to send, and the log is not the place to keep a copy; only
+    the question type, model and cost are logged.
+    """
+    state = question.pop("state")
+    key = _find_key()
+    if not key:
+        # Once per process, not once per question. A missing key is a
+        # standing condition, not an event: repeating it on every decision
+        # would bury the log it shares with everything else claudio reports.
+        global _warned_no_key
+        if not _warned_no_key:
+            _warned_no_key = True
+            base.log("[decider] jev backend selected but no OPENROUTER_API_KEY "
+                     "found (checked env and claudio.env) -- falling back to "
+                     "local for the rest of this process")
+        return None
+
+    payload = {
+        "model": decider_cfg["model"],
+        "state": state,
+        "questions": {"answer": question},
+    }
+    req = Request(
+        decider_cfg["endpoint"],
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Content-Type": "application/json",
+            "Authorization": f"Bearer {key}",
+        },
+    )
+    timeout = decider_cfg["timeout_ms"] / 1000.0
+
+    try:
+        with urlopen(req, timeout=timeout) as resp:
+            body = json.loads(resp.read())
+    except (URLError, OSError) as exc:
+        base.log(f"[decider] request failed ({decider_cfg['model']}, "
+                  f"type={question.get('type')}): {type(exc).__name__}")
+        return None
+    except json.JSONDecodeError:
+        base.log(f"[decider] response body was not valid JSON ({decider_cfg['model']})")
+        return None
+
+    if not isinstance(body, dict):
+        base.log("[decider] response was not a JSON object")
+        return None
+
+    answers = body.get("answers")
+    if not isinstance(answers, dict):
+        answers = body.get("results")
+    if not isinstance(answers, dict):
+        base.log("[decider] response missing an 'answers'/'results' object")
+        return None
+
+    answer = answers.get("answer")
+    if not isinstance(answer, dict):
+        base.log("[decider] response missing the 'answer' question's result")
+        return None
+
+    # The cost of this call, as the API reports it, goes in the log line so
+    # spend to date is recoverable by summing the log -- no separate tally
+    # file to drift out of step with what actually happened. `claudio
+    # monitor` reads it back out.
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    cost = usage.get("cost")
+    cost_note = ""
+    if isinstance(cost, (int, float)):
+        cost_note = f" cost=${cost:.6f}"
+    base.log(f"[decider] asked type={question.get('type')} model={decider_cfg['model']} "
+             f"-> confidence={answer.get('confidence')!r}{cost_note}")
+    return answer
+
+
+def _probs(answer):
+    """Per-option probabilities. Absent on noul, present on choice/score."""
+    return dict(answer.get("probabilities") or {})
+
+
+def choice(state, instructions, criteria, config=None):
+    """Ask Jev to pick one key of `criteria` (a {key: description} record).
+
+    Returns a ChoiceResult, or None -- for backend "local" (always), or for
+    backend "jev" on any failure or malformed response. Callers must treat
+    None as "no opinion" and fall back to their own heuristic.
+    """
+    decider_cfg = _decider_config(config)
+    if decider_cfg["backend"] != "jev":
+        return None
+
+    answer = _ask({"state": state, "type": "choice",
+                   "instructions": instructions,
+                   "criteria": dict(criteria)}, decider_cfg)
+    if answer is None:
+        return None
+    try:
+        chosen = answer["choice"]
+        confidence = float(answer["confidence"])
+    except (KeyError, TypeError, ValueError):
+        base.log("[decider] malformed choice response")
+        return None
+    return ChoiceResult(choice=chosen, probs=_probs(answer), confidence=confidence)
+
+
+def score(state, instructions, criteria, config=None):
+    """Ask Jev to place `state` on `criteria` (an ordered list of levels).
+
+    `score` comes back as a fractional position across those levels, with a
+    `legend` mapping index -> label. Returns a ScoreResult, or None -- see
+    choice() for when.
+    """
+    decider_cfg = _decider_config(config)
+    if decider_cfg["backend"] != "jev":
+        return None
+
+    answer = _ask({"state": state, "type": "score",
+                   "instructions": instructions,
+                   "criteria": list(criteria)}, decider_cfg)
+    if answer is None:
+        return None
+    try:
+        position = float(answer["score"])
+        confidence = float(answer["confidence"])
+    except (KeyError, TypeError, ValueError):
+        base.log("[decider] malformed score response")
+        return None
+    return ScoreResult(score=position, legend=dict(answer.get("legend") or {}),
+                       probs=_probs(answer), confidence=confidence)
+
+
+def noul(state, instructions, config=None):
+    """Ask Jev a yes/no question: `instructions` is the statement to judge.
+
+    Returns a NoulResult whose .probability is P(true). **confidence is
+    always None** -- the API does not return one for this question type, and
+    requiring it here is what made an earlier version of this module fall
+    back to local on every single call while looking like it worked.
+    """
+    decider_cfg = _decider_config(config)
+    if decider_cfg["backend"] != "jev":
+        return None
+
+    answer = _ask({"state": state, "type": "noul",
+                   "instructions": instructions}, decider_cfg)
+    if answer is None:
+        return None
+    try:
+        probability = float(answer["noul"])
+    except (KeyError, TypeError, ValueError):
+        base.log("[decider] malformed noul response")
+        return None
+    return NoulResult(probability=probability, confidence=None)

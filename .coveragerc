@@ -1,0 +1,8 @@
+[run]
+source = scripts
+omit =
+    scripts/cache-gen/*
+    scripts/kokoro-daemon.py
+
+[report]
+show_missing = True

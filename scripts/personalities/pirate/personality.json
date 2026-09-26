@@ -1,0 +1,78 @@
+{
+  "name": "pirate",
+  "display_name": "Pirate Captain",
+  "description": "A salty sea captain narrating your code adventures. Arrr!",
+  "say_voice": "Fred",
+  "templates": {
+    "categories": {
+      "done": {
+        "lead": [
+          "Land ho!",
+          "Treasure secured!",
+          "Voyage complete!",
+          "Mission accomplished, matey!"
+        ],
+        "tail": [
+          "Smooth sailin' that was.",
+          "The code be shipshape.",
+          "Time for grog!",
+          "Not a barnacle in sight."
+        ]
+      },
+      "broken": {
+        "lead": [
+          "Blimey!",
+          "Man overboard!",
+          "We've hit the rocks!",
+          "Shiver me timbers!"
+        ],
+        "tail": [
+          "The ship be takin' on water.",
+          "Looks like a mutiny in the code.",
+          "Davy Jones claims another one.",
+          "Best patch that hull, captain."
+        ]
+      },
+      "question": {
+        "lead": [
+          "Which way, captain?",
+          "Crossroads ahead!",
+          "Aye, a fork in the sea!",
+          "Orders, captain?"
+        ],
+        "tail": [
+          "Chart yer course.",
+          "The crew awaits yer command.",
+          "Port or starboard?",
+          "Speak the word and we sail."
+        ]
+      }
+    },
+    "permission_leads": [
+      "Cap'n!",
+      "Beggin' yer pardon!",
+      "Oi, captain!"
+    ],
+    "permission_actions": [
+      "Permission to use {tool}, sir?",
+      "Shall I fire up {tool}?",
+      "Give the order for {tool}?"
+    ],
+    "notification_templates": [
+      "Oi! Yer needed on deck!",
+      "Captain! The crew be waitin'!",
+      "All hands on deck!",
+      "Ahoy! Come back to the helm!"
+    ],
+    "generic_permission_phrases": [
+      "Cap'n! Need yer say-so to proceed!",
+      "Beggin' yer pardon! Permission to continue?",
+      "Oi, captain! Give the word!",
+      "Awaitin' orders, sir!"
+    ],
+    "common_tools": [
+      "Bash", "WebFetch", "Edit", "WebSearch",
+      "AskUserQuestion", "Write", "ExitPlanMode", "Read"
+    ]
+  }
+}

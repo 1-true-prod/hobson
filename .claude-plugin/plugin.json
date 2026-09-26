@@ -1,0 +1,9 @@
+{
+  "name": "claudio",
+  "version": "0.2.0",
+  "description": "Context-aware voice notifications for Claude Code. Speaks when Claude stops, asks permission, or sends a notification — with four TTS engines and personality-driven phrases.",
+  "repository": "https://github.com/1-true-prod/claudio",
+  "license": "MIT",
+  "keywords": ["voice", "tts", "notifications", "hooks", "accessibility"],
+  "hooks": "../hooks/hooks.json"
+}

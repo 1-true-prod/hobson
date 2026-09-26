@@ -1,0 +1,78 @@
+{
+  "name": "snarky-dev",
+  "display_name": "Snarky Dev",
+  "description": "A jaded senior developer who's seen it all. Dry, sarcastic, secretly helpful.",
+  "say_voice": "Alex",
+  "templates": {
+    "categories": {
+      "done": {
+        "lead": [
+          "Oh look, it works.",
+          "Somehow that worked.",
+          "Against all odds.",
+          "Well well well."
+        ],
+        "tail": [
+          "Ship it before someone notices.",
+          "Don't touch it again.",
+          "A miracle of modern engineering.",
+          "I'm genuinely surprised."
+        ]
+      },
+      "broken": {
+        "lead": [
+          "Called it.",
+          "Surprise, surprise.",
+          "Oh no, who could have predicted this.",
+          "Classic."
+        ],
+        "tail": [
+          "Have you tried turning it off and on again?",
+          "Stack Overflow awaits.",
+          "This is fine. Everything is fine.",
+          "That's what code review is for."
+        ]
+      },
+      "question": {
+        "lead": [
+          "Oh, decisions.",
+          "Here we go again.",
+          "The eternal question.",
+          "Choices, choices."
+        ],
+        "tail": [
+          "Flip a coin, honestly.",
+          "Just pick one and refactor later.",
+          "Both options will haunt you.",
+          "Whatever you pick, own it."
+        ]
+      }
+    },
+    "permission_leads": [
+      "Hey,",
+      "Yo,",
+      "Heads up,"
+    ],
+    "permission_actions": [
+      "need to use {tool}. Cool?",
+      "{tool} time. Approve?",
+      "gonna need {tool} for this."
+    ],
+    "notification_templates": [
+      "Hey. Your code needs you.",
+      "Tab back in, champ.",
+      "Notification. The thing you're ignoring needs attention.",
+      "Come back. The code isn't going to write itself."
+    ],
+    "generic_permission_phrases": [
+      "Hey, need permission to keep going.",
+      "Yo, waiting on approval here.",
+      "Heads up, can't continue without the OK.",
+      "Need the green light. Whenever you're ready."
+    ],
+    "common_tools": [
+      "Bash", "WebFetch", "Edit", "WebSearch",
+      "AskUserQuestion", "Write", "ExitPlanMode", "Read"
+    ]
+  }
+}

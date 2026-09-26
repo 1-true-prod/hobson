@@ -1,0 +1,118 @@
+{
+  "name": "alfred",
+  "display_name": "Alfred Pennyworth",
+  "description": "Batman's dry British butler. Formal, understated, loyal.",
+  "say_voice": "Daniel",
+  "templates": {
+    "categories": {
+      "done": {
+        "lead": [
+          "All sorted, sir.",
+          "Done and dusted.",
+          "Task complete.",
+          "Handled, sir.",
+          "Consider it done.",
+          "Right. Finished."
+        ],
+        "tail": [
+          "Tidied up nicely.",
+          "Hardly broke a sweat.",
+          "Crisis averted.",
+          "Clean as a whistle.",
+          "Kettle on, sir?",
+          "No loose ends.",
+          "House is in order.",
+          "Textbook, if I say so.",
+          "Meets your standards, I trust.",
+          "Another one for the books."
+        ]
+      },
+      "broken": {
+        "lead": [
+          "Bit of bad news.",
+          "That didn't go to plan.",
+          "I regret to inform you.",
+          "We have a situation.",
+          "Oh dear.",
+          "Well then."
+        ],
+        "tail": [
+          "Gone pear-shaped, I'm afraid.",
+          "Do have a look, sir.",
+          "Not pretty, this one.",
+          "Worse than expected.",
+          "Regroup over tea, perhaps?",
+          "Fell apart rather spectacularly.",
+          "I did try to warn you.",
+          "A proper shambles, sir.",
+          "Not ideal. Not ideal at all.",
+          "Stiff upper lip, sir."
+        ]
+      },
+      "question": {
+        "lead": [
+          "Decision time, sir.",
+          "Your guidance, please.",
+          "If you'd weigh in.",
+          "Your call, sir.",
+          "Input needed.",
+          "Fork in the road."
+        ],
+        "tail": [
+          "I shan't presume to choose.",
+          "Ball's in your court.",
+          "Which way, sir?",
+          "Point me and I'll march.",
+          "Whenever you're ready.",
+          "You steer, I'll drive.",
+          "Over to you, sir.",
+          "Thinking cap on, sir?",
+          "I merely execute.",
+          "The cape is yours, sir."
+        ]
+      }
+    },
+    "permission_leads": [
+      "Pardon me, sir.",
+      "If I may.",
+      "A moment, sir.",
+      "Sorry to interrupt.",
+      "With your leave."
+    ],
+    "permission_actions": [
+      "Your approval for {tool}, please.",
+      "Might I use {tool}?",
+      "I'll need the nod for {tool}.",
+      "Say the word for {tool}.",
+      "Sign off on {tool}, if you would.",
+      "{tool} awaits your blessing.",
+      "May I proceed with {tool}?",
+      "Green light for {tool}, sir?"
+    ],
+    "notification_templates": [
+      "Sir. The terminal requires you.",
+      "Your attention, please. Claude is waiting.",
+      "Hate to nag, sir. You're needed.",
+      "The terminal awaits, sir.",
+      "Sir. You're up.",
+      "Claude needs you. At your convenience.",
+      "A matter requiring your touch, sir."
+    ],
+    "generic_permission_phrases": [
+      "Pardon me, sir. I need your go-ahead.",
+      "If I may. Your approval is needed.",
+      "A moment, sir. Permission required.",
+      "Sorry to interrupt. Awaiting your blessing.",
+      "With your leave. I need the green light.",
+      "Pardon me, sir. Standing by for your call.",
+      "If I may. Say the word and I'll proceed.",
+      "A moment, sir. Your sign-off, please.",
+      "Sorry to interrupt. Need clearance to continue.",
+      "With your leave. Waiting on the nod, sir."
+    ],
+    "common_tools": [
+      "Bash", "WebFetch", "Edit", "WebSearch",
+      "AskUserQuestion", "Write", "ExitPlanMode", "Read"
+    ]
+  }
+}
