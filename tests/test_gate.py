@@ -119,7 +119,7 @@ def test_below_the_bar_is_held_back_without_ollama(claude_home, no_audio, asked,
 
 
 def test_a_held_back_batch_is_consumed(claude_home, no_audio, asked, generated):
-    from engines.base import derive_project_label
+    from home import derive_project_label
     asked.p = 0.2
     _engine().run(dict(_BASH))
     state = ss.load_session(derive_project_label())
@@ -155,7 +155,7 @@ def test_chatty_and_anomaly_never_ask(verbosity, claude_home, no_audio, asked, g
 
 def test_a_queued_call_asks_nobody(claude_home, no_audio, asked, generated):
     """The decider is asked once per flush, never per tool call."""
-    from engines.base import derive_project_label
+    from home import derive_project_label
     eng = _engine(min_tool_calls=5)
     st = ss.load_session(derive_project_label())
     st["last_voiced_time"] = st["last_flush_time"] = time.time()

@@ -1,5 +1,66 @@
 # Changelog
 
+## Unreleased
+
+### New
+
+- **Presence: Hobson knows whether anyone is listening.** A small Swift helper reads the
+  keyboard, screen lock, display sleep and calls (a known call app capturing the microphone), and
+  takes a two-second look through the camera only when he is about to speak to an idle desk. Away
+  or on a call, what he would say is held; when you are back you hear one briefing, most urgent
+  first, and nothing if nothing happened. Lock the screen while a session waits on you and he says
+  so on your way out. With company in frame, a wait is announced without its details. A nudge
+  waits for you rather than spending its three tries on an empty room; the watchdog's line is held.
+  On by default; `hobson presence off` turns it off, `hobson presence mode` picks the camera use
+  (`signals`, `auto`, `continuous`), and anything it cannot tell leaves Hobson as he was
+- **Hobson notices you come and go**: a farewell when you leave, and on your return the briefing
+  or "Welcome back. All quiet for the last 20 minutes." Guarded: no greeting after under 20
+  seconds away, one farewell per five minutes, never the same line twice running.
+  `hobson presence greetings off` keeps him to news only. In `continuous` mode the camera sees
+  you walk away; otherwise leaving is a screen lock
+- **The phone switch**: `hobson presence phone auto` makes an Android phone the camera's switch,
+  read over adb. Face up the camera may be used, face down it is off, and Hobson says which. A
+  phone that cannot be read counts as face down
+- `hobson presence`, and presence in `hobson status`, `hobson doctor` and `hobson monitor`
+- `hobson presence preview on`: a floating window with the camera feed, a box around each face,
+  and the state the sensor reads from them
+- **Wave at Hobson** (`continuous` mode): a raised hand swung side to side, with your face in view,
+  gets an answer — the briefing if anything is waiting, otherwise a hello
+- Only a human face counts as a person: bodies and anything else that moves never trigger an
+  arrival, a departure, company or a wave. No face and no keystroke for 30 seconds is away
+
+### Fixes
+
+- `hobson recap` speaks again. Since the log started carrying dates it found no activity at all;
+  it now reads dated lines, and says each phrase once rather than three times
+- Hooks that overlap no longer lose each other's session state. A commentary flush or a Stop saved
+  the copy it loaded before calling Ollama, discarding tool calls queued, phrases spoken and turns
+  classified meanwhile; with eight hooks writing at once, 79 of 200 writes went missing. Session
+  state is now written in short locked transactions, atomically
+- A config file that is not a JSON object falls back to the defaults instead of stopping every hook
+- `hobson recap` reads phrases with an apostrophe. A phrase is logged as its `repr()`, which puts
+  "I'm …" in double quotes, and recap read single quotes only: it missed 53% of everything spoken
+  and summarised the batch descriptions instead
+- `hobson stats` counted any line containing the word "barked" as spoken, including a trace that
+  quoted it; it now counts played phrases only
+- A log message with a line break (a Bash command with no description) is written on one line.
+  It used to spill onto lines no reader could place; those are now read back as part of their line
+- `log_analyse.py` says it cannot read a missing log instead of raising
+
+### Changes
+
+- **say and chatterbox read a Stop the way the realtime engines do**: the same condensed last
+  message for "waiting on you" and "still working", and a "broken" whose last message names no
+  failure counts as done. Stats count their "still working" Stops too
+- `hobson stats` no longer lists "going in circles": that detector was removed in 0.2.0
+- Internally, kokoro-realtime and pocket-tts are one daemon engine with a spec each, and a Stop is
+  read once, in `stop_outcome.py`, for every engine
+- `hobson monitor` shows the engine on lines written before project tags, and no longer takes
+  `[nudge]` for an engine
+- The prompt hook no longer loads the engine module: 39 ms to 33 ms median per prompt
+- Internally, every path, the config, the project label and the quiet controls live in `home.py`,
+  resolved from `$HOME` when asked for, and every log line is written and read by `log_record.py`
+
 ## 0.3.0 — 2026-09-26
 
 ### claudio is now Hobson

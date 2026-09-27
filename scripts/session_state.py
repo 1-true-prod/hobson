@@ -4,21 +4,40 @@ Tracks what's been voiced and what's happened since, so the Ollama prompt
 has continuity across events. State is keyed by project label (ties to
 worktree/cwd, survives session restarts).
 
-State file: ~/.claude/hobson-sessions/<hash>.json
+State file: ~/.claude/hobson-sessions/<hash>.json (lock: <hash>.lock)
+
+Writers go through transaction(): every hook is async, so hooks for one
+project overlap, and a hook that loaded the state, waited on a model and
+saved its copy threw away what the others wrote meanwhile. Keep each
+transaction short -- no model call, TTS or transcript read inside one -- and
+apply what the slow work produced in a second one. Readers may use
+load_session(); saves are atomic, so a reader never sees half a file.
 """
 
+import contextlib
+import fcntl
 import hashlib
 import json
 import os
 import time
 
-SESSIONS_DIR = os.path.expanduser("~/.claude/hobson-sessions")
+import home
+import log_record
+
 MAX_RECENT_VOICED = 6
+
+# How long a hook waits for another's transaction before going ahead
+# without the lock. Transactions take milliseconds; this only matters if one
+# is stuck, and a hook must never hang behind it.
+LOCK_TIMEOUT_SECONDS = 3.0
 
 
 def _session_path(project_label):
-    key = hashlib.sha256(project_label.encode("utf-8")).hexdigest()[:12]
-    return os.path.join(SESSIONS_DIR, f"{key}.json")
+    return os.path.join(home.sessions_dir(), f"{home.project_key(project_label)}.json")
+
+
+def _lock_path(project_label):
+    return os.path.join(home.sessions_dir(), f"{home.project_key(project_label)}.lock")
 
 
 def _fresh_state(project_label):
@@ -34,6 +53,12 @@ def _fresh_state(project_label):
         "fingerprints": [],
         "repeat_announced": {},
         "seen_contexts": [],
+        # Any handled event; the watchdog reads it (see mark_event).
+        "last_event_time": 0.0,
+        # The last Stop, and how its turn ended: "done", "broken",
+        # "question", "working", or None when unknown -- the nudge reads it.
+        "last_stop_time": 0.0,
+        "last_stop_category": None,
     }
 
 
@@ -62,11 +87,85 @@ def load_session(project_label):
 
 
 def save_session(state):
-    """Write session state back to disk."""
-    os.makedirs(SESSIONS_DIR, exist_ok=True)
+    """Write session state back to disk, atomically: a reader sees the old
+    file or the new one, never a truncated one (which it would read as no
+    session at all, and its next save would make that true)."""
+    os.makedirs(home.sessions_dir(), exist_ok=True)
     path = _session_path(state["project"])
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(state, f, indent=2)
+    tmp = f"{path}.{os.getpid()}.tmp"
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(state, f, indent=2)
+        os.replace(tmp, path)
+    except BaseException:
+        with contextlib.suppress(OSError):
+            os.remove(tmp)
+        raise
+
+
+def _acquire(fd):
+    """Take the lock on `fd`, waiting up to LOCK_TIMEOUT_SECONDS. False if
+    it stayed busy."""
+    deadline = time.monotonic() + LOCK_TIMEOUT_SECONDS
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.01)
+
+
+@contextlib.contextmanager
+def transaction(project_label):
+    """Load this project's state under its lock, yield it, and save it once
+    on a clean exit. An exception inside saves nothing.
+
+        with transaction(project) as state:
+            record_pending(state, tool, context)
+
+    Keep it short: other hooks for the project wait while it is open.
+    """
+    os.makedirs(home.sessions_dir(), exist_ok=True)
+    with open(_lock_path(project_label), "a+", encoding="utf-8") as lock:
+        if not _acquire(lock):
+            log_record.write(f"session lock busy for {LOCK_TIMEOUT_SECONDS:g}s, writing without it")
+        state = load_session(project_label)
+        yield state
+        save_session(state)
+    # Closing the lock file releases the lock.
+
+
+def mark_event(state, now=None):
+    """This project just did something: the watchdog's liveness clock."""
+    state["last_event_time"] = time.time() if now is None else now
+
+
+def begin_stop(state, now=None):
+    """A turn ended. Drops the queued commentary -- a finished turn
+    supersedes it, and a mid-work remark spoken after it is stale by
+    construction -- and forgets the last turn's category until this one is
+    classified, so a stale "done" cannot stand in for it if that fails.
+    Returns how many queued items were dropped."""
+    now = time.time() if now is None else now
+    dropped = len(state.get("pending") or [])
+    state["pending"] = []
+    state["last_event_time"] = now
+    state["last_stop_time"] = now
+    state["last_stop_category"] = None
+    return dropped
+
+
+def record_stop_category(state, category):
+    """How this turn ended: the classification itself, None when there was
+    none -- never a default filled in for the sake of picking a phrase."""
+    state["last_stop_category"] = category
+
+
+def stop_category(state):
+    """How the last turn ended, or None when unknown."""
+    return state.get("last_stop_category")
 
 
 def record_voiced(state, phrase):
@@ -90,7 +189,7 @@ def record_skipped(state, event_type):
 def build_session_context(state, task=None):
     """Format session state as a string for the Ollama prompt.
 
-    `task` is the user's latest request (base.request_for_prompt), passed
+    `task` is the user's latest request (stop_outcome.request_for_prompt), passed
     for a Stop only. It goes to the local model only, never the decider.
     """
     parts = [f"Task: {task}"] if task else []
@@ -184,7 +283,7 @@ def should_flush(state, min_calls, min_seconds):
     min_calls/min_seconds have no defaults here on purpose: the sole
     caller (BaseEngine._handle_commentary_llm) always reads them from
     config (commentary.min_tool_calls / commentary.min_seconds, see
-    DEFAULT_CONFIG in engines/base.py) and passes both explicitly, so a
+    DEFAULT_CONFIG in home.py) and passes both explicitly, so a
     default here would just be a second, driftable copy of that config
     default. Callers must pass both.
     """

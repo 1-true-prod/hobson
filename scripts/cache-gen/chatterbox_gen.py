@@ -20,30 +20,13 @@ import time
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), ".."))
 from bark_templates import all_static_barks
 from bark_templates import bark_hash
-from engines.base import load_config
+from engines.chatterbox import _find_reference_audio
+import home
 
-CACHE_DIR = os.path.expanduser("~/.claude/voice-cache-chatterbox")
-ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
-
-
-def _find_reference_audio(personality="hobson"):
-    """Find reference audio matching engine lookup order: personality-specific, hobson, generic."""
-    search_names = []
-    if personality and personality != "hobson":
-        search_names.append(f"{personality}-reference")
-    search_names.append("hobson-reference")
-    search_names.append("alfred-reference")  # its name before 0.3.0
-    search_names.append("reference")
-    for name in search_names:
-        for base_dir in [os.path.join(ROOT, "models"), os.path.expanduser("~/.claude/models")]:
-            for ext in ("wav", "mp3", "flac", "ogg", "m4a"):
-                p = os.path.join(base_dir, f"{name}.{ext}")
-                if os.path.isfile(p):
-                    return p
-    return os.path.join(ROOT, "models", "hobson-reference.wav")
+CACHE_DIR = home.path("voice-cache-chatterbox")
 
 
-_config = load_config()
+_config = home.load_config()
 REFERENCE_AUDIO = _find_reference_audio(_config.get("personality", "hobson"))
 
 

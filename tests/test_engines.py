@@ -49,7 +49,8 @@ def test_load_engine_unknown_falls_back_to_say(claude_home, hobson_entry):
 
 def test_say_stop_classifies_and_barks(claude_home, no_audio, monkeypatch, tmp_path):
     from engines.say import SayEngine
-    monkeypatch.setattr(base, "classify", lambda *a, **k: "done")
+    import stop_outcome
+    monkeypatch.setattr(stop_outcome, "classify", lambda *a, **k: "done")
     eng = SayEngine(_cfg("say"))
     eng.run({"hook_event_name": "Stop", "transcript_path": _transcript(tmp_path)})
     assert no_audio["say"], "expected a spoken phrase on Stop"
@@ -163,7 +164,7 @@ def test_a_realtime_stop_that_asks_is_flagged_and_gets_the_task(engine, claude_h
     seen = {}
 
     def fake_gen(event, detail, ctx, **k):
-        seen.update(ctx=ctx, awaiting=k.get("awaiting_answer"))
+        seen.update(ctx=ctx, awaiting=k["stop"].awaiting_answer)
         return ("question", "I need your pick on the cat's stats.")
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip", fake_gen)

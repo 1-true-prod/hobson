@@ -219,14 +219,6 @@ def test_prompt_states_the_missing_rules():
     assert "describe" in text
 
 
-def test_log_line_includes_project(claude_home, monkeypatch):
-    import engines.base as base
-    monkeypatch.setattr(base, "derive_project_label", lambda: "hobson")
-    base.log("hello")
-    text = (claude_home / "hobson.log").read_text()
-    assert "[hobson]" in text
-
-
 def test_plain_verbs_swaps_concentrated_slop():
     assert phrase_gen._plain_verbs("I completed the migration.") == "I finished the migration."
     assert phrase_gen._plain_verbs("I verified the license.") == "I checked the license."

@@ -31,21 +31,20 @@ def _load_hyphenated(name, relpath):
 def _reset_module_caches():
     """Process-global caches leak across tests — reset around each one."""
     import bark_templates
-    import engines.base as base
-    base._PROJECT_LABEL_CACHE = None
+    import home
+    home._PROJECT_LABEL_CACHE = None
     bark_templates._data = None
     yield
-    base._PROJECT_LABEL_CACHE = None
+    home._PROJECT_LABEL_CACHE = None
     bark_templates._data = None
 
 
 @pytest.fixture(autouse=True)
 def claude_home(tmp_path, monkeypatch):
-    """Redirect ~/.claude state into tmp_path.
+    """Redirect ~/.claude state into tmp_path. Returns the .claude dir path.
 
-    Patches the import-time path constants in base/session_state AND $HOME (for
-    the call-time os.path.expanduser in bark_templates / kokoro / chatterbox).
-    Returns the .claude dir path.
+    Setting $HOME is enough: every Hobson path comes from home.state_dir(),
+    which reads it at call time.
     """
     claude = tmp_path / ".claude"
     claude.mkdir()
@@ -53,27 +52,7 @@ def claude_home(tmp_path, monkeypatch):
     # Never let a real key on the developer's machine leak into a test run.
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
 
-    import engines.base as base
-    import session_state
-    import nudge
     import decider
-
-    monkeypatch.setattr(base, "CONFIG_FILE", str(claude / "hobson.json"))
-    monkeypatch.setattr(base, "BARK_LOCK_FILE", str(claude / "hobson.lock"))
-    monkeypatch.setattr(base, "COMMENTARY_LOCK_FILE", str(claude / "hobson-commentary.lock"))
-    monkeypatch.setattr(base, "LOG_FILE", str(claude / "hobson.log"))
-    monkeypatch.setattr(session_state, "SESSIONS_DIR", str(claude / "hobson-sessions"))
-    # nudge.py's LOCK_DIR is an import-time constant (and the per-project
-    # activity tokens live in it too, via activity_path), evaluated
-    # against the real $HOME the moment any test module first does
-    # `from nudge import ...` (which happens at collection time, before this
-    # fixture's setenv runs) — patch them explicitly so no test can touch
-    # the developer's real ~/.claude via a real lock file or activity token.
-    monkeypatch.setattr(nudge, "LOCK_DIR", str(claude))
-    # decider.py's ENV_FILE is the same kind of import-time constant — patch
-    # it so a test can never read or write the developer's real
-    # ~/.claude/hobson.env (which is where a real OPENROUTER_API_KEY lives).
-    monkeypatch.setattr(decider, "ENV_FILE", str(claude / "hobson.env"))
     # The "no key" warning is once-per-process; reset it so each test sees a
     # fresh process rather than inheriting a previous test's warning state.
     monkeypatch.setattr(decider, "_warned_no_key", False)
@@ -137,14 +116,14 @@ class _FakeResp:
 
 @pytest.fixture
 def fake_ollama(monkeypatch):
-    """Patch urlopen in base + phrase_gen and script canned responses.
+    """Patch urlopen in stop_outcome + phrase_gen and script canned responses.
 
     Use .generate(word) for /api/generate (classify) and .chat(text) for the
     streamed /api/chat (phrase_gen). .error(exc) makes the next call raise.
     .urls collects the requested URLs for assertions.
     """
-    import engines.base as base
     import phrase_gen
+    import stop_outcome
 
     box = {"factory": None, "error": None, "urls": []}
 
@@ -154,7 +133,7 @@ def fake_ollama(monkeypatch):
             raise box["error"]
         return box["factory"]()
 
-    monkeypatch.setattr(base, "urlopen", fake_urlopen)
+    monkeypatch.setattr(stop_outcome, "urlopen", fake_urlopen)
     monkeypatch.setattr(phrase_gen, "urlopen", fake_urlopen)
 
     ns = SimpleNamespace(urls=box["urls"])

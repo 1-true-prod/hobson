@@ -13,7 +13,10 @@ import time
 from urllib.request import urlopen
 from urllib.error import URLError
 
+import home
+import log_record
 from ollama_client import DEFAULT_OLLAMA_MODEL, DEFAULT_OLLAMA_URL, build_request
+from stop_outcome import FAILURE_ALTS as _FAILURE_ALTS
 
 VALID_CATEGORIES = {"done", "broken", "question"}
 
@@ -196,7 +199,7 @@ def _build_messages(event_type, event_detail, session_context, project=None,
       "decided" — the decider already chose to speak; phrase it, never SKIP
 
     awaiting_answer: a Stop that ends on the agent's question (see
-    base.stop_awaits_answer). Said next to the event, not among the rules,
+    stop_outcome.StopReading). Said next to the event, not among the rules,
     so the shared prefix Ollama caches stays the same.
     """
     project_tag = f"[Project: {project}] " if project else ""
@@ -297,9 +300,8 @@ def _chat(messages, model, timeout, ollama_url, num_predict=40, temperature=0.7)
     # and the size *after* truncation when it cut, so a prompt at the edge
     # of the window is the only visible sign that the rules were dropped.
     if isinstance(prompt_tokens, int) and prompt_tokens + num_predict >= NUM_CTX:
-        from engines.base import log
-        log(f"prompt at the context limit: {prompt_tokens} tokens + {num_predict} "
-            f"to generate >= num_ctx {NUM_CTX}; the instructions may have been cut")
+        log_record.write(f"prompt at the context limit: {prompt_tokens} tokens + {num_predict} "
+                         f"to generate >= num_ctx {NUM_CTX}; the instructions may have been cut")
 
     return accumulated, None
 
@@ -599,7 +601,7 @@ def _clean_phrase(raw):
     raw = re.sub(r'^(?:done|broken|question|confirmed|complex)\s*\|\s*', '', raw, flags=re.IGNORECASE)
     raw = re.sub(r'^I\s+skip[^|]*\|\s*', '', raw, flags=re.IGNORECASE)
 
-    from engines.base import log, tts_normalize
+    from engines.base import tts_normalize
 
     # First sentence at a boundary (>=3 words). lead_in_end remembers where
     # any short *leading* sentence(s) ended (the ones skipped here for
@@ -626,7 +628,7 @@ def _clean_phrase(raw):
     if raw != before:
         # Normalization is otherwise invisible after the fact, so a mangled
         # de-camelling ("GitHub" -> "Git Hub") looks like a model error.
-        log(f"norm: {before!r} -> {raw!r}")
+        log_record.write(f"norm: {before!r} -> {raw!r}")
 
     words = raw.split()
 
@@ -645,7 +647,7 @@ def _clean_phrase(raw):
     if words and not raw.rstrip().endswith((".", "!", "?")):
         last = words[-1].strip(".,!?;:")
         if len(last) == 1 and last.lower() not in ("a", "i"):
-            log(f"truncated: trailing fragment {words[-1]!r} in {raw!r}")
+            log_record.write(f"truncated: trailing fragment {words[-1]!r} in {raw!r}")
             return None
 
     n_written = len(before.split())
@@ -660,9 +662,9 @@ def _clean_phrase(raw):
                 if _fits_budget(len(written.split()), len(rwords)):
                     salvaged = remainder
         if salvaged is None:
-            log(f"over budget: {len(words)} words - {raw!r}")
+            log_record.write(f"over budget: {len(words)} words - {raw!r}")
             return None
-        log(f"salvage: dropped lead-in, over budget ({len(words)} words) -> {salvaged!r}")
+        log_record.write(f"salvage: dropped lead-in, over budget ({len(words)} words) -> {salvaged!r}")
         raw, words = salvaged, rwords
     elif not _fits_budget(n_written, len(words)):
         return None
@@ -691,8 +693,7 @@ def _parse_response(text):
         # An unrecognised category still must not reach TTS — speak only the
         # right-hand side and default the category.
         if category not in VALID_CATEGORIES:
-            from engines.base import log
-            log(f"guard: invalid category {category!r}, defaulting to 'done'")
+            log_record.write(f"guard: invalid category {category!r}, defaulting to 'done'")
             return "done", phrase
         return category, phrase
 
@@ -787,11 +788,7 @@ def _decider_rescues_duplicate(phrase, recent_voiced, config=None):
     """
     priors = [p[0] if isinstance(p, (list, tuple)) else p
               for p in (recent_voiced or ())]
-    try:
-        from engines.base import load_config
-    except ImportError:
-        return False
-    config = config if config is not None else load_config()
+    config = config if config is not None else home.load_config()
     p_restates = _p_restates(phrase, priors, config)
     # No opinion means we learned nothing -- keep the rejection, which
     # preserves today's behaviour rather than releasing speech on a
@@ -843,12 +840,8 @@ def _p_restates(phrase, priors, config):
         return None
 
 
-# Anything that could be a failure. Deliberately wide: it only decides
-# whether a claim of failure has something to stand on.
-_FAILURE_ALTS = (r"fail(?:ed|s|ing|ures?)?|errors?|broken?|crash(?:ed|es|ing)?|can'?t|cannot"
-                 r"|couldn'?t|unable|blocked|stuck|doesn'?t work|not working|regress(?:ion|ed)?"
-                 r"|exception|timed? ?out")
-# And the model's usual ways of inventing trouble for commentary.
+# Anything that could be a failure (stop_outcome.FAILURE_ALTS), and the
+# model's usual ways of inventing trouble for commentary.
 _TROUBLE_WORDS = re.compile(
     rf"\b(?:{_FAILURE_ALTS}|breaking|issues?|trouble|struggl\w*|problems?|conflicts?|bugs?"
     r"|wrong|loop)\b", re.IGNORECASE)
@@ -932,8 +925,7 @@ def _guard_reject_reason(event_type, phrase, recent_voiced,
             return reason
     if is_near_duplicate(phrase, recent_voiced, decay_seconds=DUPE_DECAY_SECONDS):
         if _decider_rescues_duplicate(phrase, recent_voiced):
-            from engines.base import log
-            log(f"decider: overturned near-duplicate -> {phrase!r}")
+            log_record.write(f"decider: overturned near-duplicate -> {phrase!r}")
             return None
         return "near-duplicate of a recent phrase"
     if event_type == "PreToolUse" and _decider_blocks_restatement(phrase, recent_voiced):
@@ -965,18 +957,14 @@ def _decider_blocks_restatement(phrase, recent_voiced, config=None):
              and 0 <= now - p[1] <= DUPE_DECAY_SECONDS]
     if not fresh:
         return False
-    try:
-        from engines.base import load_config, log
-    except ImportError:
-        return False
-    config = config if config is not None else load_config()
+    config = config if config is not None else home.load_config()
     p_restates = _p_restates(phrase, fresh, config)
     if p_restates is None:
         return False
     block_min = (config.get("decider") or {}).get("dedup_block_min", DEDUP_BLOCK_MIN)
     if p_restates < block_min:
         return False
-    log(f"decider: blocked a restatement (P={p_restates:.2f}) -> {phrase!r}")
+    log_record.write(f"decider: blocked a restatement (P={p_restates:.2f}) -> {phrase!r}")
     return True
 
 
@@ -986,22 +974,6 @@ def _decider_blocks_restatement(phrase, recent_voiced, config=None):
 # 144 to 150 of 202. Commentary stays at 0.7: it needs variety to get past
 # the near-duplicate guard.
 STOP_TEMPERATURE = 0.3
-
-
-_FAILURE_WORDS = re.compile(rf"\b(?:{_FAILURE_ALTS})\b", re.IGNORECASE)
-
-
-def _reports_failure(event_detail):
-    """Does a Stop's last message mention anything failing?
-
-    The model's "broken" was nearly noise: on 201 hand-labelled real Stops
-    it said broken 26 times against 2 that were. All 18 of those whose last
-    message named no failure at all were wrong; the 8 that did include both
-    real ones.
-    """
-    lines = (event_detail or "").splitlines()
-    last = lines[-1] if lines else ""
-    return bool(_FAILURE_WORDS.search(last))
 
 
 def _words_over_budget(raw):
@@ -1026,7 +998,7 @@ def _retry_turn(raw, note):
 def generate_or_skip(event_type, event_detail, session_context, project=None,
                      model=None, timeout=8, ollama_url=None, custom_prompt=None,
                      verbosity="terse", recent_voiced=None,
-                     seconds_since_last_voiced=None, awaiting_answer=None):
+                     seconds_since_last_voiced=None, stop=None):
     """Single Ollama call: decide voice-or-skip AND generate the phrase.
 
     Returns (category, phrase); (category, None) when the event was
@@ -1044,22 +1016,20 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
     fast), Stop regenerates once then falls silent (silence there defeats
     the notification's purpose).
 
-    awaiting_answer is base.stop_awaits_answer's reading of a Stop, or None
-    when nobody checked. True fixes the category at "question" whatever the
-    model says, SKIP and failure included: the nudge needs it. False makes a
-    SKIP "done": on 201 hand-labelled real Stops, all 10 the model skipped
-    with the check clear were done, and "unknown" starts a nudge. A failed
-    call stays unknown.
+    `stop` is the Stop's stop_outcome.StopReading (event_detail is its
+    context), None for every other event. Its rules decide the category from
+    the model's verdict (StopReading.settle): waiting on the developer is a
+    question, SKIP and failure included; a SKIP otherwise is "done"; a
+    "broken" whose last message names no failure is asked again, then
+    "done". A failed call stays unknown.
     """
     global last_raw
 
     import time as _time
 
-    from engines.base import log
-
     attempts = 2 if event_type == "Stop" else 1
     rejected_category = None
-    known_category = "question" if awaiting_answer else None
+    awaiting_answer = stop.awaiting_answer if stop is not None else None
     temperature = STOP_TEMPERATURE if event_type == "Stop" else 0.7
     retry = []  # the rejected reply and why, so the second try is not the first again
 
@@ -1085,43 +1055,38 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
         # were previously unknowable after the fact: how long generation took,
         # what the model actually emitted, and (below) what happened to it on
         # the way to the speaker.
-        trace = (f"gen[{event_type}] {elapsed:.2f}s attempt={attempt + 1}/{attempts} "
-                 f"model={model or DEFAULT_OLLAMA_MODEL} "
-                 f"detail={_truncate_detail(event_detail)!r} "
-                 f"raw={(accumulated or '')!r}")
+        trace = log_record.trace(event_type, elapsed, attempt + 1, attempts,
+                                 model or DEFAULT_OLLAMA_MODEL,
+                                 _truncate_detail(event_detail), accumulated or "")
 
         if err and not accumulated:
             last_raw = err
-            log(f"{trace} FAILED {err}")
-            return known_category, None
+            log_record.write(f"{trace} FAILED {err}")
+            return (stop.settle(None, failed=True)[0] if stop is not None else None), None
 
         last_raw = accumulated
         result = _parse_response(accumulated or "")
         if not result:
             too_long = _words_over_budget(accumulated)
             if too_long and attempt + 1 < attempts:
-                log(f"{trace} -> over budget, retrying")
+                log_record.write(f"{trace} -> over budget, retrying")
                 retry = _retry_turn(accumulated, f"That is {too_long} words. Say it in "
                                                  f"at most {MAX_WORDS} words.")
                 continue
-            log(f"{trace} -> SKIP")
-            if event_type == "Stop" and awaiting_answer is False:
-                return "done", None
-            return known_category, None
+            log_record.write(f"{trace} -> SKIP")
+            return (stop.settle(None)[0] if stop is not None else None), None
 
         category, phrase = result
         steps = []
-        if awaiting_answer and category != "question":
-            steps.append(f"(category {category}->question: ends on a question)")
-            category = "question"
-        elif category == "broken" and event_type == "Stop" and not _reports_failure(event_detail):
-            if attempt + 1 < attempts:
-                log(f"{trace} -> broken, but nothing in the last message failed; retrying")
+        if stop is not None:
+            if stop.doubts(category) and attempt + 1 < attempts:
+                log_record.write(f"{trace} -> broken, but nothing in the last message failed; retrying")
                 retry = _retry_turn(accumulated, "Nothing in the Last message failed, so it "
                                                  "is not broken. Say what was done.")
                 continue
-            steps.append("(category broken->done: nothing in the last message failed)")
-            category = "done"
+            category, note = stop.settle(category)
+            if note:
+                steps.append(note)
         parsed = phrase
         phrase, repair_note = _repair_phrase(event_type, phrase)
 
@@ -1133,10 +1098,10 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
         reason = _guard_reject_reason(event_type, phrase, recent_voiced,
                                       seconds_since_last_voiced, event_detail=event_detail)
         if reason is None:
-            log(f"{trace} -> {category} {' '.join(steps)} spoken={phrase!r}")
+            log_record.write(f"{trace} {log_record.verdict(category, steps, phrase)}")
             return category, phrase
 
-        log(f"{trace} -> {category} {' '.join(steps)} REJECTED={phrase!r} ({reason})")
+        log_record.write(f"{trace} {log_record.verdict(category, steps, phrase, reason)}")
         last_raw = f"(rejected: {reason})"
         rejected_category = category
         retry = _retry_turn(accumulated, f"Not that: it is a {reason}. Say something else.")

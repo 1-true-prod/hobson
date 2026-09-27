@@ -4,7 +4,7 @@
 Compares candidate models against the LIVE Ollama server on the two jobs
 hobson actually asks of them:
 
-  1. classify  — done/broken/question accuracy over base.EXAMPLES
+  1. classify  — done/broken/question accuracy over stop_outcome.EXAMPLES
   2. first-person — do generated Stop phrases natively start with "I "
                     (measured BEFORE phrase_gen's _ensure_first_person repair,
                      so it reflects the model, not the safety net)
@@ -18,7 +18,7 @@ the pytest suite — it needs a running Ollama with the models pulled.
     python3 scripts/ab_models.py --gens 50 a b   # 50 generations each
 
 Classify cases live in scripts/ab_corpus.json (balanced done/broken/question);
-edit that file to grow the sample. Falls back to base.EXAMPLES if it's missing.
+edit that file to grow the sample. Falls back to stop_outcome.EXAMPLES if it's missing.
 
 ponytail: sequential, no concurrency — a few models × tens of calls is a
 coffee-break run, not a service. Parallelize if the candidate set grows.
@@ -30,7 +30,7 @@ import os
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "engines"))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-import engines.base as base
+import stop_outcome
 from phrase_gen import _build_messages, _chat
 
 # Candidates: current default + the two prior A/B contenders + Gemma 4 E4B.
@@ -40,12 +40,12 @@ CORPUS_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), "ab_corpu
 
 
 def load_corpus():
-    """(text, label) list from ab_corpus.json; fall back to base.EXAMPLES."""
+    """(text, label) list from ab_corpus.json; fall back to stop_outcome.EXAMPLES."""
     try:
         with open(CORPUS_FILE, encoding="utf-8") as f:
             return [tuple(c) for c in json.load(f)["cases"]]
     except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return list(base.EXAMPLES)
+        return list(stop_outcome.EXAMPLES)
 
 
 CORPUS = load_corpus()
@@ -63,7 +63,7 @@ def score_classify(model):
     per = {c: [0, 0] for c in CATEGORIES}
     correct = 0
     for text, want in CORPUS:
-        got = base.classify(text, model=model)
+        got = stop_outcome.classify(text, model=model)
         ok = got == want
         correct += ok
         if want in per:

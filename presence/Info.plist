@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>CFBundleIdentifier</key>
+	<string>local.hobson.presence</string>
+	<key>CFBundleName</key>
+	<string>HobsonPresence</string>
+	<key>CFBundleDisplayName</key>
+	<string>Hobson Presence</string>
+	<key>CFBundleExecutable</key>
+	<string>HobsonPresence</string>
+	<key>CFBundlePackageType</key>
+	<string>APPL</string>
+	<key>CFBundleShortVersionString</key>
+	<string>1.0</string>
+	<key>CFBundleVersion</key>
+	<string>1</string>
+	<key>LSMinimumSystemVersion</key>
+	<string>12.0</string>
+	<key>LSUIElement</key>
+	<true/>
+	<key>NSLocalNetworkUsageDescription</key>
+	<string>Hobson reads whether your phone is face up or face down, over Wireless debugging, to know whether he may use the camera.</string>
+	<key>NSCameraUsageDescription</key>
+	<string>Hobson glances at the desk, only when he is about to speak and you have been idle, so he can hold his news until you are back. Frames stay in memory on this Mac and are never saved or sent anywhere.</string>
+</dict>
+</plist>

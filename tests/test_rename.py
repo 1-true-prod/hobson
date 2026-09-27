@@ -17,31 +17,25 @@ import unittest
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 sys.path.insert(0, os.path.join(REPO_ROOT, "scripts"))
 
+import home  # noqa: E402
+
 
 # ── Config paths ──────────────────────────────────────────────────────
 
 class TestConfigPaths(unittest.TestCase):
-    """Verify all modules reference the new hobson.json config path."""
+    """Verify Hobson's state files carry Hobson's names."""
 
-    def test_base_config_file(self):
-        from engines.base import CONFIG_FILE
-        self.assertIn("hobson.json", CONFIG_FILE)
-        self.assertNotIn("claude-bark", CONFIG_FILE)
+    def test_config_file(self):
+        self.assertTrue(home.config_file().endswith("/hobson.json"))
 
     def test_lock_file(self):
-        from engines.base import BARK_LOCK_FILE
-        self.assertIn("hobson.lock", BARK_LOCK_FILE)
-        self.assertNotIn("voice-bark", BARK_LOCK_FILE)
+        self.assertTrue(home.bark_lock().endswith("/hobson.lock"))
 
     def test_commentary_lock_file(self):
-        from engines.base import COMMENTARY_LOCK_FILE
-        self.assertIn("hobson-commentary.lock", COMMENTARY_LOCK_FILE)
-        self.assertNotIn("voice-bark", COMMENTARY_LOCK_FILE)
+        self.assertTrue(home.commentary_lock().endswith("/hobson-commentary.lock"))
 
     def test_log_file(self):
-        from engines.base import LOG_FILE
-        self.assertIn("hobson.log", LOG_FILE)
-        self.assertNotIn("voice-bark", LOG_FILE)
+        self.assertTrue(home.log_file().endswith("/hobson.log"))
 
 
 # ── Migration from claudio (and claude-bark) ─────────────────────────
@@ -56,7 +50,6 @@ def _write(path, data):
 
 
 def test_migration_moves_config_key_log_and_sessions(claude_home):
-    import engines.base as base
     _write(claude_home / "claudio.json", {"engine": "kokoro-realtime", "volume": 7})
     (claude_home / "claudio.env").write_text("OPENROUTER_API_KEY=sk-test\n")
     os.chmod(claude_home / "claudio.env", 0o600)
@@ -64,7 +57,7 @@ def test_migration_moves_config_key_log_and_sessions(claude_home):
     (claude_home / "claudio-sessions").mkdir()
     (claude_home / "claudio-sessions" / "abc.json").write_text("{}")
 
-    moved = base.migrate_legacy_state()
+    moved = home.migrate_legacy_state()
 
     assert len(moved) == 4
     assert json.load(open(claude_home / "hobson.json"))["volume"] == 7
@@ -76,56 +69,56 @@ def test_migration_moves_config_key_log_and_sessions(claude_home):
 
 
 def test_migration_never_overwrites_hobson_state(claude_home):
-    import engines.base as base
     _write(claude_home / "hobson.json", {"engine": "say"})
     _write(claude_home / "claudio.json", {"engine": "chatterbox"})
-    assert base.migrate_legacy_state() == []
+    assert home.migrate_legacy_state() == []
     assert json.load(open(claude_home / "hobson.json"))["engine"] == "say"
     assert (claude_home / "claudio.json").exists()  # left for the user
 
 
 def test_migration_is_idempotent(claude_home):
-    import engines.base as base
     _write(claude_home / "claudio.json", {"engine": "say"})
-    assert base.migrate_legacy_state()
-    assert base.migrate_legacy_state() == []
+    assert home.migrate_legacy_state()
+    assert home.migrate_legacy_state() == []
 
 
 def test_claude_bark_config_still_migrates(claude_home):
-    import engines.base as base
     _write(claude_home / "claude-bark.json", {"engine": "kokoro-realtime", "personality": "pirate"})
-    config = base.load_config()
+    config = home.load_config()
     assert config["engine"] == "kokoro-realtime"
     assert config["personality"] == "pirate"
     assert (claude_home / "hobson.json").exists()
 
 
 def test_claudio_config_wins_over_claude_bark(claude_home):
-    import engines.base as base
     _write(claude_home / "claudio.json", {"engine": "say"})
     _write(claude_home / "claude-bark.json", {"engine": "chatterbox"})
-    base.migrate_legacy_state()
+    home.migrate_legacy_state()
     assert json.load(open(claude_home / "hobson.json"))["engine"] == "say"
 
 
 def test_the_alfred_personality_becomes_hobson(claude_home):
     """Alfred was the default persona; the migrated config names Hobson."""
-    import engines.base as base
     _write(claude_home / "claudio.json", {"personality": "alfred", "volume": 4})
-    base.migrate_legacy_state()
+    home.migrate_legacy_state()
     on_disk = json.load(open(claude_home / "hobson.json"))
     assert on_disk == {"personality": "hobson", "volume": 4}
 
 
 def test_load_config_reads_alfred_as_hobson(claude_home):
-    import engines.base as base
     _write(claude_home / "hobson.json", {"personality": "alfred"})
-    assert base.load_config()["personality"] == "hobson"
+    assert home.load_config()["personality"] == "hobson"
+
+
+def test_templates_read_alfred_as_hobson(claude_home):
+    """bark_templates read the config file itself, and skipped the alias."""
+    import bark_templates
+    _write(claude_home / "hobson.json", {"personality": "alfred"})
+    assert bark_templates._get_personality_name() == "hobson"
 
 
 def test_defaults_when_there_is_no_config_at_all(claude_home):
-    import engines.base as base
-    config = base.load_config()
+    config = home.load_config()
     assert config["engine"] == "say"
     assert config["personality"] == "hobson"
 
@@ -250,18 +243,18 @@ class TestSnippet(unittest.TestCase):
     """Verify text snippet extraction."""
 
     def test_empty(self):
-        from engines.base import snippet
+        from stop_outcome import snippet
         self.assertEqual(snippet(""), "")
         self.assertEqual(snippet("   "), "")
 
     def test_short_text(self):
-        from engines.base import snippet
+        from stop_outcome import snippet
         text = "First. Second. Third."
         result = snippet(text)
         self.assertIn("First", result)
 
     def test_long_text_truncation(self):
-        from engines.base import snippet
+        from stop_outcome import snippet
         sentences = [f"Sentence {i}." for i in range(20)]
         text = " ".join(sentences)
         result = snippet(text)

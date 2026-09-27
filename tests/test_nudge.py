@@ -4,11 +4,16 @@ Pure logic only — never spawn a real nudge process in a test.
 """
 
 import json
+import os
+import subprocess
+import sys
 import time
 
 import pytest
 
 from nudge import NUDGE_DELAYS, WAITING_TYPES, should_continue
+
+_REAL_POPEN = subprocess.Popen  # the autouse no_audio fixture replaces it
 
 
 def test_delays_escalate_and_are_capped():
@@ -110,7 +115,7 @@ def test_user_prompt_submit_records_activity(claude_home, hobson_entry, monkeypa
     hobson_entry.main()
     assert called["n"] == 0, "UserPromptSubmit must not dispatch to a speaking engine"
     import nudge
-    from engines.base import derive_project_label
+    from home import derive_project_label
     activity_file = nudge.activity_path(derive_project_label())
     assert os.path.isfile(activity_file)
     float(open(activity_file).read())  # must parse as a timestamp
@@ -126,7 +131,7 @@ def test_user_prompt_submit_records_activity_even_while_muted(claude_home, hobso
                         io.StringIO('{"hook_event_name": "UserPromptSubmit"}'))
     hobson_entry.main()
     import nudge
-    from engines.base import derive_project_label
+    from home import derive_project_label
     assert os.path.isfile(nudge.activity_path(derive_project_label()))
 
 
@@ -187,11 +192,11 @@ def test_watchdog_does_not_spawn_when_one_already_holds_the_lock(
     import phrase_gen
     from engines.say import SayEngine
     from nudge import _lock_path
-    import engines.base as base
+    import home
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
                         lambda *a, **k: ("done", "I did a thing."))
-    monkeypatch.setattr(base, "derive_project_label", lambda: "demo")
+    monkeypatch.setattr(home, "derive_project_label", lambda: "demo")
 
     lock_path = _lock_path("watchdog", "demo")
     _os.makedirs(_os.path.dirname(lock_path), exist_ok=True)
@@ -333,8 +338,25 @@ def test_user_prompt_submit_returns_before_loading_config(claude_home, hobson_en
                         io.StringIO('{"hook_event_name": "UserPromptSubmit"}'))
     def no_config():
         raise AssertionError("UserPromptSubmit must not load config")
-    monkeypatch.setattr(hobson_entry, "load_config", no_config)
+    monkeypatch.setattr(hobson_entry.home, "load_config", no_config)
     hobson_entry.main()
+
+
+def test_user_prompt_submit_never_imports_an_engine(tmp_path):
+    """It imports home and log_record, not engines.base, which cost about
+    9 ms of the 45 ms every prompt paid for this hook."""
+    entry = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                         "scripts", "hobson.py")
+    proc = _REAL_POPEN([sys.executable, "-X", "importtime", entry], cwd=str(tmp_path),
+                       env={**os.environ, "HOME": str(tmp_path)},
+                       stdin=subprocess.PIPE, stderr=subprocess.PIPE)
+    _, err = proc.communicate(b'{"hook_event_name": "UserPromptSubmit"}')
+    imported = {line.rsplit("|", 1)[-1].strip() for line in err.decode().splitlines()
+                if line.startswith("import time:")}
+    assert proc.returncode == 0
+    assert "home" in imported
+    assert not {"engines", "engines.base", "phrase_gen"} & imported
+    assert list((tmp_path / ".claude").glob("hobson-activity-*"))
 
 
 # ── The parent's argv must be accepted by the child's parser ──────────────
@@ -392,9 +414,9 @@ def _realtime(kind, monkeypatch, spoken, events=("notification", "stop")):
     else:
         from engines.kokoro_realtime import KokoroRealtimeEngine as Engine
     monkeypatch.setattr(Engine, "speak_dynamic",
-                        lambda self, phrase, allow_cold_start=True: spoken.append(phrase))
+                        lambda self, phrase, allow_cold_start=True, **k: spoken.append(phrase))
     monkeypatch.setattr(Engine, "_speak_live",
-                        lambda self, phrase, allow_cold_start=True: spoken.append(phrase))
+                        lambda self, phrase, allow_cold_start=True, **k: spoken.append(phrase))
     return Engine({"engine": kind, "personality": "hobson", "events": list(events),
                    "nudge": {"enabled": False}})
 
@@ -417,7 +439,7 @@ def test_a_waiting_notification_skips_the_model(kind, fake_ollama, claude_home, 
 def test_the_waiting_template_avoids_one_said_recently(fake_ollama, claude_home, monkeypatch):
     import bark_templates
     import session_state as ss
-    from engines.base import derive_project_label
+    from home import derive_project_label
     templates = list(bark_templates.NOTIFICATION_TEMPLATES)
     st = ss.load_session(derive_project_label())
     st["recent_voiced"] = [[t, time.time()] for t in templates[1:]]
@@ -433,7 +455,7 @@ def test_a_waiting_notification_is_never_silenced_by_repetition(
         fake_ollama, claude_home, monkeypatch):
     import bark_templates
     import session_state as ss
-    from engines.base import derive_project_label
+    from home import derive_project_label
     st = ss.load_session(derive_project_label())
     st["recent_voiced"] = [[t, time.time()] for t in bark_templates.NOTIFICATION_TEMPLATES]
     ss.save_session(st)
@@ -463,7 +485,7 @@ def test_other_notifications_still_go_to_the_model(fake_ollama, claude_home, mon
 
 def _seed_last_turn(category):
     import session_state as ss
-    from engines.base import derive_project_label
+    from home import derive_project_label
     st = ss.load_session(derive_project_label())
     st["last_stop_category"] = category
     ss.save_session(st)
@@ -509,21 +531,21 @@ def test_a_background_agent_waiting_nudges_even_after_a_finished_turn(claude_hom
 
 def _last_category():
     import session_state as ss
-    from engines.base import derive_project_label
+    from home import derive_project_label
     return ss.load_session(derive_project_label()).get("last_stop_category")
 
 
 def test_a_static_stop_records_its_raw_category(claude_home, no_audio, monkeypatch, tmp_path):
     import json as _json
-    import engines.base as base
+    import stop_outcome
     t = tmp_path / "t.jsonl"
     t.write_text(_json.dumps({"type": "assistant", "message": {"content": [
         {"type": "text", "text": "Both approaches are sketched out."}]}}), encoding="utf-8")
-    monkeypatch.setattr(base, "classify", lambda *a, **k: "question")
+    monkeypatch.setattr(stop_outcome, "classify", lambda *a, **k: "question")
     _say_engine().run({"hook_event_name": "Stop", "transcript_path": str(t)})
     assert _last_category() == "question"
 
-    monkeypatch.setattr(base, "classify", lambda *a, **k: None)  # Ollama down
+    monkeypatch.setattr(stop_outcome, "classify", lambda *a, **k: None)  # Ollama down
     _say_engine().run({"hook_event_name": "Stop", "transcript_path": str(t)})
     assert _last_category() is None, "the 'done' it barks by default is not a classification"
 
@@ -533,12 +555,12 @@ def test_a_static_stop_that_asks_is_a_question_without_ollama(
     """The model called 45 of 46 question-ending Stops "done" -- which also
     told the nudge the turn had finished."""
     import json as _json
-    import engines.base as base
+    import stop_outcome
     t = tmp_path / "t.jsonl"
     t.write_text(_json.dumps({"type": "assistant", "message": {"content": [
         {"type": "text", "text": "Both are sketched out. **Which one do you want?**"}]}}),
         encoding="utf-8")
-    monkeypatch.setattr(base, "classify", lambda *a, **k: "done")
+    monkeypatch.setattr(stop_outcome, "classify", lambda *a, **k: "done")
     _say_engine().run({"hook_event_name": "Stop", "transcript_path": str(t)})
     assert _last_category() == "question"
 
@@ -554,24 +576,18 @@ def _transcript(tmp_path, text):
     return str(t)
 
 
-def test_a_static_stop_waiting_on_its_own_work_is_not_announced(
-        claude_home, no_audio, monkeypatch, tmp_path):
+@pytest.mark.parametrize("kind", ["say", "pocket-tts"])
+def test_a_stop_waiting_on_its_own_work_is_not_announced(
+        kind, fake_ollama, claude_home, no_audio, monkeypatch, tmp_path):
     """Announced as done, a coordinator's every launch buried its one real
     completion: "Rendering hard-case pairs complete", four times in five
-    minutes, while the runs were still going."""
-    import engines.base as base
-    monkeypatch.setattr(base, "classify", lambda *a, **k: pytest.fail("no model call"))
-    eng = _say_engine()
-    monkeypatch.setattr(eng, "try_bark", lambda phrase: pytest.fail(f"barked {phrase!r}"))
-    eng.run({"hook_event_name": "Stop", "transcript_path": _transcript(tmp_path, _STILL_WORKING)})
-    assert _last_category() == "working"
-
-
-@pytest.mark.parametrize("kind", ["pocket-tts", "kokoro-realtime"])
-def test_a_realtime_stop_waiting_on_its_own_work_is_not_announced(
-        kind, fake_ollama, claude_home, monkeypatch, tmp_path):
+    minutes, while the runs were still going. One pipeline for both phrase
+    sources: no model call, nothing spoken, recorded as "working"."""
+    import stop_outcome
+    monkeypatch.setattr(stop_outcome, "classify", lambda *a, **k: pytest.fail("no model call"))
     spoken = []
-    eng = _realtime(kind, monkeypatch, spoken)
+    eng = _say_engine() if kind == "say" else _realtime(kind, monkeypatch, spoken)
+    monkeypatch.setattr(eng, "_speak_stop", lambda phrase, **k: spoken.append(phrase))
     fake_ollama.chat("done | I finished rendering the hard-case pairs.")
     eng.run({"hook_event_name": "Stop", "transcript_path": _transcript(tmp_path, _STILL_WORKING)})
     assert spoken == [] and fake_ollama.urls == []
@@ -670,7 +686,7 @@ def test_a_corrupt_alive_file_reads_as_nothing(claude_home):
 @pytest.mark.parametrize("event", ["PreToolUse", "PermissionRequest"])
 def test_the_entrypoint_marks_the_session_alive(event, claude_home, hobson_entry, monkeypatch, no_audio):
     import io
-    from engines.base import derive_project_label
+    from home import derive_project_label
     monkeypatch.setattr(hobson_entry.sys, "stdin", io.StringIO(json.dumps(
         {"hook_event_name": event, "tool_name": "Read", "agent_id": "sub-1"})))
     hobson_entry.main()
@@ -717,7 +733,7 @@ def test_a_realtime_engine_announces_it_without_the_model(kind, fake_ollama, cla
 
 def test_the_question_line_rotates_past_what_was_just_said(fake_ollama, claude_home, monkeypatch):
     import session_state as ss
-    from engines.base import derive_project_label
+    from home import derive_project_label
     phrases = sorted(_question_phrases())
     st = ss.load_session(derive_project_label())
     st["recent_voiced"] = [[p, time.time()] for p in phrases[:6]]

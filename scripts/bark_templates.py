@@ -43,15 +43,10 @@ def _load_personality_templates(personality_name=None):
 
 
 def _get_personality_name():
-    """Read personality name from config file. Returns 'hobson' as default."""
-    config_file = os.path.expanduser("~/.claude/hobson.json")
-    old_config_file = os.path.expanduser("~/.claude/claude-bark.json")
-    path = config_file if os.path.isfile(config_file) else old_config_file
-    try:
-        with open(path, encoding="utf-8") as f:
-            return json.load(f).get("personality", "hobson")
-    except (FileNotFoundError, json.JSONDecodeError, KeyError):
-        return "hobson"
+    """The configured personality, as load_config() resolves it: after the
+    claudio migration and the "alfred" alias. 'hobson' when unset."""
+    from home import load_config
+    return load_config().get("personality") or "hobson"
 
 
 def _ensure_loaded():

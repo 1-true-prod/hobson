@@ -55,12 +55,14 @@ For a **static** (cached-template) engine:
 2. Subclass `BaseEngine` from `engines/base.py`
 3. Set `templates_module`, `cache_dir`, `cache_ext`
 4. Implement `backfill(text)` for audio generation
-5. Add the engine to the CLI picker in `hobson` and to `install.sh`
+5. Add its `engine_name` to `ENGINE_TAGS` in `scripts/log_record.py`, or every reader of the log
+   takes its tag for part of the message (a test fails until it is there)
+6. Add the engine to the CLI picker in `hobson` and to `install.sh`
 
 For a **realtime** engine, override `speak_dynamic(phrase, allow_cold_start)` instead — that single
 seam is what routes speech through your daemon, and it means commentary, batching, nudges and the
 quiet controls all work without you reimplementing any of the gating. `kokoro_realtime.py` is the
-reference; `pocket_tts_realtime.py` is the same shape.
+reference; `pocket_tts_realtime.py` is the same shape. Its `engine_name` goes in `ENGINE_TAGS` too.
 
 ## Code Style
 

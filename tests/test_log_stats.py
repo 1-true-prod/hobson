@@ -37,7 +37,7 @@ def test_counts_barks_and_events():
 
 
 def test_counts_a_stop_that_is_still_working():
-    from engines.base import STILL_WORKING_LOG
+    from stop_outcome import STILL_WORKING_LOG
     s = summarize([f"[2026-09-26 10:00:00] [proj] [pocket-tts] {STILL_WORKING_LOG}"])
     assert s["stop_working"] == 1
 
@@ -85,10 +85,14 @@ PROGRESS_LINES = [
 ]
 
 
-def test_counts_stuck_and_quiet_anomalies():
+def test_counts_quiet_anomalies():
     s = summarize(PROGRESS_LINES)
-    assert s["stuck"] == 1
     assert s["anomaly_quiet"] == 1
+
+
+def test_the_removed_stuck_detector_is_not_counted():
+    """Removed in c21f0b5: a replay found nothing it caught was a loop."""
+    assert "stuck" not in summarize(PROGRESS_LINES)
 
 
 def test_counts_the_nudge_lifecycle():
@@ -107,7 +111,7 @@ def test_counts_the_watchdog():
 
 def test_progress_counters_are_zero_on_an_empty_log():
     s = summarize([])
-    for key in ("stuck", "anomaly_quiet", "nudge_started", "nudge_spoke",
+    for key in ("anomaly_quiet", "nudge_started", "nudge_spoke",
                 "nudge_cancelled", "nudge_capped", "watchdog_started",
                 "watchdog_spoke"):
         assert s[key] == 0

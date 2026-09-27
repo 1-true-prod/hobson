@@ -11,13 +11,15 @@ config["decider"]["backend"]:
     reimplements that heuristic (e.g. Ollama classification) itself.
   - "jev": make the HTTP call below.
 
-Two questions are asked today. phrase_gen._p_restates: does this phrase
+Three questions are asked today. phrase_gen._p_restates: does this phrase
 restate one just spoken? (releases a phrase the near-duplicate guard
-rejected, or blocks commentary it missed as reworded). And
+rejected, or blocks commentary it missed as reworded).
 risk.remote_destructive_probability: is this shell command destructive?
 (only for a Bash permission request the local rules cannot place, and only
-ever on the command as risk.redact() leaves it). With the default config
-this module makes zero network calls.
+ever on the command as risk.redact() leaves it). And gate.worth_probability:
+is this commentary batch worth hearing? (once per flush, on the batch
+summary as risk.redact() leaves it). With the default config this module
+makes zero network calls.
 
 Fails closed, always. Every failure path -- no key, timeout, URLError,
 non-200, unparseable body, a response shape that doesn't match what we
@@ -65,17 +67,20 @@ from collections import namedtuple
 from urllib.error import URLError
 from urllib.request import Request, urlopen
 
-import engines.base as base
-
-ENV_FILE = os.path.expanduser("~/.claude/hobson.env")
+import home
+import log_record
 
 # Set once the "no key" warning has been logged, so a standing condition is
 # reported once per process rather than on every decision.
 _warned_no_key = False
 
-DEFAULT_ENDPOINT = "https://openrouter.ai/api/alpha/decisions"
-DEFAULT_MODEL = "typesafe/jev-1.13"
-DEFAULT_TIMEOUT_MS = 2000
+# Fallbacks for a config that lacks a key, read from DEFAULT_CONFIG so they
+# cannot drift from it: the timeout here once said 2000 while the config
+# said 4000.
+_DEFAULTS = home.DEFAULT_CONFIG["decider"]
+DEFAULT_ENDPOINT = _DEFAULTS["endpoint"]
+DEFAULT_MODEL = _DEFAULTS["model"]
+DEFAULT_TIMEOUT_MS = _DEFAULTS["timeout_ms"]
 
 # Three result shapes mirroring Jev's three question types. `None` (not one
 # of these) is how every function spells "no opinion" -- local backend, or
@@ -96,7 +101,7 @@ def _find_key():
     if key:
         return key
     try:
-        with open(ENV_FILE, encoding="utf-8") as f:
+        with open(home.env_file(), encoding="utf-8") as f:
             for line in f:
                 line = line.strip()
                 if not line or line.startswith("#") or "=" not in line:
@@ -117,7 +122,7 @@ def _decider_config(config):
     in which case load_config() is called. Never mutates the config passed
     in -- load_config()'s DEFAULT_CONFIG is a shared object across calls.
     """
-    config = config if config is not None else base.load_config()
+    config = config if config is not None else home.load_config()
     decider_cfg = config.get("decider") or {}
     return {
         "backend": decider_cfg.get("backend", "local"),
@@ -148,9 +153,9 @@ def _ask(question, decider_cfg):
         global _warned_no_key
         if not _warned_no_key:
             _warned_no_key = True
-            base.log("[decider] jev backend selected but no OPENROUTER_API_KEY "
-                     "found (checked env and hobson.env) -- falling back to "
-                     "local for the rest of this process")
+            log_record.write("[decider] jev backend selected but no OPENROUTER_API_KEY "
+                             "found (checked env and hobson.env) -- falling back to "
+                             "local for the rest of this process")
         return None
 
     payload = {
@@ -172,27 +177,27 @@ def _ask(question, decider_cfg):
         with urlopen(req, timeout=timeout) as resp:
             body = json.loads(resp.read())
     except (URLError, OSError) as exc:
-        base.log(f"[decider] request failed ({decider_cfg['model']}, "
-                  f"type={question.get('type')}): {type(exc).__name__}")
+        log_record.write(f"[decider] request failed ({decider_cfg['model']}, "
+                         f"type={question.get('type')}): {type(exc).__name__}")
         return None
     except json.JSONDecodeError:
-        base.log(f"[decider] response body was not valid JSON ({decider_cfg['model']})")
+        log_record.write(f"[decider] response body was not valid JSON ({decider_cfg['model']})")
         return None
 
     if not isinstance(body, dict):
-        base.log("[decider] response was not a JSON object")
+        log_record.write("[decider] response was not a JSON object")
         return None
 
     answers = body.get("answers")
     if not isinstance(answers, dict):
         answers = body.get("results")
     if not isinstance(answers, dict):
-        base.log("[decider] response missing an 'answers'/'results' object")
+        log_record.write("[decider] response missing an 'answers'/'results' object")
         return None
 
     answer = answers.get("answer")
     if not isinstance(answer, dict):
-        base.log("[decider] response missing the 'answer' question's result")
+        log_record.write("[decider] response missing the 'answer' question's result")
         return None
 
     # The cost of this call, as the API reports it, goes in the log line so
@@ -204,8 +209,8 @@ def _ask(question, decider_cfg):
     cost_note = ""
     if isinstance(cost, (int, float)):
         cost_note = f" cost=${cost:.6f}"
-    base.log(f"[decider] asked type={question.get('type')} model={decider_cfg['model']} "
-             f"-> confidence={answer.get('confidence')!r}{cost_note}")
+    log_record.write(f"[decider] asked type={question.get('type')} model={decider_cfg['model']} "
+                     f"-> confidence={answer.get('confidence')!r}{cost_note}")
     return answer
 
 
@@ -234,7 +239,7 @@ def choice(state, instructions, criteria, config=None):
         chosen = answer["choice"]
         confidence = float(answer["confidence"])
     except (KeyError, TypeError, ValueError):
-        base.log("[decider] malformed choice response")
+        log_record.write("[decider] malformed choice response")
         return None
     return ChoiceResult(choice=chosen, probs=_probs(answer), confidence=confidence)
 
@@ -259,7 +264,7 @@ def score(state, instructions, criteria, config=None):
         position = float(answer["score"])
         confidence = float(answer["confidence"])
     except (KeyError, TypeError, ValueError):
-        base.log("[decider] malformed score response")
+        log_record.write("[decider] malformed score response")
         return None
     return ScoreResult(score=position, legend=dict(answer.get("legend") or {}),
                        probs=_probs(answer), confidence=confidence)
@@ -284,6 +289,6 @@ def noul(state, instructions, config=None):
     try:
         probability = float(answer["noul"])
     except (KeyError, TypeError, ValueError):
-        base.log("[decider] malformed noul response")
+        log_record.write("[decider] malformed noul response")
         return None
     return NoulResult(probability=probability, confidence=None)

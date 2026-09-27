@@ -236,7 +236,7 @@ def permission_risk(tool_name, tool_input, config=None):
     if is_read_only(command):
         return None
     if config is None:
-        from engines.base import load_config
+        from home import load_config
         config = load_config()
     p = remote_destructive_probability(command, config)
     minimum = (config.get("decider") or {}).get("permission_risk_min", PERMISSION_RISK_MIN)

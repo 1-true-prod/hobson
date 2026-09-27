@@ -13,8 +13,8 @@ import time
 # Ensure scripts/ is on the path for bark_templates imports
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from engines.base import (derive_project_label, load_config, log,
-                          migrate_legacy_state, silence_reason)
+import home
+import log_record
 
 
 ENGINES = {
@@ -30,7 +30,7 @@ def load_engine(config):
     engine_name = config.get("engine", "say")
     engine_path = ENGINES.get(engine_name)
     if not engine_path:
-        log(f"unknown engine {engine_name!r}, falling back to say")
+        log_record.write(f"unknown engine {engine_name!r}, falling back to say")
         engine_path = ENGINES["say"]
 
     module_path, class_name = engine_path.rsplit(".", 1)
@@ -45,7 +45,7 @@ def _record_alive(hook_input):
     a failed write costs the watchdog one data point, not the hook."""
     try:
         from nudge import record_alive
-        record_alive(derive_project_label(), hook_input)
+        record_alive(home.derive_project_label(), hook_input)
     except (ImportError, OSError):
         pass
 
@@ -60,7 +60,7 @@ def _record_activity():
     """
     try:
         from nudge import activity_path
-        path = activity_path(derive_project_label())
+        path = activity_path(home.derive_project_label())
         os.makedirs(os.path.dirname(path), exist_ok=True)
         with open(path, "w", encoding="utf-8") as f:
             f.write(str(time.time()))
@@ -88,15 +88,26 @@ def main():
 
     # Four lstat calls once everything has moved; before that, the one time
     # claudio's config, key, log and sessions are taken over as Hobson's.
-    migrate_legacy_state()
-    config = load_config()
-    reason = silence_reason(config)
+    home.migrate_legacy_state()
+    config = home.load_config()
+    reason = home.silence_reason(config)
     if reason:
-        log(f"silenced ({reason})")
+        log_record.write(f"silenced ({reason})")
         return
 
+    _ensure_presence(config)
     engine = load_engine(config)
     engine.run(hook_input)
+
+
+def _ensure_presence(config):
+    """Start the presence sensor if it should be running and is not. Never
+    raises: without it, Hobson speaks exactly as he did before it existed."""
+    try:
+        import presence
+        presence.ensure_running(config)
+    except Exception as e:
+        log_record.write(f"[presence] could not start the sensor ({e})")
 
 
 if __name__ == "__main__":

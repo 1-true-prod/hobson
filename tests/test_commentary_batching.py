@@ -111,7 +111,7 @@ def _engine(monkeypatch, spoken):
     from engines.pocket_tts_realtime import PocketTTSRealtimeEngine
     monkeypatch.setattr(
         PocketTTSRealtimeEngine, "speak_dynamic",
-        lambda self, phrase, allow_cold_start=False: spoken.append(phrase),
+        lambda self, phrase, allow_cold_start=False, **k: spoken.append(phrase),
     )
     return PocketTTSRealtimeEngine({
         # "stop" must be enabled too: test_stop_discards_a_pending_batch
@@ -140,7 +140,7 @@ def _prime_bootstrapped_session():
     last_voiced_time is primed too so anything reading it (e.g. the
     near-duplicate guard) also sees an already-bootstrapped session.
     """
-    from engines.base import derive_project_label
+    from home import derive_project_label
     project = derive_project_label()
     state = ss.load_session(project)
     state["last_voiced_time"] = time.time()
@@ -187,8 +187,9 @@ def test_the_batch_summary_reaches_the_model(fake_ollama, claude_home, monkeypat
         seen["detail"] = event_detail
         return real(event_type, event_detail, *a, **k)
 
+    # The engine imports it from phrase_gen at call time, so this is the
+    # one place to patch.
     monkeypatch.setattr(phrase_gen, "generate_or_skip", spy)
-    monkeypatch.setattr("engines.base.generate_or_skip", spy, raising=False)
 
     spoken = []
     engine = _engine(monkeypatch, spoken)
@@ -202,7 +203,7 @@ def test_the_batch_summary_reaches_the_model(fake_ollama, claude_home, monkeypat
 
 
 def test_queue_clears_after_a_flush(fake_ollama, claude_home, monkeypatch):
-    from engines.base import derive_project_label
+    from home import derive_project_label
     spoken = []
     engine = _engine(monkeypatch, spoken)
     _prime_bootstrapped_session()
@@ -264,7 +265,7 @@ def test_a_failed_flush_does_not_retrigger_the_gate_immediately(fake_ollama, cla
     flushes again with only one item queued, degrading the batch summary to
     a one-item summary exactly when it should be grouping."""
     import phrase_gen
-    from engines.base import derive_project_label
+    from home import derive_project_label
 
     calls = []
 
@@ -305,7 +306,7 @@ def test_a_failed_flush_does_not_retrigger_the_gate_immediately(fake_ollama, cla
 
 def test_stop_discards_a_pending_batch(fake_ollama, claude_home, monkeypatch):
     """The task-end summary supersedes queued mid-work chatter."""
-    from engines.base import derive_project_label
+    from home import derive_project_label
 
     spoken = []
     engine = _engine(monkeypatch, spoken)

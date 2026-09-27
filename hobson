@@ -24,7 +24,7 @@ if [[ ! -f "$CONFIG_FILE" && ( -e "$HOME/.claude/claudio.json" || -e "$HOME/.cla
     python3 - "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null || true
 import sys
 sys.path.insert(0, sys.argv[1])
-from engines.base import migrate_legacy_state
+from home import migrate_legacy_state
 for moved in migrate_legacy_state():
     print(f"Moved ~/.claude/{moved} (claudio is now Hobson)")
 PY
@@ -201,7 +201,7 @@ else:
         reason=$(python3 -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from engines.base import load_config, silence_reason
+from home import load_config, silence_reason
 print(silence_reason(load_config()) or '')
 " 2>/dev/null)
         if [[ -n "$reason" ]]; then
@@ -233,6 +233,8 @@ except:
     print(3)
 " 2>/dev/null)
         echo "Volume:      $vol"
+        presence_line=$(python3 "$SCRIPT_DIR/scripts/presence.py" --status-text 2>/dev/null | sed -n 1p || true)
+        [[ -n "$presence_line" ]] && echo "$presence_line"
         echo "Config:      $CONFIG_FILE"
         echo "Log:         ~/.claude/hobson.log"
 
@@ -307,7 +309,7 @@ with open('$CONFIG_FILE', 'w') as f:
             out=$(python3 -c "
 import json, sys, time
 sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from engines.base import parse_duration
+from home import parse_duration
 secs = parse_duration('$duration')
 if secs is None:
     print('BADDURATION')
@@ -445,7 +447,7 @@ with open('$CONFIG_FILE', 'w') as f:
             python3 - "$test_msg" "$SCRIPT_DIR" <<'PYEOF'
 import sys, os
 sys.path.insert(0, os.path.join(sys.argv[2], "scripts"))
-from engines.base import load_config
+from home import load_config
 import importlib, json
 config = load_config()
 engine_map = {
@@ -552,43 +554,55 @@ if not filter_arg:
         if [[ "$_calls" -gt 0 ]]; then
             echo -e "${DIM}decider spend to date: \$${_spend} over ${_calls} call(s)${NC}"
         fi
+        _presence=$(python3 "$SCRIPT_DIR/scripts/presence.py" --status-text 2>/dev/null \
+                    | sed -n 's/^\([A-Za-z]*\): *\(.*\)$/\1 \2/p' | tr '\n' '·' | sed 's/·$//; s/·/ · /g') || true
+        [[ -n "$_presence" ]] && echo -e "${DIM}${_presence}${NC}"
         echo ""
-        # log() writes "[ts] [project] [engine] msg" for engine lines and
-        # "[ts] [project] msg" for everything else, so the engine is the tag
-        # *after* the project. Taking the first single-word tag instead read
-        # a one-word project ("hobson") as the engine, and left the project
-        # in `rest`, where none of the patterns below could match it.
-        _engine_re='^\[[^]]*\] \[[^]]*\] \[([a-z0-9-]+)\] (.*)$'
-        _project_re='^\[[^]]*\] \[[^]]*\] (.*)$'
-        tail -f "$LOG_FILE" | while IFS= read -r line; do
+        # log_record.py reads each line into its stamp, engine tag and
+        # message, so this loop only decides how to show it. The fields are
+        # separated by \x1f, not a tab: read collapses runs of tabs, which
+        # loses an empty engine field.
+        tail -f "$LOG_FILE" | python3 -u "$SCRIPT_DIR/scripts/log_record.py" --fields \
+        | while IFS=$'\x1f' read -r ts engine rest line; do
             # Decider lines carry the API's own cost figure; keep a running
             # total so the price of the remote model is visible as it is
-            # incurred, not discovered on a bill later. Handled before the
-            # engine-tag parsing below because "[decider]" is not an engine.
-            if [[ "$line" == *"[decider]"* ]]; then
-                _ts="${line%%]*}]"
-                _body="${line#*\[decider\] }"
-                if [[ "$line" =~ cost=\$([0-9.]+) ]]; then
+            # incurred, not discovered on a bill later.
+            if [[ "$rest" == *"[decider]"* ]]; then
+                _body="${rest#*\[decider\] }"
+                if [[ "$rest" =~ cost=\$([0-9.]+) ]]; then
                     _spend=$(awk -v a="$_spend" -v b="${BASH_REMATCH[1]}" \
                              'BEGIN{printf "%.6f", a+b}')
                     _calls=$((_calls + 1))
                     printf "  %s  ${CYAN}decider${NC}  %s  ${BOLD}\$%s${NC} ${DIM}total (%d calls)${NC}\n" \
-                           "$_ts" "$_body" "$_spend" "$_calls"
+                           "$ts" "$_body" "$_spend" "$_calls"
                 else
-                    printf "  %s  ${CYAN}decider${NC}  ${DIM}%s${NC}\n" "$_ts" "$_body"
+                    printf "  %s  ${CYAN}decider${NC}  ${DIM}%s${NC}\n" "$ts" "$_body"
                 fi
                 continue
             fi
-            ts="${line%%]*}]"
 
-            engine=""
-            if [[ "$line" =~ $_engine_re ]]; then
-                engine="${BASH_REMATCH[1]}"
-                rest="${BASH_REMATCH[2]}"
-            elif [[ "$line" =~ $_project_re ]]; then
-                rest="${BASH_REMATCH[1]}"
-            else
-                rest="${line#*] }"
+            # Presence: who is listening, and what was held for them.
+            if [[ "$rest" == *"[presence]"* ]]; then
+                _body="${rest#*\[presence\] }"
+                _tag="${MAGENTA}presence${NC}"
+                if [[ "$_body" =~ ^([a-z]+)\ -\>\ ([a-z]+)\ \(([a-z]*) ]]; then
+                    case "${BASH_REMATCH[2]}" in
+                        present) _c="$GREEN" ;; away) _c="$YELLOW" ;; *) _c="$CYAN" ;;
+                    esac
+                    printf "  %s  %b  ${_c}● %s${NC} ${DIM}(from %s, %s)${NC}\n" "$ts" "$_tag" \
+                           "${BASH_REMATCH[2]}" "${BASH_REMATCH[1]}" "${BASH_REMATCH[3]}"
+                elif [[ "$_body" == held\ * ]]; then
+                    printf "  %s  %b  ${YELLOW}⏸${NC} ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == briefing\ * || "$_body" == leaving\ * || "$_body" == greeting\ * || "$_body" == wave\ -\>* ]]; then
+                    printf "  %s  %b  ${BOLD}%s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == phone\ down* ]]; then
+                    printf "  %s  %b  ${RED}▼ %s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == phone\ up* ]]; then
+                    printf "  %s  %b  ${GREEN}▲ %s${NC}\n" "$ts" "$_tag" "$_body"
+                else
+                    printf "  %s  %b  ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
+                fi
+                continue
             fi
 
             if [[ -n "$engine" ]]; then
@@ -971,7 +985,7 @@ print('Models downloaded.')
                     done < <(python3 -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from engines.base import load_config
+from home import load_config
 k = load_config()['kokoro']  # defaults merged in: the idle timeout was pinned to 180 here
 for a in ['--port', str(k['daemon_port']),
           '--voice', k['voice'],
@@ -1308,6 +1322,120 @@ except:
         esac
         ;;
 
+    presence)
+        presence_py="$SCRIPT_DIR/scripts/presence.py"
+        action="${1:-status}"
+        case "$action" in
+            status)
+                python3 "$presence_py" --status-text
+                ;;
+            on)
+                python3 "$presence_py" --set enabled true
+                echo -e "${GREEN}Presence on${NC}: away or on a call, Hobson holds what he would say until you're back"
+                ;;
+            off)
+                python3 "$presence_py" --set enabled false
+                echo -e "${YELLOW}Presence off${NC}: Hobson speaks whether or not anyone is there"
+                ;;
+            mode)
+                new_mode="${2:-}"
+                if [[ -z "$new_mode" ]]; then
+                    current=$(python3 -c "
+import sys
+sys.path.insert(0, '$SCRIPT_DIR/scripts')
+import home, presence
+print(presence.settings(home.load_config()).get('mode'))
+" 2>/dev/null || echo auto)
+                    sel=1
+                    case "$current" in
+                        signals) sel=0 ;;
+                        auto) sel=1 ;;
+                        continuous) sel=2 ;;
+                    esac
+                    echo "Choose how Hobson knows you're there (current: $current):"
+                    _PICK_OPTIONS=("signals" "auto" "continuous")
+                    _PICK_DESCS=(
+                        "keyboard, screen lock, display sleep, calls; never the camera"
+                        "signals, plus a 2-second look only before speaking to an idle desk (default)"
+                        "signals, plus a frame a second: departures in seconds, and company"
+                    )
+                    _pick_menu "$sel"
+                    new_mode="$PICK_RESULT"
+                fi
+                case "$new_mode" in
+                    signals|auto|continuous) ;;
+                    *)
+                        echo -e "${RED}Invalid mode: $new_mode${NC} (signals, auto or continuous)"
+                        exit 1
+                        ;;
+                esac
+                python3 "$presence_py" --set mode "$new_mode"
+                echo -e "${GREEN}Presence mode: $new_mode${NC}"
+                ;;
+            phone)
+                value="${2:-}"
+                if [[ -z "$value" ]]; then
+                    python3 "$presence_py" --phone-check
+                    exit 0
+                fi
+                python3 "$presence_py" --set phone "$value"
+                if [[ "$value" == "off" || "$value" == "none" ]]; then
+                    echo -e "${YELLOW}Phone switch off${NC}: the camera follows the presence mode alone"
+                else
+                    echo -e "${GREEN}Phone switch on${NC}: face up = camera on, face down = off (unreachable = off)"
+                    python3 "$presence_py" --phone-check
+                fi
+                ;;
+            preview)
+                case "${2:-}" in
+                    on)
+                        python3 "$presence_py" --set preview true
+                        echo -e "${GREEN}Preview on${NC}: a floating window shows the camera and what Hobson sees"
+                        ;;
+                    off)
+                        python3 "$presence_py" --set preview false
+                        echo -e "${YELLOW}Preview off${NC}"
+                        ;;
+                    *)
+                        echo "Usage: hobson presence preview on|off"
+                        exit 1
+                        ;;
+                esac
+                ;;
+            greetings)
+                case "${2:-}" in
+                    on)
+                        python3 "$presence_py" --set greetings true
+                        echo -e "${GREEN}Greetings on${NC}: a word when you leave, a welcome when you're back"
+                        ;;
+                    off)
+                        python3 "$presence_py" --set greetings false
+                        echo -e "${YELLOW}Greetings off${NC}: Hobson only speaks at the door when there's news"
+                        ;;
+                    *)
+                        echo "Usage: hobson presence greetings on|off"
+                        exit 1
+                        ;;
+                esac
+                ;;
+            look)
+                python3 "$presence_py" --look
+                ;;
+            setup)
+                "$SCRIPT_DIR/scripts/build-presence.sh" || exit $?
+                echo "Asking macOS for camera permission (a dialog may appear)..."
+                python3 "$presence_py" --look --request-permission
+                ;;
+            stop)
+                python3 "$presence_py" --stop
+                ;;
+            *)
+                echo "Usage: hobson presence [status|on|off|mode [signals|auto|continuous]|greetings on|off|preview on|off|phone [auto|off|SERIAL]|look|setup|stop]"
+                exit 1
+                ;;
+        esac
+        ;;
+
     doctor|check)
         echo "hobson doctor"
         echo "=================="
@@ -1483,12 +1611,21 @@ PY
             warnings=$((warnings + 1))
         fi
 
+        # 8a. Presence (scripts/presence.py, the sensor in presence/)
+        while IFS=$'\t' read -r level text; do
+            case "$level" in
+                ok) echo -e "  ${GREEN}✓${NC} $text" ;;
+                warn) echo -e "  ${YELLOW}!${NC} $text"; warnings=$((warnings + 1)) ;;
+                *) echo -e "  ${DIM:-}·${NC} $text" ;;
+            esac
+        done < <(python3 "$SCRIPT_DIR/scripts/presence.py" --doctor 2>/dev/null || true)
+
         # 8. Decider backend (Jev, via decider.py — see scripts/decider.py)
         echo ""
         decider_info=$(python3 -c "
 import sys
 sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from engines.base import load_config
+from home import load_config
 import decider
 cfg = load_config().get('decider', {})
 backend = cfg.get('backend', 'local')
@@ -1581,7 +1718,7 @@ else:
                 python3 -c "
 import json, sys
 sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from engines.base import load_config, DEFAULT_CONFIG
+from home import load_config, DEFAULT_CONFIG
 config = load_config()
 print(json.dumps(config, indent=2))
 "
@@ -1598,7 +1735,7 @@ print(json.dumps(config, indent=2))
                 python3 -c "
 import json, sys
 sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from engines.base import DEFAULT_CONFIG
+from home import DEFAULT_CONFIG
 config = dict(DEFAULT_CONFIG)
 config['engine'] = '$engine'
 config['personality'] = '$personality'
@@ -1837,6 +1974,7 @@ with open(config_file, 'w') as f:
         echo "  hobson voice [name]        Switch Kokoro voice"
         echo "  hobson test                Play a test bark"
         echo "  hobson recap [minutes]     Speak a summary of recent activity (default 10m)"
+        echo "  hobson presence [status|on|off|mode|greetings|phone|look|setup]  Whether anyone is listening"
         echo "  hobson lines [category]    Show voice lines"
         echo "  hobson monitor             Watch bark activity in real time"
         echo "  hobson stats               Show what was spoken, queued, and suppressed"

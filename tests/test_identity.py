@@ -73,9 +73,9 @@ def test_one_step_is_exactly_unity():
 
 
 def test_rate_flag_reaches_afplay_when_enabled(monkeypatch):
-    import engines.base as base
+    import home
     # A label whose rate is not exactly 1.0 ("hobson" hashes to 1.0, no -r).
-    monkeypatch.setattr(base, "derive_project_label", lambda: "butler")
+    monkeypatch.setattr(home, "derive_project_label", lambda: "butler")
     eng = _engine(project_identity={"enabled": True, "spread": 0.06})
     args = eng._afplay_args("/tmp/x.wav")
     assert "-r" in args

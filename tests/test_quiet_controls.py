@@ -2,8 +2,7 @@
 
 import time
 
-import engines.base as base
-from engines.base import parse_duration, silence_reason
+from home import parse_duration, silence_reason
 
 
 def _cfg(**over):
@@ -147,7 +146,7 @@ def test_daemon_idle_timeout_outlives_normal_gaps_between_utterances():
     allow_cold_start=False by design). 600s cuts that to 1.1%; beyond it the
     curve flattens while RAM stays pinned longer.
     """
-    from engines.base import DEFAULT_CONFIG
+    from home import DEFAULT_CONFIG
     for engine in ("pocket_tts", "kokoro"):
         timeout = DEFAULT_CONFIG[engine]["daemon_idle_timeout"]
         assert timeout >= 600, f"{engine} idle timeout {timeout}s re-opens the gap"

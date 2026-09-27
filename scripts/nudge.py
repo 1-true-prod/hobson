@@ -22,11 +22,13 @@ fastest route to the user disabling hobson entirely):
     this session is waiting on" and nothing else -- see the note on
     _WAITING_PHRASES for why there is no stuck nudge.
   - Never the same sentence twice — phrasing escalates in directness.
+  - Never to an empty room (presence.py): away or on a call, the nudge
+    waits for you without spending a step, and your return briefing tells
+    you what it would have said. A wait has a ceiling (NUDGE_MAX_SECONDS).
 """
 
 import argparse
 import fcntl
-import hashlib
 import json
 import os
 import sys
@@ -34,15 +36,17 @@ import time
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from engines.base import (  # noqa: E402
-    derive_project_label, load_config, log, silence_reason,
-)
-
-LOCK_DIR = os.path.expanduser("~/.claude")
+import home  # noqa: E402
+import log_record  # noqa: E402
 
 # Escalating gaps in seconds; length is the hard cap on re-announcements.
 # Overridable via config "nudge.delays" — see _run().
 NUDGE_DELAYS = (45, 120, 300)
+
+# However long you are away, a nudge gives up this long after it started.
+NUDGE_MAX_SECONDS = 4 * 3600
+# How often a paused nudge checks whether you are back.
+PRESENCE_POLL_SECONDS = 3
 
 # The two documented Claude Code notification_type values that mean
 # "the session is waiting on you" (see NOTIFICATION_LABELS in base.py).
@@ -68,15 +72,10 @@ def nudge_schedule(delays=NUDGE_DELAYS):
     return tuple(delays)
 
 
-def _project_key(project):
-    """The short stable key every per-project file in LOCK_DIR is named by."""
-    return hashlib.sha256((project or "").encode("utf-8")).hexdigest()[:12]
-
-
 def _lock_path(kind, project):
     """kind is 'nudge' or 'watchdog' — separate lock namespaces, since a
     project may reasonably have one of each running at once."""
-    return os.path.join(LOCK_DIR, f"hobson-{kind}-{_project_key(project)}.lock")
+    return home.project_file(kind, project, ".lock")
 
 
 def activity_path(project):
@@ -88,7 +87,7 @@ def activity_path(project):
     silenced "this session is waiting on you" at exactly the moment you were
     busy somewhere else.
     """
-    return os.path.join(LOCK_DIR, f"hobson-activity-{_project_key(project)}")
+    return home.project_file("activity", project)
 
 
 # Tools that park the session on the user. While one is the last thing that
@@ -107,7 +106,7 @@ def alive_path(project):
     total silence. And a write on every tool call, subagents included, must
     not read-modify-write the file that holds the commentary queue.
     """
-    return os.path.join(LOCK_DIR, f"hobson-alive-{_project_key(project)}")
+    return home.project_file("alive", project)
 
 
 def record_alive(project, hook_input):
@@ -155,22 +154,47 @@ def _phrase_for(step):
     return _WAITING_PHRASES[min(step, len(_WAITING_PHRASES) - 1)]
 
 
-def _speak(config, text):
+def _speak(config, text, kind="nudge"):
+    """Speak through the configured engine. False when presence held the
+    phrase for your return instead."""
     import hobson
     engine = hobson.load_engine(config)
-    engine.speak_dynamic(text, allow_cold_start=True)
+    return engine.speak_dynamic(text, allow_cold_start=True, kind=kind) is not False
+
+
+def _paused_for(config):
+    """The presence state a nudge must wait out (away, call), or None to go
+    ahead. Any failure goes ahead: without presence, a nudge is as it was."""
+    try:
+        import presence
+        state = presence.audience(config)[0]
+        return state if presence.pauses_nudge(state) else None
+    except Exception:
+        return None
+
+
+def _wait_for_return(project, started_at, deadline):
+    """Block while you are away or on a call. "back", "cancelled" (you
+    typed in this session) or "expired" (NUDGE_MAX_SECONDS)."""
+    while time.time() < deadline:
+        if not should_continue(activity_path(project), started_at, time.time()):
+            return "cancelled"
+        if _paused_for(home.load_config()) is None:
+            return "back"
+        time.sleep(PRESENCE_POLL_SECONDS)
+    return "expired"
 
 
 def _run(project, subject):
     """The escalating re-announcement loop. Never called from tests."""
-    config = load_config()
+    config = home.load_config()
     lock_path = _lock_path("nudge", project)
 
     fd = open(lock_path, "a+", encoding="utf-8")
     try:
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        log(f"[nudge] skipped — a nudge is already running for {project!r}")
+        log_record.write(f"[nudge] skipped — a nudge is already running for {project!r}")
         fd.close()
         return
 
@@ -181,30 +205,46 @@ def _run(project, subject):
 
     delays = tuple(config.get("nudge", {}).get("delays") or NUDGE_DELAYS)
     started_at = time.time()
-    log(f"[nudge] started for {project!r}: {subject!r}")
+    log_record.write(f"[nudge] started for {project!r}: {subject!r}")
 
     try:
-        for step, delay in enumerate(delays):
-            time.sleep(delay)
+        deadline = started_at + NUDGE_MAX_SECONDS
+        step = 0
+        while step < len(delays):
+            time.sleep(delays[step])
 
             if not should_continue(activity_path(project), started_at, time.time()):
-                log(f"[nudge] cancelled (user activity) after step {step + 1}")
+                log_record.write(f"[nudge] cancelled (user activity) after step {step + 1}")
                 return
 
             # Re-read config on every step, not just at startup — a live
             # `hobson off` mid-escalation must be able to silence an
             # already-running nudge, not just future ones.
-            live_config = load_config()
-            reason = silence_reason(live_config)
+            live_config = home.load_config()
+            reason = home.silence_reason(live_config)
             if reason:
-                log(f"[nudge] silenced ({reason}), skipping step {step + 1}")
+                log_record.write(f"[nudge] silenced ({reason}), skipping step {step + 1}")
+                step += 1
+                continue
+
+            # Nobody to hear it: wait for you, spending no step. The return
+            # briefing says this session is waiting, so the step's full gap
+            # starts again once you are back rather than nudging at once.
+            state = _paused_for(live_config)
+            if state:
+                log_record.write(f"[nudge] paused ({state}) before step {step + 1}")
+                outcome = _wait_for_return(project, started_at, deadline)
+                log_record.write(f"[nudge] {outcome} after a pause for {project!r}")
+                if outcome != "back":
+                    return
                 continue
 
             phrase = _phrase_for(step)
             _speak(live_config, phrase)
-            log(f"[nudge] spoke ({step + 1}/{len(delays)}) -> {phrase!r}")
+            log_record.write(f"[nudge] spoke ({step + 1}/{len(delays)}) -> {phrase!r}")
+            step += 1
 
-        log(f"[nudge] capped ({len(delays)}/{len(delays)}), giving up on {project!r}")
+        log_record.write(f"[nudge] capped ({len(delays)}/{len(delays)}), giving up on {project!r}")
     finally:
         try:
             fcntl.flock(fd, fcntl.LOCK_UN)
@@ -297,7 +337,7 @@ def _run_watchdog(project, minutes, baseline=None):
         fd = open(lock_path, "a+", encoding="utf-8")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (BlockingIOError, OSError):
-        log(f"[watchdog] already running for {project!r}, exiting")
+        log_record.write(f"[watchdog] already running for {project!r}, exiting")
         return
 
     from session_state import load_session
@@ -307,7 +347,7 @@ def _run_watchdog(project, minutes, baseline=None):
         baseline_event = baseline
     else:
         baseline_event = load_session(project).get("last_event_time", 0) or 0
-    log(f"[watchdog] started for {project!r} ({minutes}m)")
+    log_record.write(f"[watchdog] started for {project!r} ({minutes}m)")
 
     try:
         while True:
@@ -315,26 +355,28 @@ def _run_watchdog(project, minutes, baseline=None):
             now = time.time()
 
             if not should_continue(activity_path(project), started_at, now):
-                log(f"[watchdog] cancelled (user activity) for {project!r}")
+                log_record.write(f"[watchdog] cancelled (user activity) for {project!r}")
                 return
 
             verdict = watchdog_verdict(load_session(project), read_alive(project),
                                        baseline_event or started_at, minutes, now)
             if verdict == "resumed":
-                log(f"[watchdog] activity resumed, exiting for {project!r}")
+                log_record.write(f"[watchdog] activity resumed, exiting for {project!r}")
                 return
             if verdict == "wait":
                 continue
 
-            live_config = load_config()
-            reason = silence_reason(live_config)
+            live_config = home.load_config()
+            reason = home.silence_reason(live_config)
             if reason:
-                log(f"[watchdog] silenced ({reason}), exiting for {project!r}")
+                log_record.write(f"[watchdog] silenced ({reason}), exiting for {project!r}")
                 return
 
             phrase = f"Nothing's moved on {project} for {round(minutes)} minutes."
-            _speak(live_config, phrase)
-            log(f"[watchdog] spoke -> {phrase!r}")
+            if _speak(live_config, phrase, kind="stalled"):
+                log_record.write(f"[watchdog] spoke -> {phrase!r}")
+            else:
+                log_record.write(f"[watchdog] held for your return -> {phrase!r}")
             return
     finally:
         try:
@@ -361,7 +403,7 @@ def main():
                              "post-spawn save_session().")
     args = parser.parse_args()
 
-    project = args.project or derive_project_label()
+    project = args.project or home.derive_project_label()
 
     if args.watchdog:
         _run_watchdog(project, args.minutes, baseline=args.baseline)

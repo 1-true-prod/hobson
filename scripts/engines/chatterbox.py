@@ -3,7 +3,8 @@
 import os
 import subprocess
 
-from .base import BaseEngine, ROOT
+from .base import BaseEngine
+import home
 
 
 def _find_reference_audio(personality="hobson"):
@@ -17,13 +18,13 @@ def _find_reference_audio(personality="hobson"):
 
     for name in search_names:
         for ext in ("wav", "mp3", "flac", "ogg", "m4a"):
-            p = os.path.join(ROOT, "models", f"{name}.{ext}")
+            p = os.path.join(home.ROOT, "models", f"{name}.{ext}")
             if os.path.isfile(p):
                 return p
-            p2 = os.path.expanduser(f"~/.claude/models/{name}.{ext}")
+            p2 = os.path.join(home.path("models"), f"{name}.{ext}")
             if os.path.isfile(p2):
                 return p2
-    return os.path.join(ROOT, "models", "hobson-reference.wav")
+    return os.path.join(home.ROOT, "models", "hobson-reference.wav")
 
 
 class ChatterboxEngine(BaseEngine):
@@ -39,9 +40,9 @@ class ChatterboxEngine(BaseEngine):
 
     def __init__(self, config):
         super().__init__(config)
-        self.cache_dir = os.path.expanduser("~/.claude/voice-cache-chatterbox")
-        self._venv_python = os.path.join(ROOT, "venvs", "chatterbox", "bin", "python3")
-        self._cache_gen = os.path.join(ROOT, "scripts", "cache-gen", "chatterbox_gen.py")
+        self.cache_dir = home.path("voice-cache-chatterbox")
+        self._venv_python = os.path.join(home.ROOT, "venvs", "chatterbox", "bin", "python3")
+        self._cache_gen = os.path.join(home.ROOT, "scripts", "cache-gen", "chatterbox_gen.py")
         self._reference_audio = _find_reference_audio(config.get("personality", "hobson"))
 
     def backfill(self, text):

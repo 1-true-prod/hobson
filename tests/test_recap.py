@@ -101,3 +101,37 @@ def test_stripping_repairs_spacing_and_capitalisation():
     assert text[0].isupper()
     assert "  " not in text
     assert " ," not in text
+
+
+# Every line written since the log was dated starts "[YYYY-MM-DD HH:MM:SS]".
+# recap matched only the undated form, so it found nothing at all.
+DATED = [
+    "[2026-08-21 10:04:00] [hobson] gen[Stop] 0.4s attempt=1/2 model=m "
+    "detail='Last message: Pushed.' raw='done | I pushed the branch.' -> done spoken='I pushed the branch.'",
+    "[2026-08-21 10:04:00] [hobson] [pocket-tts] [Stop] (m) -> done -> 'I pushed the branch.'",
+    "[2026-08-21 10:04:01] [hobson] [pocket-tts] barked (daemon-live) -> 'I pushed the branch.'",
+    "[2026-08-20 10:05:00] [hobson] [pocket-tts] [Stop] (m) -> done -> 'Yesterday, same clock time.'",
+]
+
+
+def test_dated_lines_are_read():
+    items = recent_activity(DATED, "hobson", minutes=10, now=_now(10, 6))
+    assert "I pushed the branch." in items
+
+
+def test_a_phrase_logged_three_ways_is_one_item():
+    """The trace, the event line and the playback line all carry it."""
+    items = recent_activity(DATED, "hobson", minutes=10, now=_now(10, 6))
+    assert items.count("I pushed the branch.") == 1
+
+
+def test_a_dated_line_keeps_its_own_date():
+    """Reconstructing the date from the clock time would put yesterday's
+    10:05 inside a 10:06 window."""
+    items = recent_activity(DATED, "hobson", minutes=10, now=_now(10, 6))
+    assert not any("Yesterday" in i for i in items)
+
+
+def test_dated_and_legacy_lines_mix():
+    items = recent_activity(LINES + DATED, "hobson", minutes=10, now=_now(10, 6))
+    assert any("parser" in i for i in items) and "I pushed the branch." in items

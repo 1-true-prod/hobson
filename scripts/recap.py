@@ -17,6 +17,8 @@ import sys
 import time
 
 import engines.base as base
+import home
+import log_record
 import phrase_gen
 
 DEFAULT_MINUTES = 10
@@ -32,85 +34,46 @@ NUM_PREDICT = 70
 MAX_RECAP_WORDS = 38
 CHAT_TIMEOUT = 20
 
-# Log lines look like "[HH:MM:SS] [project] <rest>" (engines/base.py:log()).
-# No date is recorded, so window selection has to reconstruct one from `now`.
-_LINE_RE = re.compile(r"^\[(\d{2}):(\d{2}):(\d{2})\]\s+\[([^\]]+)\]\s+(.*)$")
 
-# Three shapes the spoken phrase / detail can appear in, depending on which
-# code path logged the line:
-#   ...-> done -> 'I edited the parser.'          (BaseEngine._log / run())
-#   ...detail='Bash: run the tests' ... spoken='I ran the tests.'  (phrase_gen trace)
-_SPOKEN_RE = re.compile(r"spoken='([^']*)'\s*$")
-_ARROW_QUOTE_RE = re.compile(r"->\s*'([^']*)'\s*$")
-_DETAIL_RE = re.compile(r"detail='([^']*)'")
-
-
-def _extract_phrase(rest):
-    """Pull the spoken text (or a detail fallback) out of one log line's tail."""
-    for pattern in (_SPOKEN_RE, _ARROW_QUOTE_RE):
-        m = pattern.search(rest)
-        if m and m.group(1).strip():
-            return m.group(1).strip()
-    m = _DETAIL_RE.search(rest)
-    if m and m.group(1).strip():
-        return m.group(1).strip()
-    return None
-
-
-def _candidate_timestamp(hour, minute, second, now):
-    """Reconstruct a full timestamp from a bare HH:MM:SS using now's date.
-
-    Log lines carry no date. If the reconstructed time falls after `now`,
-    the entry must actually be from the previous day (a run spanning
-    midnight) rather than from the future.
-    """
-    today = time.localtime(now)
-    try:
-        candidate = time.mktime((
-            today.tm_year, today.tm_mon, today.tm_mday,
-            hour, minute, second, 0, 0, -1,
-        ))
-    except (ValueError, OverflowError):
-        return None
-    if candidate > now:
-        candidate -= 86400
-    return candidate
+def _extract_phrase(body):
+    """The spoken phrase in one record, else, from a generation trace, what
+    the model was told had happened."""
+    trace = log_record.parse_trace(body)
+    if trace is None:
+        text = (log_record.tail_phrase(body) or "").strip()
+    else:
+        text = (trace.spoken or "").strip() or (trace.detail or "").strip()
+    return text or None
 
 
 def recent_activity(lines, project, minutes=DEFAULT_MINUTES, now=None):
     """Spoken phrases / detail fragments for `project` within the last `minutes`.
 
     Pure and defensive — malformed lines and other projects' lines are
-    skipped, never raised on. Returns items oldest-first, capped at the
-    MAX_ITEMS most recent so the recap prompt stays small.
+    skipped, never raised on. Returns items oldest-first, each once -- a
+    spoken phrase is logged by the generation trace, the event line and the
+    playback line -- capped at the MAX_ITEMS most recent so the recap prompt
+    stays small.
     """
     now = time.time() if now is None else now
     window_seconds = minutes * 60
     found = []
 
-    for line in lines:
-        m = _LINE_RE.match(line)
-        if not m:
+    for record in log_record.records(lines):
+        if record.project != project:
             continue
-        hh, mm, ss, tag, rest = m.groups()
-        if tag != project:
-            continue
-        try:
-            hh, mm, ss = int(hh), int(mm), int(ss)
-        except ValueError:
-            continue
-        ts = _candidate_timestamp(hh, mm, ss, now)
+        ts = record.timestamp(now)
         if ts is None:
             continue
         age = now - ts
         if age < 0 or age > window_seconds:
             continue
-        phrase = _extract_phrase(rest)
+        phrase = _extract_phrase(record.body)
         if phrase:
             found.append((ts, phrase))
 
     found.sort(key=lambda pair: pair[0])
-    return [phrase for _, phrase in found][-MAX_ITEMS:]
+    return list(dict.fromkeys(phrase for _, phrase in found))[-MAX_ITEMS:]
 
 
 def build_prompt(items):
@@ -216,7 +179,7 @@ def _clean_recap(raw):
 
 def _read_log_lines():
     try:
-        with open(base.LOG_FILE, encoding="utf-8") as f:
+        with open(home.log_file(), encoding="utf-8", errors="replace") as f:
             return f.readlines()
     except OSError:
         return []
@@ -224,7 +187,7 @@ def _read_log_lines():
 
 def _parse_minutes(argv):
     if len(argv) > 1:
-        parsed = base.parse_duration(argv[1])
+        parsed = home.parse_duration(argv[1])
         if parsed is not None:
             return parsed / 60.0
         print(f"Ignoring unparseable duration {argv[1]!r}; using {DEFAULT_MINUTES}m.")
@@ -234,8 +197,8 @@ def _parse_minutes(argv):
 def main():
     minutes = _parse_minutes(sys.argv)
 
-    config = base.load_config()
-    project = base.derive_project_label() or "this project"
+    config = home.load_config()
+    project = home.derive_project_label() or "this project"
 
     items = recent_activity(_read_log_lines(), project, minutes=minutes)
     if not items:
@@ -264,10 +227,10 @@ def main():
     text, stripped = _strip_pm_speak(text)
     text = _trim_to_words(text)
     if stripped:
-        base.log(f"recap: stripped status-report phrasing {stripped}")
+        log_record.write(f"recap: stripped status-report phrasing {stripped}")
     print(text)
 
-    reason = base.silence_reason(config)
+    reason = home.silence_reason(config)
     if reason:
         print(f"(not spoken — {reason})")
         return

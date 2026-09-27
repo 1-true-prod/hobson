@@ -1,48 +1,11 @@
 """T5 — dates in the log.
 
-log() now emits an ISO-style "YYYY-MM-DD HH:MM:SS" stamp. Every parser must
-keep accepting the old undated "HH:MM:SS" lines too -- 71,000+ existing lines
-have no date and are never migrated, so "date unknown" must stay a distinct,
-countable state, never inferred as "today".
+The log is written with an ISO-style "YYYY-MM-DD HH:MM:SS" stamp. Every reader
+must keep accepting the old undated "HH:MM:SS" lines too -- 71,000+ existing
+lines have no date and are never migrated, so "date unknown" must stay a
+distinct, countable state, never inferred as "today".
 """
-import re
-
 import log_analyse
-
-
-def test_log_writes_dated_format(claude_home, monkeypatch):
-    import engines.base as base
-
-    monkeypatch.setattr(base, "derive_project_label", lambda: "hobson")
-    base.log("hello")
-    text = (claude_home / "hobson.log").read_text()
-    assert re.match(r"^\[\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\] \[hobson\] hello\n$", text)
-
-
-def test_gen_regex_matches_dated_and_legacy_lines():
-    dated = "[2026-09-22 14:26:11] [hobson] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'I shipped it.'"
-    legacy = "[14:26:11] [hobson] [pocket-tts] [Stop] (llama3.2:3b) -> done -> 'I shipped it.'"
-
-    m1 = log_analyse.GEN.match(dated)
-    m2 = log_analyse.GEN.match(legacy)
-    assert m1 is not None, "dated line must still match GEN"
-    assert m2 is not None, "legacy undated line must still match GEN"
-    assert m1.group(1) == "2026-09-22"
-    assert m2.group(1) is None
-
-
-def test_trace_regex_matches_dated_and_legacy_lines():
-    dated = ("[2026-09-22 15:00:13] [hobson] gen[PreToolUse] 0.59s attempt=1/1 "
-              "model=llama3.2:3b detail='x' raw='done | I fixed a Bash issue.' -> done")
-    legacy = ("[15:00:13] [hobson] gen[PreToolUse] 0.59s attempt=1/1 "
-              "model=llama3.2:3b detail='x' raw='done | I fixed a Bash issue.' -> done")
-
-    m1 = log_analyse.TRACE.match(dated)
-    m2 = log_analyse.TRACE.match(legacy)
-    assert m1 is not None, "dated trace line must still match TRACE"
-    assert m2 is not None, "legacy undated trace line must still match TRACE"
-    assert m1.group(1) == "2026-09-22"
-    assert m2.group(1) is None
 
 
 def test_parse_extracts_date_and_none_for_legacy(tmp_path):
@@ -76,8 +39,17 @@ def test_since_none_is_a_noop_and_keeps_undated_rows():
     assert undated_excluded == 0
 
 
-def test_gen_regex_reads_a_flush_the_decider_let_through():
-    line = ("[2026-09-25 17:10:00] [hobson] [pocket-tts] [PreToolUse] batch of 5 "
-            "(llama3.2:3b, normal, worth=0.72) -> done -> 'I'm pushing the retry fix.'")
-    m = log_analyse.GEN.match(line)
-    assert m is not None and m.group(8) == "'I'm pushing the retry fix.'"
+def test_parse_reads_a_flush_the_decider_let_through(tmp_path):
+    log_path = tmp_path / "hobson.log"
+    log_path.write_text("[2026-09-25 17:10:00] [hobson] [pocket-tts] [PreToolUse] batch of 5 "
+                        "(llama3.2:3b, normal, worth=0.72) -> done -> \"I'm pushing the retry fix.\"\n")
+    assert log_analyse.parse(str(log_path)) == [("2026-09-25", "PreToolUse", "I'm pushing the retry fix.")]
+
+
+def test_parse_raw_extracts_date_and_none_for_legacy(tmp_path):
+    log_path = tmp_path / "hobson.log"
+    trace = ("gen[PreToolUse] 0.59s attempt=1/1 model=llama3.2:3b detail='x' "
+             "raw='done | I fixed a Bash issue.' -> done")
+    log_path.write_text(f"[2026-09-22 15:00:13] [hobson] {trace}\n[15:00:13] [hobson] {trace}\n")
+    assert log_analyse.parse_raw(str(log_path)) == [
+        ("2026-09-22", "PreToolUse", "I fixed a Bash issue."), (None, "PreToolUse", "I fixed a Bash issue.")]

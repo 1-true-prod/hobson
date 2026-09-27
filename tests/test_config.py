@@ -2,7 +2,7 @@
 
 import json
 
-import engines.base as base
+import home
 
 
 def _write_config(claude, data):
@@ -10,7 +10,7 @@ def _write_config(claude, data):
 
 
 def test_defaults_when_no_file(claude_home):
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["engine"] == "say"
     assert cfg["personality"] == "hobson"
     assert cfg["events"] == ["stop", "permission", "notification"]
@@ -22,7 +22,7 @@ def test_defaults_when_no_file(claude_home):
 
 def test_shallow_merge_top_level(claude_home):
     _write_config(claude_home, {"engine": "kokoro-realtime", "volume": 7})
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["engine"] == "kokoro-realtime"
     assert cfg["volume"] == 7
     # untouched defaults remain
@@ -31,7 +31,7 @@ def test_shallow_merge_top_level(claude_home):
 
 def test_deep_merge_subdict(claude_home):
     _write_config(claude_home, {"ollama": {"model": "custom:1b"}})
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["ollama"]["model"] == "custom:1b"
     # sibling key preserved from defaults
     assert cfg["ollama"]["url"] == "http://localhost:11434"
@@ -39,7 +39,7 @@ def test_deep_merge_subdict(claude_home):
 
 def test_realtime_events_migration(claude_home):
     _write_config(claude_home, {"kokoro": {"realtime_events": ["stop", "commentary"]}})
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["events"] == ["stop", "commentary"]
     # deprecated key is stripped from the merged config
     assert "realtime_events" not in cfg["kokoro"]
@@ -50,13 +50,13 @@ def test_explicit_events_not_overridden_by_migration(claude_home):
         "events": ["stop"],
         "kokoro": {"realtime_events": ["stop", "permission", "notification"]},
     })
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["events"] == ["stop"]
 
 
 def test_invalid_json_falls_back_to_defaults(claude_home):
     (claude_home / "hobson.json").write_text("{not json", encoding="utf-8")
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["engine"] == "say"
 
 
@@ -77,3 +77,28 @@ def test_event_enabled_unknown_event_passes(claude_home):
     # An event name not in EVENT_MAP is not gated (returns True).
     eng = _engine({"events": [], "personality": "hobson"})
     assert eng._is_event_enabled({"hook_event_name": "SomethingElse"}) is True
+
+
+def test_load_config_hands_out_copies_of_the_defaults(claude_home):
+    """A caller mutating a section it did not set must not change the
+    defaults for the next load in the same process."""
+    from home import DEFAULT_CONFIG, load_config
+    first = load_config()
+    first["kokoro"]["voice"] = "mutated"
+    first["commentary"]["tools"].append("Mutated")
+    assert DEFAULT_CONFIG["kokoro"]["voice"] != "mutated"
+    assert "Mutated" not in load_config()["commentary"]["tools"]
+
+
+def test_a_config_file_that_is_not_an_object_falls_back_to_defaults(claude_home):
+    from home import load_config
+    (claude_home / "hobson.json").write_text("[1, 2]", encoding="utf-8")
+    assert load_config()["engine"] == "say"
+
+
+def test_the_decider_timeout_has_one_default():
+    """decider.py said 2000 while DEFAULT_CONFIG said 4000."""
+    import decider
+    from home import DEFAULT_CONFIG
+    assert decider.DEFAULT_TIMEOUT_MS == DEFAULT_CONFIG["decider"]["timeout_ms"]
+    assert decider._decider_config({})["timeout_ms"] == DEFAULT_CONFIG["decider"]["timeout_ms"]

@@ -250,11 +250,17 @@ def test_a_prompt_with_room_is_not_logged(monkeypatch, claude_home):
 
 # ── a Stop that ends on the agent's question ──────────────────────────────
 
+def _stop(context, **k):
+    """A Stop's reading, as stop_outcome.read() would hand it over."""
+    from stop_outcome import StopReading
+    return StopReading(context=context, last_message=context.split("Last message: ")[-1], **k)
+
+
 def test_a_turn_ending_on_a_question_is_a_question(fake_ollama, claude_home):
     fake_ollama.chat("done | I sketched both approaches.")
     cat, phrase = phrase_gen.generate_or_skip(
-        "Stop", "Agent: Both are sketched. A?", "No announcements yet.",
-        awaiting_answer=True)
+        "Stop", "Last message: Both are sketched. A?", "No announcements yet.",
+        stop=_stop("Last message: Both are sketched. A?", awaiting_answer=True))
     assert cat == "question" and phrase == "I sketched both approaches."
     assert "done->question" in (claude_home / "hobson.log").read_text()
 
@@ -263,7 +269,8 @@ def test_a_question_turn_stays_a_question_when_nothing_is_said(fake_ollama, clau
     """The nudge reads the category even when the phrase is skipped."""
     fake_ollama.chat("SKIP")
     assert phrase_gen.generate_or_skip(
-        "Stop", "Agent: A?", "ctx", awaiting_answer=True) == ("question", None)
+        "Stop", "Last message: A?", "ctx",
+        stop=_stop("Last message: A?", awaiting_answer=True)) == ("question", None)
     fake_ollama.chat("SKIP")
     assert phrase_gen.generate_or_skip("Stop", "Agent: done.", "ctx") == (None, None)
 
@@ -328,7 +335,8 @@ def test_an_unfounded_broken_stop_is_retried_then_done(monkeypatch, claude_home)
     sent = _scripted_chat(monkeypatch, ["broken | I hit a problem with the push.",
                                         "broken | I hit a problem with the push."])
     assert phrase_gen.generate_or_skip(
-        "Stop", "Last message: Pushed to origin, all tests pass.", "ctx") == \
+        "Stop", "Last message: Pushed to origin, all tests pass.", "ctx",
+        stop=_stop("Last message: Pushed to origin, all tests pass.")) == \
         ("done", "I hit a problem with the push.")
     assert "not broken" in sent[1][0][-1]["content"]
 
@@ -336,7 +344,9 @@ def test_an_unfounded_broken_stop_is_retried_then_done(monkeypatch, claude_home)
 def test_a_broken_stop_that_names_a_failure_stands(monkeypatch, claude_home):
     sent = _scripted_chat(monkeypatch, ["broken | I hit an API error on the retry."])
     assert phrase_gen.generate_or_skip(
-        "Stop", "Last message: The API returned an error and I could not recover.", "ctx") == \
+        "Stop", "Last message: The API returned an error and I could not recover.", "ctx",
+        stop=_stop("Last message: The API returned an error and I could not recover.",
+                   failure_reported=True)) == \
         ("broken", "I hit an API error on the retry.")
     assert len(sent) == 1
 
@@ -344,6 +354,7 @@ def test_a_broken_stop_that_names_a_failure_stands(monkeypatch, claude_home):
 def test_a_skipped_stop_that_was_checked_is_done(monkeypatch, claude_home):
     """"Unknown" starts a nudge; all 10 skipped, checked Stops were done."""
     _scripted_chat(monkeypatch, ["SKIP", "SKIP", "SKIP"])
-    assert phrase_gen.generate_or_skip("Stop", "Last message: x", "c", awaiting_answer=False) == ("done", None)
+    assert phrase_gen.generate_or_skip("Stop", "Last message: x", "c",
+                                       stop=_stop("Last message: x")) == ("done", None)
     assert phrase_gen.generate_or_skip("Stop", "Last message: x", "c") == (None, None)
-    assert phrase_gen.generate_or_skip("PreToolUse", "Bash: x", "c", awaiting_answer=False) == (None, None)
+    assert phrase_gen.generate_or_skip("PreToolUse", "Bash: x", "c") == (None, None)

@@ -83,7 +83,7 @@ def test_repetition_does_not_force_a_flush_in_normal_mode(
         claude_home, no_audio, monkeypatch):
     import phrase_gen
     from engines.say import SayEngine
-    from engines.base import derive_project_label
+    from home import derive_project_label
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
                         lambda *a, **k: ("broken", "That test keeps failing."))
     eng = SayEngine({

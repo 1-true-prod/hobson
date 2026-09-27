@@ -1,7 +1,7 @@
 """ollama_client.py — shared Ollama HTTP plumbing.
 
 Single source of truth for the Ollama endpoint defaults and request
-construction, so the classify (base.py, /api/generate, non-streaming) and
+construction, so the classify (stop_outcome.py, /api/generate, non-streaming) and
 phrase-generation (phrase_gen.py, /api/chat, streaming) call sites can't
 drift apart on URL handling, headers, or constants. Callers own their own
 timeout and response parsing (streaming vs not).

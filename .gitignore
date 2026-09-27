@@ -40,3 +40,6 @@ plans/
 
 # Config (contains user-specific paths)
 # Users create their own via install.sh
+
+# Built helpers (scripts/build-presence.sh)
+build/

@@ -1,6 +1,7 @@
 """Pure helpers: tts_normalize, derive_project_label, format_tool_name, extract_context."""
 
 import engines.base as base
+import home
 
 
 # ── tts_normalize ──────────────────────────────────────────────────────────
@@ -64,30 +65,30 @@ def test_tts_normalize_leaves_no_double_spaces():
 # ── derive_project_label ───────────────────────────────────────────────────
 
 def test_derive_project_label_simple(monkeypatch):
-    base._PROJECT_LABEL_CACHE = None
+    home._PROJECT_LABEL_CACHE = None
     monkeypatch.setattr(base.os, "getcwd", lambda: "/Users/x/Dev/mobile-app")
-    assert base.derive_project_label() == "mobile app"
+    assert home.derive_project_label() == "mobile app"
 
 
 def test_derive_project_label_worktree(monkeypatch):
-    base._PROJECT_LABEL_CACHE = None
+    home._PROJECT_LABEL_CACHE = None
     monkeypatch.setattr(
         base.os, "getcwd",
         lambda: "/Dev/mobile-app__worktrees/app-4005-fix-the-login",
     )
-    label = base.derive_project_label()
+    label = home.derive_project_label()
     assert label.startswith("mobile app,")
     assert "app" not in label.split(",")[1].split()[:1] or True  # ticket prefix stripped
     assert "fix" in label
 
 
 def test_derive_project_label_caches(monkeypatch):
-    base._PROJECT_LABEL_CACHE = None
+    home._PROJECT_LABEL_CACHE = None
     monkeypatch.setattr(base.os, "getcwd", lambda: "/Dev/first-repo")
-    first = base.derive_project_label()
+    first = home.derive_project_label()
     monkeypatch.setattr(base.os, "getcwd", lambda: "/Dev/second-repo")
     # cached — still returns the first label
-    assert base.derive_project_label() == first
+    assert home.derive_project_label() == first
 
 
 # ── format_tool_name ───────────────────────────────────────────────────────

@@ -5,23 +5,17 @@ Answers the question the log can already answer but nobody reads it to:
 how much did hobson actually say, and what stopped it saying more.
 """
 
-import os
 import re
 import sys
 
-LOG_FILE = os.path.expanduser("~/.claude/hobson.log")
+import home
+import log_record
 
 # Negative lookbehind excludes phrase_gen's own trace lines, which use a
 # "gen[EventName]" prefix (see phrase_gen.py) that would otherwise collide
 # with the real "[EventName]" event tag emitted by BaseEngine._log().
 _EVENT_RE = re.compile(r"(?<!gen)\[(Stop|PreToolUse|PermissionRequest|Notification)\]")
 _BATCH_RE = re.compile(r"batch of (\d+)")
-# Only a flush that produced a phrase has this shape:
-#   batch of 5 (llama3.2:3b, normal) -> done -> 'I ran the tests.'
-# Every other outcome line -- SKIP:, REJECTED:, UNUSABLE:, ERROR:, the old
-# "skipped (raw: ...)" -- is a flush that said nothing. Counting by the
-# absence of "skipped" read all 378 of those in the real log as spoken.
-_SPOKEN_FLUSH_RE = re.compile(r"batch of \d+ \([^)]*\) -> \w+ -> ")
 
 # "skipped (raw: ...)" is emitted only by builds predating
 # describe_generation_failure(), which replaced it with explicit
@@ -34,82 +28,75 @@ _STALE_MARKER_RE = re.compile(r"skipped \(raw: ")
 
 
 def summarize(lines):
-    """Count log activity. Pure — takes an iterable of lines."""
+    """Count log activity. Pure — takes an iterable of log lines."""
     s = {
         "queued": 0, "flushed": 0, "flush_spoken": 0, "flush_skipped": 0,
         "flush_held_back": 0, "stop_working": 0,
         "subagent_suppressed": 0, "silenced": 0, "rejected": 0, "barked": 0,
         "events": {}, "items_per_flush": 0.0,
         "tool_calls": 0, "speech_per_tool_call": 0.0,
-        # Progress awareness: stuck detection, anomaly mode, nudge, watchdog.
+        # Progress awareness: anomaly mode, nudge, watchdog.
         "gen_errors": 0, "gen_unusable": 0, "stale_lines": 0,
-        "stuck": 0, "anomaly_quiet": 0,
+        "anomaly_quiet": 0,
         "nudge_started": 0, "nudge_spoke": 0,
         "nudge_cancelled": 0, "nudge_capped": 0,
         "watchdog_started": 0, "watchdog_spoke": 0,
     }
     batch_sizes = []
-    for line in lines:
-        if not line or "[" not in line:
-            continue
-        m = _EVENT_RE.search(line)
+    for record in log_record.records(lines):
+        body = record.body
+        m = _EVENT_RE.search(body)
         if m:
             s["events"][m.group(1)] = s["events"].get(m.group(1), 0) + 1
-        if "queued (" in line:
+        if "queued (" in body:
             s["queued"] += 1
-        bm = _BATCH_RE.search(line)
+        bm = _BATCH_RE.search(body)
         if bm:
             s["flushed"] += 1
             batch_sizes.append(int(bm.group(1)))
-            if " held back " in line:
+            if " held back " in body:
                 # The decider judged it not worth hearing (gate.py).
                 s["flush_held_back"] += 1
-            elif _SPOKEN_FLUSH_RE.search(line):
+            elif _spoken_flush(body):
                 s["flush_spoken"] += 1
             else:
                 s["flush_skipped"] += 1
-        if "(subagent " in line:
+        if "(subagent " in body:
             s["subagent_suppressed"] += 1
-        if "silenced (" in line:
+        if "silenced (" in body:
             s["silenced"] += 1
-        if "[Stop] still working" in line:
+        if "[Stop] still working" in body:
             # The agent stopped to wait on its own subagents or build.
             s["stop_working"] += 1
-        # Matches only the gen[...] trace line from phrase_gen.py
-        # ("REJECTED=<phrase>"). The engine's own verdict line for the same
-        # event reads "REJECTED: guard rejected — ..." (colon, not equals)
-        # via describe_generation_failure(), so it does not also match here
-        # — one guard rejection is counted once, not twice.
-        if "REJECTED=" in line:
+        # A guard rejection is counted from phrase_gen's trace, not from the
+        # engine's own verdict line for the same event ("REJECTED: guard
+        # rejected — ..."), so it is counted once, not twice.
+        trace = log_record.parse_trace(body)
+        if trace is not None and trace.rejected is not None:
             s["rejected"] += 1
-        if _STALE_MARKER_RE.search(line):
+        if _STALE_MARKER_RE.search(body):
             # An old-build line. Report it, never fold it into a live rate.
             s["stale_lines"] += 1
             continue
-        if "barked" in line:
+        if log_record.parse_playback(body):
             s["barked"] += 1
-        if "ERROR:" in line:
+        if "ERROR:" in body:
             s["gen_errors"] += 1
-        if "UNUSABLE:" in line:
+        if "UNUSABLE:" in body:
             s["gen_unusable"] += 1
-        # A stuck flush isn't tagged in the outcome line — it's identifiable
-        # by the clause prepended to the context the model was handed, which
-        # is why the detail= trace had to land before any of this.
-        if "Going in circles" in line:
-            s["stuck"] += 1
-        if "queued (anomaly" in line:
+        if "queued (anomaly" in body:
             s["anomaly_quiet"] += 1
-        if "[nudge] started" in line:
+        if "[nudge] started" in body:
             s["nudge_started"] += 1
-        if "[nudge] spoke" in line:
+        if "[nudge] spoke" in body:
             s["nudge_spoke"] += 1
-        if "[nudge] cancelled" in line:
+        if "[nudge] cancelled" in body:
             s["nudge_cancelled"] += 1
-        if "[nudge] capped" in line:
+        if "[nudge] capped" in body:
             s["nudge_capped"] += 1
-        if "[watchdog] started" in line:
+        if "[watchdog] started" in body:
             s["watchdog_started"] += 1
-        if "[watchdog] spoke" in line:
+        if "[watchdog] spoke" in body:
             s["watchdog_spoke"] += 1
     if batch_sizes:
         s["items_per_flush"] = sum(batch_sizes) / len(batch_sizes)
@@ -124,8 +111,18 @@ def summarize(lines):
     return s
 
 
+def _spoken_flush(body):
+    """Only a flush that produced a phrase is an outcome with a batch size:
+      [PreToolUse] batch of 5 (llama3.2:3b, normal) -> done -> 'I ran the tests.'
+    Every other flush line -- SKIP:, REJECTED:, UNUSABLE:, ERROR:, the old
+    "skipped (raw: ...)" -- said nothing. Counting by the absence of
+    "skipped" read all 378 of those in the real log as spoken."""
+    outcome = log_record.parse_outcome(body)
+    return outcome is not None and outcome.batch is not None
+
+
 def main():
-    path = sys.argv[1] if len(sys.argv) > 1 else LOG_FILE
+    path = sys.argv[1] if len(sys.argv) > 1 else home.log_file()
     try:
         with open(path, errors="replace") as fh:
             s = summarize(fh)
@@ -162,7 +159,6 @@ def main():
               f"(they predate project tagging; counting them would skew every rate).")
 
     print("\nProgress")
-    print(f"  going in circles    {s['stuck']:6d}")
     print(f"  anomaly, kept quiet {s['anomaly_quiet']:6d}")
     print(f"  nudges started      {s['nudge_started']:6d}")
     print(f"    spoke             {s['nudge_spoke']:6d}")

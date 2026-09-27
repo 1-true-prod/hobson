@@ -9,7 +9,7 @@ import json
 import pytest
 
 import decider
-import engines.base as base
+import home
 
 # A synthetic, obviously-fake token -- not a real secret. Used only to prove
 # it never reaches a log line (test_key_never_appears_in_logs below).
@@ -17,7 +17,7 @@ FAKE_KEY = "sk-or-FAKE-TEST-TOKEN-0000000000000000"
 
 
 def _jev_config(**overrides):
-    cfg = dict(base.DEFAULT_CONFIG)
+    cfg = dict(home.DEFAULT_CONFIG)
     cfg["decider"] = {**cfg["decider"], "backend": "jev", **overrides}
     return cfg
 
@@ -30,7 +30,7 @@ def _log_text(claude_home):
 # ── 1. default config -> local, no HTTP ─────────────────────────────────────
 
 def test_default_backend_is_local_and_makes_no_request(claude_home, fake_decider):
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["decider"]["backend"] == "local"
 
     assert decider.choice("some state", "pick one", {"a": "first", "b": "second"}, config=cfg) is None
@@ -226,7 +226,7 @@ def test_load_config_merges_decider_block(claude_home):
         json.dumps({"decider": {"backend": "jev"}}), encoding="utf-8"
     )
 
-    cfg = base.load_config()
+    cfg = home.load_config()
 
     assert cfg["decider"]["backend"] == "jev"
     # untouched defaults survive the deep-merge
@@ -236,7 +236,7 @@ def test_load_config_merges_decider_block(claude_home):
 
 
 def test_default_config_has_local_decider_backend(claude_home):
-    cfg = base.load_config()
+    cfg = home.load_config()
     assert cfg["decider"]["backend"] == "local"
 
 
@@ -244,10 +244,10 @@ def test_decider_config_does_not_mutate_default_config_shared_dict():
     # load_config() does `dict(DEFAULT_CONFIG)` -- a shallow copy that shares
     # sub-dict objects with the module constant. decider._decider_config()
     # must never write into that shared dict.
-    before = dict(base.DEFAULT_CONFIG["decider"])
-    cfg = base.load_config()
+    before = dict(home.DEFAULT_CONFIG["decider"])
+    cfg = home.load_config()
     decider._decider_config(cfg)
-    assert base.DEFAULT_CONFIG["decider"] == before
+    assert home.DEFAULT_CONFIG["decider"] == before
 
 
 # ── The first real call site: overturning a near-duplicate ────────────────

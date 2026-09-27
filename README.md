@@ -35,6 +35,8 @@ Then start a new Claude Code session. Sessions already running keep the hooks th
   settings file (stow, chezmoi, a dotfiles repo) stays a symlink. The hooks run async, so they never
   hold Claude Code up.
 - Keeps its own config and state in `~/.claude/hobson*`.
+- Builds the presence sensor (`build/HobsonPresence.app`, in the checkout) and asks once whether
+  it may use the camera. Say no and it uses the keyboard, screen lock and calls only.
 - Nothing else: no permissions granted, no shell profile edited (the optional uv install, for the
   neural engines, adds itself to your PATH), nothing sent off your machine
   unless you turn on [Jev](#jev-optional).
@@ -129,8 +131,52 @@ Voice that talks constantly gets turned off, so most of Hobson's recent work is 
   re-announces on escalating delays (45s, 2m, 5m) and then stops for good. Only when you really are
   the blocker: a finished task sitting idle isn't nagged about. Typing in that session
   cancels it instantly; the others keep waiting for you.
+- **It knows whether anyone is listening.** Away from the desk or on a call, what Hobson would
+  have said is held, and when you sit back down you hear one short briefing, most urgent first:
+  *"Welcome back. On bank app: careful, this one deletes files. It needs your approval."* Nothing
+  happened, nothing said. Lock the screen while a session is waiting on you and he mentions it
+  on your way out. See [Presence](#presence).
 - **`hobson recap`** — pull a spoken summary of the last 10 minutes when you come back to the desk.
 - **`hobson stats`** — see what was spoken, queued, and suppressed, and why.
+
+## Presence
+
+A small helper (`presence/`, built at install with the Command Line Tools) tells Hobson whether
+anyone is at the desk. Cheapest signals first:
+
+| Signal | Means |
+|---|---|
+| Screen locked, or display asleep | away |
+| Zoom, Meet in a browser, Slack, Teams, FaceTime… capturing the microphone | on a call |
+| Keyboard or mouse touched in the last minute | present |
+| The camera, only when he is about to speak to an idle desk (a ~2s look) | present, away, or company |
+
+He notices you come and go: a word on your way out ("I'll hold anything that comes in"), and on
+your way back either the briefing or "Welcome back. All quiet for the last 20 minutes." — not after
+a lean out of frame, at most one farewell every five minutes, never the same line twice running
+(`hobson presence greetings off` for news only). Away or on a call, he holds what he would say;
+with someone else in frame, a wait is announced
+without its details ("Something needs your attention"). A nudge waits for you instead of talking to
+an empty room. Any doubt — no helper, a dark frame, an app he does not know — and he speaks exactly
+as he always did.
+
+The camera: frames stay in memory for one detection and are never saved or sent. macOS asks for
+permission once, at install (or `hobson presence setup`), never mid-session. Modes:
+`hobson presence mode signals` (never the camera), `auto` (the default: a look only before
+speaking), `continuous` (a frame a second: notices you leaving within seconds, and company).
+
+**The phone switch.** `hobson presence phone auto` makes an Android phone the camera's switch,
+read over adb (USB or Wireless debugging): face up, the camera may be used; face down, it is off,
+and Hobson says so. A phone he cannot read counts as face down.
+
+`hobson presence` shows what he knows; `hobson monitor` shows it change; `hobson presence preview
+on` floats a small window with the camera feed, a box around each face, and the state he reads
+from it (on your screen only; nothing is saved).
+
+Only a human face counts as someone: not a body, not a shape, not anything else that moves. In
+`continuous` mode, no face and no keystroke for 30 seconds is away (`presence.away_after`); looking
+down at a phone that long counts as leaving. Wave at the camera, with your face in view, and he
+answers: the briefing if anything is waiting, otherwise a hello.
 
 ## Personalities
 
@@ -175,6 +221,17 @@ hobson volume [0-10]       Get or set playback volume
 hobson voice [name]        Switch Kokoro voice (interactive picker)
 hobson test                Play a test bark
 hobson recap [minutes]     Speak a summary of recent activity (default 10m)
+hobson presence            Whether anyone is listening, and what is held for you
+hobson presence on|off     Hold speech while you're away / always speak
+hobson presence mode [signals|auto|continuous]
+                            How Hobson knows you're there (camera use)
+hobson presence greetings on|off
+                            A word when you leave, a welcome when you're back
+hobson presence preview on|off
+                            A floating window: the feed and what Hobson sees in it
+hobson presence phone [auto|off|SERIAL]
+                            Android phone face up = camera on, face down = off
+hobson presence look|setup Take one look / build the sensor and ask for the camera
 hobson lines [category]    Show voice lines from active personality
 hobson monitor             Watch bark activity in real time
 hobson stats               Show what was spoken, queued, and suppressed

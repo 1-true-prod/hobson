@@ -283,7 +283,7 @@ echo ""
 "$PYTHON" - "$SCRIPT_DIR/scripts" <<'PY' || warn "Could not move claudio's settings over; see ~/.claude"
 import sys
 sys.path.insert(0, sys.argv[1])
-from engines.base import migrate_legacy_state
+from home import migrate_legacy_state
 for moved in migrate_legacy_state():
     print(f"  Moved ~/.claude/{moved} (claudio is now Hobson)")
 PY
@@ -570,7 +570,7 @@ fi
 # ── Write config ─────────────────────────────────────────────────────
 #
 # Only the choices made here are written. Everything else comes from
-# DEFAULT_CONFIG in engines/base.py at load time, so an update that improves
+# DEFAULT_CONFIG in home.py at load time, so an update that improves
 # a default reaches every install instead of being frozen by the installer.
 
 if [[ "$KEEP_CONFIG" != true ]]; then
@@ -620,6 +620,41 @@ fi
 if [[ -L "$BIN_DIR/claudio" && -f "$(dirname "$(readlink "$BIN_DIR/claudio")")/scripts/settings-merge.py" ]]; then
     rm -f "$BIN_DIR/claudio"
     ok "The command is now 'hobson' (removed the old 'claudio' link)"
+fi
+
+# ── Presence sensor ──────────────────────────────────────────────────
+#
+# Knows whether anyone is listening (scripts/presence.py), so what Hobson
+# would say to an empty room or over a call is held until you are back.
+# A one-file Swift helper, built with the Command Line Tools already on any
+# Mac that has git. The camera is asked for only here, never mid-session.
+
+if command -v swiftc >/dev/null 2>&1; then
+    build_out=$("$SCRIPT_DIR/scripts/build-presence.sh" 2>&1) && build_rc=0 || build_rc=$?
+    if [[ $build_rc -eq 0 ]]; then
+        ok "Presence sensor ready"
+        # A sensor still running the old build keeps it until it exits.
+        if [[ "$build_out" == *Built* ]]; then
+            pkill -f "$SCRIPT_DIR/build/HobsonPresence.app/Contents/MacOS" 2>/dev/null || true
+        fi
+        camera=$("$PYTHON" "$SCRIPT_DIR/scripts/presence.py" --camera-status 2>/dev/null || true)
+        if [[ "$ASSUME_YES" != true && "$camera" == "not-determined" ]]; then
+            echo ""
+            echo "Hobson can glance through the camera, only when he is about to speak"
+            echo "and you have been idle, to hold his news until you are back."
+            echo "Frames stay in memory on this Mac; nothing is saved or sent."
+            if confirm "Allow the camera? (macOS will ask)" Y; then
+                "$PYTHON" "$SCRIPT_DIR/scripts/presence.py" --look --request-permission >/dev/null 2>&1 || true
+            else
+                "$PYTHON" "$SCRIPT_DIR/scripts/presence.py" --set mode signals
+                info "Presence will use the keyboard, screen lock and calls only (hobson presence mode)"
+            fi
+        fi
+    else
+        warn "Could not build the presence sensor; 'hobson presence setup' shows why"
+    fi
+else
+    info "Presence sensor skipped: no swiftc (xcode-select --install, then hobson presence setup)"
 fi
 
 # ── Optional: generate voice cache ───────────────────────────────────

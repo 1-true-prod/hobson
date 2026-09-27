@@ -1,6 +1,6 @@
 """_handle_commentary: whitelist, cooldown gate, chatty vs LLM, session recording."""
 
-import engines.base as base
+import home
 
 
 def _cfg(verbosity="normal", cooldown=0.0):
@@ -81,7 +81,7 @@ def test_commentary_cooldown_blocks_second(claude_home, no_audio, monkeypatch):
     eng.run(dict(evt))
     eng.run(dict(evt))
     assert len(no_audio["say"]) == 1, "cooldown should block the second flush"
-    state = ss.load_session(base.derive_project_label())
+    state = ss.load_session(home.derive_project_label())
     assert state["pending"], "a locked-out flush must keep its batch queued, not drop it"
 
 
@@ -94,7 +94,7 @@ def test_commentary_records_session(claude_home, no_audio, monkeypatch):
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/base.py"}})
     # derive_project_label is cached; load the session it wrote.
-    state = ss.load_session(base.derive_project_label())
+    state = ss.load_session(home.derive_project_label())
     assert state["total_voiced"] == 1
     assert len(state["recent_voiced"]) == 1
     assert state["recent_voiced"][0][0] == "I am wiring up the form."

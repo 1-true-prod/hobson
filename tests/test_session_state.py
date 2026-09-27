@@ -11,6 +11,7 @@ def test_fresh_state_schema():
         "project", "recent_voiced", "event_counts_since_voice",
         "last_voiced_time", "total_events", "total_voiced", "pending",
         "last_flush_time", "fingerprints", "repeat_announced", "seen_contexts",
+        "last_event_time", "last_stop_time", "last_stop_category",
     }
 
 
