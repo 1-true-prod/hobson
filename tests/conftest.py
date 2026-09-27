@@ -167,17 +167,22 @@ def fake_decider(monkeypatch):
     a 200 with an arbitrary (e.g. unparseable) body, .error(exc) to make the
     next call raise directly, and .http_error(code) for a non-200 via a real
     urllib.error.HTTPError (what urlopen actually raises for a non-2xx
-    response). .calls is the number of times urlopen was invoked.
+    response). .respond_with(fn) answers each request with fn(payload).
+    .calls is the number of times urlopen was invoked, and .sent() every
+    request as it left: its payload, url and headers.
     """
     import decider
 
-    box = {"factory": None, "error": None, "calls": 0}
+    box = {"factory": None, "error": None, "calls": 0, "sent": []}
 
     def fake_urlopen(req, timeout=None):
         box["calls"] += 1
+        payload = json.loads(req.data)
+        box["sent"].append(SimpleNamespace(payload=payload, url=req.full_url,
+                                           headers=dict(req.header_items())))
         if box["error"] is not None:
             raise box["error"]
-        return box["factory"]()
+        return box["factory"](payload)
 
     monkeypatch.setattr(decider, "urlopen", fake_urlopen)
 
@@ -185,11 +190,15 @@ def fake_decider(monkeypatch):
 
     def respond(body):
         box["error"] = None
-        box["factory"] = lambda: _FakeResp(body=json.dumps(body).encode())
+        box["factory"] = lambda payload: _FakeResp(body=json.dumps(body).encode())
+
+    def respond_with(fn):
+        box["error"] = None
+        box["factory"] = lambda payload: _FakeResp(body=json.dumps(fn(payload)).encode())
 
     def raw_body(raw_bytes):
         box["error"] = None
-        box["factory"] = lambda: _FakeResp(body=raw_bytes)
+        box["factory"] = lambda payload: _FakeResp(body=raw_bytes)
 
     def error(exc):
         box["error"] = exc
@@ -201,10 +210,34 @@ def fake_decider(monkeypatch):
         )
 
     ns.respond = respond
+    ns.respond_with = respond_with
     ns.raw_body = raw_body
     ns.error = error
     ns.http_error = http_error
     ns.calls = lambda: box["calls"]
+    ns.sent = lambda: list(box["sent"])
+    return ns
+
+
+@pytest.fixture
+def jev(fake_decider, monkeypatch):
+    """The decider on "jev" with a key, answering P = `jev.p` for every label
+    of whatever is asked (None: an answer it cannot read, i.e. no opinion).
+    `jev.config` selects it; `jev.states()` is each state as it left, which
+    is after redaction -- the only place a test can see what was sent."""
+    monkeypatch.setenv("OPENROUTER_API_KEY", "sk-or-test-key")
+    ns = SimpleNamespace(p=0.9, config={"decider": {"backend": "jev"}})
+
+    def answer(payload):
+        if ns.p is None:
+            return {"unexpected": "shape"}
+        criteria = payload["questions"]["answer"]["criteria"]
+        return {"answers": {"answer": {"type": "choice", "choice": next(iter(criteria)),
+                                       "probabilities": {k: ns.p for k in criteria},
+                                       "confidence": 1.0}}}
+
+    fake_decider.respond_with(answer)
+    ns.states = lambda: [r.payload["state"] for r in fake_decider.sent()]
     return ns
 
 

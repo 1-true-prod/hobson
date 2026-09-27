@@ -272,17 +272,19 @@ DEFAULT_CONFIG = {
     },
     # Optional remote decision model (Jev, via OpenRouter's Decisions API).
     # See scripts/decider.py. At "local" (the default) it makes zero network
-    # calls. Three questions go to it:
+    # calls. Three questions go to it, and the decider redacts everything
+    # each sends (decider.redact: no heredoc bodies or long quoted text;
+    # URLs, hosts, IPs, emails, logins, secrets, tokens and all but the last
+    # component of every path replaced):
     #   - phrase_gen: does this phrase restate one just spoken? Sends the
     #     phrase plus up to six recently spoken ones.
     #   - gate: is this commentary batch worth hearing? Sends the batch
-    #     summary (at most 220 characters), redacted as below.
+    #     summary, at most 220 characters.
     #   - risk: is this shell command destructive? Asked only for a Bash
     #     permission request the local rules can neither flag nor clear, and
-    #     sends the command REDACTED (risk.redact: no heredoc bodies or long
-    #     quoted text; URLs, hosts, IPs, emails, secrets, tokens and all but
-    #     the last component of every path replaced).
-    # Never code, file contents, or conversation.
+    #     sends the command.
+    # Never code, file contents, or the conversation itself: the nearest
+    # thing is what Hobson said aloud about it, redacted.
     "decider": {
         "backend": "local",          # "local" | "jev"
         "model": "typesafe/jev-1.13",

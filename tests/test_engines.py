@@ -11,6 +11,9 @@ import pytest
 
 import engines.base as base
 
+# Captured before the autouse no_audio fixture swaps it out for every test.
+_REAL_SAY_WITH_VOLUME = base.BaseEngine._say_with_volume
+
 
 def _cfg(engine="say"):
     return {
@@ -186,3 +189,16 @@ def test_a_realtime_stop_that_asks_is_flagged_and_gets_the_task(engine, claude_h
     assert seen["awaiting"] is True
     # The request fell out of the four-turn window, so it rides as the Task.
     assert seen["ctx"].startswith("Task: design the cat's stats for the game")
+
+
+@pytest.mark.parametrize("phrase", ["-o/Users/me/notes.txt", "--help", "I pushed the branch."])
+def test_say_reads_the_phrase_as_text_never_as_an_option(phrase, no_audio, monkeypatch):
+    """A phrase is model output. Before `--`, "-o<path>" wrote audio over that file."""
+    import shlex
+    from engines.say import SayEngine
+    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    SayEngine(_cfg())._say_with_volume(phrase)
+    [argv] = [a for a in no_audio["popen"] if a[:2] == ["sh", "-c"]]
+    words = shlex.split(argv[2])
+    assert words[0] == "say" and words[words.index("--") + 1] == phrase
+    assert words.index("--") > words.index("-o")

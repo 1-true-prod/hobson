@@ -817,10 +817,13 @@ def _p_restates(phrase, priors, config):
         import decider
     except ImportError:
         return None
-    state = ("Announcements already spoken, most recent last:\n"
-             + "\n".join(f"- {p}" for p in priors[-MAX_PRIOR_CONTEXT:])
-             + f"\n\nCandidate announcement:\n- {phrase}")
-    result = decider.choice(
+    # Phrases retell the session, so each goes as a decider.Phrase: redacted.
+    state = ["Announcements already spoken, most recent last:\n"]
+    for prior in priors[-MAX_PRIOR_CONTEXT:]:
+        state += ["- ", decider.Phrase(prior), "\n"]
+    state += ["\nCandidate announcement:\n- ", decider.Phrase(phrase)]
+    return decider.probability(
+        "restates",
         state,
         ("Decide how the candidate announcement relates to what was already "
          "spoken, for a voice assistant deciding whether saying it aloud "
@@ -832,12 +835,6 @@ def _p_restates(phrase, priors, config):
          "unrelated": "is about different work entirely"},
         config=config,
     )
-    if result is None:
-        return None
-    try:
-        return float(result.probs["restates"])
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return None
 
 
 # Anything that could be a failure (stop_outcome.FAILURE_ALTS), and the

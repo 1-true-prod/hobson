@@ -183,6 +183,42 @@ def test_install_and_uninstall_leave_a_hobson_named_users_hooks(settings_merge):
     assert _read(sm)["hooks"] == {"PreToolUse": [guard], "SessionStart": [start]}
 
 
+def _shared_entry(sm):
+    """A foreign hook added to hobson's own matcher group, as a hand edit or
+    another tool appending to an existing group would leave it."""
+    sm.merge_hooks("/d")
+    data = _read(sm)
+    data["hooks"]["Notification"][0]["hooks"].append({"type": "command", "command": "/opt/other/notify.sh"})
+    with open(sm.SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f)
+    return data["hooks"]["Notification"][0]["matcher"]
+
+
+def _commands(entries):
+    return [h["command"] for e in entries for h in e["hooks"]]
+
+
+def test_uninstall_keeps_a_foreign_hook_in_hobsons_group(settings_merge):
+    sm = settings_merge
+    matcher = _shared_entry(sm)
+    sm.remove_hooks()
+    [entry] = _read(sm)["hooks"]["Notification"]
+    assert entry == {"matcher": matcher, "hooks": [{"type": "command", "command": "/opt/other/notify.sh"}]}
+
+
+def test_reinstall_keeps_a_foreign_hook_in_hobsons_group(settings_merge):
+    sm = settings_merge
+    matcher = _shared_entry(sm)
+    sm.merge_hooks("/d")
+    entries = _read(sm)["hooks"]["Notification"]
+    assert "/opt/other/notify.sh" in _commands(entries)
+    assert sum("hobson.py" in c for c in _commands(entries)) == 1
+    assert all(e["matcher"] == matcher for e in entries)
+    before = _read(sm)
+    sm.merge_hooks("/d")
+    assert _read(sm) == before, "and a second run changes nothing"
+
+
 # ── Shapes hobson never wrote ────────────────────────────────────────────
 
 @pytest.mark.parametrize("settings", [

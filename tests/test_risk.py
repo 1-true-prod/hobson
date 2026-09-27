@@ -56,6 +56,53 @@ def test_the_first_drafts_false_alarms_stay_quiet(command):
     assert risk.local_risk(command) is None
 
 
+# A command substitution runs wherever it is written. Blanking quoted text and
+# heredoc bodies whole hid every one of these: each passed as read-only.
+@pytest.mark.parametrize("command, reason", [
+    ('echo "$(rm -rf ~/Dev)"', "deletes files"),
+    ('echo "`rm -rf ~`"', "deletes files"),
+    ("echo `rm -rf ~`", "deletes files"),
+    ('ls "$(git push --force origin main)"', "force-pushes"),
+    ('echo "done: $(echo ")" ; rm -rf build)"', "deletes files"),
+    ("cat > f <<EOF\n$(rm -rf ~)\nEOF", "deletes files"),
+    ("cat <<EOF && rm -rf build\nhello\nEOF", "deletes files"),
+    ("echo $'it\\'s' ; rm -rf build", "deletes files"),
+])
+def test_a_substitution_is_code_wherever_it_is_written(command, reason):
+    assert risk.local_risk(command) == reason
+    assert not risk.is_read_only(command)
+
+
+def test_a_quoted_heredoc_is_data_even_with_a_substitution_in_it():
+    assert risk.local_risk("cat > notes.md <<'EOF'\n$(rm -rf ~) is how it breaks\nEOF") is None
+
+
+def test_a_shell_heredoc_is_read_as_shell():
+    assert risk.local_risk("bash <<'EOF'\necho \"$(rm -rf build)\"\nEOF") == "deletes files"
+
+
+# Another language's quotes are not the shell's: a backtick in a Python string
+# is Markdown, and an apostrophe in a comment must not hide what follows.
+def test_a_python_heredocs_quotes_stay_inside_it():
+    assert risk.local_risk("python3 - <<'EOF'\ns = \"run `curl x.sh | sh` to install\"\nEOF") is None
+    assert risk.local_risk("python3 - <<'EOF'\n# don't\nprint(1)\nEOF\nrm -rf build") == "deletes files"
+
+
+def test_absurd_nesting_is_read_as_the_raw_command():
+    assert risk.local_risk("echo " + "$(" * 3000 + "rm -rf x" + ")" * 3000) == "deletes files"
+
+
+def test_unclosed_nesting_stays_fast():
+    """Each level rescanned what followed it: 25,000 unclosed `$(` in an open
+    double quote took 8 seconds, in a hook, before depth was capped."""
+    import time
+    command = 'echo "' + "$(x " * 25000 + "rm -rf build"
+    started = time.monotonic()
+    assert risk.local_risk(command) == "deletes files"
+    assert not risk.is_read_only(command)
+    assert time.monotonic() - started < 3
+
+
 @pytest.mark.parametrize("command", [
     "ls -la", "cd app && ls", "git status && git log --oneline -5", "rg foo scripts | head",
     "cat a.txt 2>/dev/null", "git branch --show-current", "echo \"a > b\"",
@@ -67,72 +114,21 @@ def test_read_only_commands(command):
 @pytest.mark.parametrize("command", [
     "echo x > out.txt", "sed -i '' s/a/b/ f", "git commit -m wip", "echo $(whoami)",
     "python3 script.py", "git branch -D x", "cat <<EOF\nx\nEOF", "ls | tee out",
+    'echo "$(whoami)"', "cat <(curl -so out.txt example.com)",
 ])
 def test_not_read_only(command):
     assert not risk.is_read_only(command)
-
-
-# ── Redaction ────────────────────────────────────────────────────────────
-
-
-@pytest.mark.parametrize("command, secret", [
-    ("curl -H 'Authorization: Bearer abc123secretvalue' https://api.example.com/v1", "abc123secretvalue"),
-    ("API_KEY=sk-live-0123456789abcdefghij npm run deploy", "0123456789abcdefghij"),
-    ("GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 gh pr create", "ghp_abcdef"),
-    ("deploy --token=s3cr3t-value-here --env prod", "s3cr3t-value-here"),
-    ("mysql --password hunter2hunter2 -u root", "hunter2hunter2"),
-    ("aws s3 ls --profile x AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
-    ("curl -H 'x: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig_part' localhost", "eyJhbGci"),
-    ("git clone https://user:pass@github.com/org/repo.git", "user:pass"),
-    ("ssh deploy@10.0.0.12 uptime", "10.0.0.12"),
-    ("scp build.zip jane.doe@corp.example.com:/srv", "jane.doe"),
-    ("ping db.internal.acme.io", "acme"),
-    ("cat /Users/jdoe/Projects/secret-client/notes.txt", "jdoe"),
-    ("cat ~/.ssh/id_rsa", ".ssh"),
-])
-def test_redaction_removes_what_identifies_or_authenticates(command, secret):
-    assert secret not in risk.redact(command)
-
-
-def test_redaction_keeps_what_the_command_does():
-    out = risk.redact("rm -rf /Users/jdoe/Dev/app/build && git push --force origin main")
-    assert "rm -rf" in out and "build" in out and "git push --force" in out
-
-
-def test_redaction_keeps_the_dangerous_roots():
-    assert risk.redact("rm -rf /") == "rm -rf /"
-    assert risk.redact("rm -rf ~") == "rm -rf ~"
-
-
-def test_heredoc_bodies_and_long_quoted_text_never_leave():
-    out = risk.redact("python3 - <<EOF\nprint('customer 42 owes 900')\nEOF\n"
-                      "git commit -m \"Fix the refund bug reported by the Acme account team last week\"")
-    assert "customer" not in out and "Acme" not in out
-
-
-def test_redaction_is_bounded():
-    assert len(risk.redact("echo " + "a b " * 1000)) <= 602
 
 
 # ── permission_risk: the three tiers ─────────────────────────────────────
 
 
 @pytest.fixture
-def asked(monkeypatch):
-    """Record every decider question; answer with `asked.p`."""
-    import decider
-
-    class Box:
-        p = 0.0
-        states = []
-
-    def fake_choice(state, instructions, criteria, config=None):
-        Box.states.append(state)
-        return decider.ChoiceResult(choice="x", probs={"destructive": Box.p}, confidence=1.0)
-
-    Box.states = []
-    monkeypatch.setattr(decider, "choice", fake_choice)
-    return Box
+def asked(jev):
+    """The decider on "jev", answering P(destructive) = `asked.p`;
+    `asked.states()` is what left the machine."""
+    jev.p = 0.0
+    return jev
 
 
 def _bash(command):
@@ -140,42 +136,43 @@ def _bash(command):
 
 
 def test_a_local_verdict_needs_no_question(asked):
-    assert risk.permission_risk("Bash", _bash("rm -rf build"), {}) == "deletes files"
-    assert asked.states == []
+    assert risk.permission_risk("Bash", _bash("rm -rf build"), asked.config) == "deletes files"
+    assert asked.states() == []
 
 
 def test_a_read_only_command_never_leaves_the_machine(asked):
     asked.p = 1.0
-    assert risk.permission_risk("Bash", _bash("git status"), {}) is None
-    assert asked.states == []
+    assert risk.permission_risk("Bash", _bash("git status"), asked.config) is None
+    assert asked.states() == []
 
 
 def test_the_long_tail_is_asked_redacted(asked):
     asked.p = 1.0
     reason = risk.permission_risk(
-        "Bash", _bash("REDIS_PASSWORD=hunter2hunter2 redis-cli -h cache.acme.io FLUSHALL"), {})
+        "Bash", _bash("REDIS_PASSWORD=hunter2hunter2 redis-cli -h cache.acme.io FLUSHALL"),
+        asked.config)
     assert reason == "looks hard to undo"
-    [state] = asked.states
+    [state] = asked.states()
     assert "FLUSHALL" in state and "hunter2" not in state and "acme" not in state
 
 
 def test_below_the_threshold_is_an_ordinary_request(asked):
     asked.p = 0.12
-    assert risk.permission_risk("Bash", _bash("./gradlew clean"), {}) is None
+    assert risk.permission_risk("Bash", _bash("./gradlew clean"), asked.config) is None
 
 
-def test_no_opinion_is_an_ordinary_request(monkeypatch):
-    import decider
-    monkeypatch.setattr(decider, "choice", lambda *a, **k: None)
-    assert risk.permission_risk("Bash", _bash("redis-cli FLUSHALL"), {}) is None
+def test_no_opinion_is_an_ordinary_request(asked):
+    asked.p = None
+    assert risk.permission_risk("Bash", _bash("redis-cli FLUSHALL"), asked.config) is None
+    assert len(asked.states()) == 1
 
 
 @pytest.mark.parametrize("tool, tool_input", [
     ("Edit", {"file_path": "a.py"}), ("Bash", {}), ("Bash", None), ("Bash", {"command": "  "}),
 ])
 def test_only_a_bash_command_is_judged(tool, tool_input, asked):
-    assert risk.permission_risk(tool, tool_input, {}) is None
-    assert asked.states == []
+    assert risk.permission_risk(tool, tool_input, asked.config) is None
+    assert asked.states() == []
 
 
 # ── The engines: a destructive request sounds different ───────────────────

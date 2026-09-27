@@ -29,8 +29,6 @@ for moved in migrate_legacy_state():
     print(f"Moved ~/.claude/{moved}")
 PY
 fi
-DAEMON_PID_FILE="$HOME/.claude/kokoro-daemon.pid"
-DAEMON_PORT=19849
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -59,12 +57,27 @@ except:
 " 2>/dev/null
 }
 
+# Whether process $1 is the daemon script $2: a pid file a crash left behind
+# can name a pid some unrelated process has since been given.
+_is_daemon() {
+    [[ "$(ps -p "$1" -o command= 2>/dev/null)" == *"$(basename "$2")"* ]]
+}
+
+# Whether process $1 runs the daemon script at path $2, this checkout's. A
+# pid file is this HOME's, so its pid needs only _is_daemon; a listener on
+# the port may be another checkout's daemon (the sandbox's, a worktree's),
+# which is not this install's to kill.
+_is_this_daemon() {
+    [[ "$(ps -ww -p "$1" -o command= 2>/dev/null)" == *"$2"* ]]
+}
+
 daemon_pid() {
-    local pid_file="${1:-$DAEMON_PID_FILE}"
+    local pid_file="$1"
     if [[ -f "$pid_file" ]]; then
         local pid
         pid=$(cat "$pid_file" 2>/dev/null)
-        if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+        # A daemon's files are named after its script (tts_daemon.py).
+        if [[ -n "$pid" ]] && _is_daemon "$pid" "$(basename "${pid_file%.pid}").py"; then
             echo "$pid"
             return 0
         fi
@@ -73,28 +86,50 @@ daemon_pid() {
 }
 
 daemon_health() {
-    local port="${1:-$DAEMON_PORT}"
+    local port="$1"
     curl -s --max-time 2 "http://127.0.0.1:$port/health" 2>/dev/null
 }
 
-# Set daemon vars based on engine name
+# Ask a TTS daemon to stop, with the token it wrote beside its pid file
+# (tts_daemon.py). Without the token it refuses, and the caller's kill stops it.
+daemon_shutdown() {
+    local port="$1" token_file="$2" token
+    token=$(cat "$token_file" 2>/dev/null || true)
+    curl -s --max-time 2 -X POST -H "X-Hobson-Token: $token" \
+        "http://127.0.0.1:$port/shutdown" >/dev/null 2>&1 || true
+}
+
+# The daemon engine $1 runs, as the engine itself describes it
+# (DaemonEngine.cli_lines): its port, files and start command, never a copy
+# kept here. Fails for an engine with no daemon.
 _daemon_vars_for_engine() {
-    local engine="$1"
-    case "$engine" in
-        kokoro-realtime)
-            DAEMON_PORT=19849
-            DAEMON_PID_FILE="$HOME/.claude/kokoro-daemon.pid"
-            DAEMON_VENV="$SCRIPT_DIR/venvs/kokoro/bin/python3"
-            DAEMON_SCRIPT="$SCRIPT_DIR/scripts/kokoro-daemon.py"
-            DAEMON_LOG="$HOME/.claude/kokoro-daemon.log"
-            DAEMON_NAME="Kokoro"
-            DAEMON_START_POLLS=20
-            DAEMON_POLL_SLEEP=0.25
-            ;;
-        *)
-            return 1
-            ;;
-    esac
+    local line found=false
+    DAEMON_NAME="$1"
+    DAEMON_ARGV=()
+    DAEMON_POLL_SLEEP=0.25
+    while IFS= read -r line; do
+        found=true
+        case "$line" in
+            PORT=*)       DAEMON_PORT="${line#PORT=}" ;;
+            PID_FILE=*)   DAEMON_PID_FILE="${line#PID_FILE=}" ;;
+            TOKEN_FILE=*) DAEMON_TOKEN_FILE="${line#TOKEN_FILE=}" ;;
+            LOG=*)        DAEMON_LOG="${line#LOG=}" ;;
+            VENV=*)       DAEMON_VENV="${line#VENV=}" ;;
+            SCRIPT=*)     DAEMON_SCRIPT="${line#SCRIPT=}" ;;
+            POLLS=*)      DAEMON_START_POLLS="${line#POLLS=}" ;;
+            ARG=*)        DAEMON_ARGV+=("${line#ARG=}") ;;
+        esac
+    done < <(python3 -c '
+import sys
+sys.path.insert(0, sys.argv[1])
+import hobson
+from engines.daemon import DaemonEngine
+from home import load_config
+cls = hobson.engine_class(sys.argv[2])
+if cls is not None and issubclass(cls, DaemonEngine):
+    print("\n".join(cls(load_config()).cli_lines()))
+' "$SCRIPT_DIR/scripts" "$1")
+    [[ "$found" == true ]]
 }
 
 # ── Shared arrow-key picker ────────────────────────────────────────
@@ -239,8 +274,7 @@ except:
         echo "Log:         ~/.claude/hobson.log"
 
         # Show daemon status if using a daemon-based engine
-        if [[ "$engine" == "kokoro-realtime" ]]; then
-            _daemon_vars_for_engine "$engine" 2>/dev/null || true
+        if _daemon_vars_for_engine "$engine"; then
             if pid=$(daemon_pid "$DAEMON_PID_FILE"); then
                 health=$(daemon_health "$DAEMON_PORT")
                 if [[ -n "$health" ]]; then
@@ -975,8 +1009,8 @@ print('Models downloaded.')
         subcmd="${1:-status}"
         shift || true
         engine=$(get_engine)
-        if ! _daemon_vars_for_engine "$engine" 2>/dev/null; then
-            echo "Daemon is only used with daemon-based engines (kokoro-realtime)."
+        if ! _daemon_vars_for_engine "$engine"; then
+            echo "Only the daemon engines (kokoro-realtime, pocket-tts) have a daemon."
             echo "Current engine: $engine"
             exit 1
         fi
@@ -992,26 +1026,10 @@ print('Models downloaded.')
                     echo -e "Run: ${YELLOW}hobson setup $engine_base${NC}"
                     exit 1
                 fi
-                echo "Starting $DAEMON_NAME daemon..."
-                # Read per-engine args from config so CLI matches engine behavior
-                _cfg_args=()
-                if [[ "$engine" == "kokoro-realtime" ]]; then
-                    while IFS= read -r _arg; do
-                        _cfg_args+=("$_arg")
-                    done < <(python3 -c "
-import sys
-sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from home import load_config
-k = load_config()['kokoro']  # defaults merged in: the idle timeout was pinned to 180 here
-for a in ['--port', str(k['daemon_port']),
-          '--voice', k['voice'],
-          '--speed', str(k['speed']),
-          '--idle-timeout', str(k['daemon_idle_timeout'])]:
-    print(a)
-" 2>/dev/null)
-                fi
-                # ${a[@]+...}: an empty array is "unbound" under set -u on bash 3.2 (pocket-tts)
-                "$DAEMON_VENV" "$DAEMON_SCRIPT" ${_cfg_args[@]+"${_cfg_args[@]}"} "$@" &
+                echo "Starting the $DAEMON_NAME daemon..."
+                # The engine's own command, so the daemon starts as a hook would
+                # start it; any flags given here come after.
+                "${DAEMON_ARGV[@]}" "$@" &
                 disown
                 for i in $(seq 1 "$DAEMON_START_POLLS"); do
                     sleep "$DAEMON_POLL_SLEEP"
@@ -1025,16 +1043,57 @@ for a in ['--port', str(k['daemon_port']),
                 exit 1
                 ;;
             stop)
-                curl -s -X POST "http://127.0.0.1:$DAEMON_PORT/shutdown" >/dev/null 2>&1 || true
-                sleep 0.5
+                # What was running before it was asked to stop, which is what
+                # the answer reports: a daemon's pid file, or its listener
+                # when the pid file is gone.
+                was=""
+                if pid=$(daemon_pid "$DAEMON_PID_FILE"); then
+                    was="$pid"
+                fi
+                # Only the listener, and only if it is this daemon: `lsof -ti
+                # :PORT` also names every client connected to it, and each was
+                # kill -9'd; and a same-named daemon from another checkout was
+                # too, from a scratch HOME or the sandbox.
+                ours="" others=""
+                for pid in $(lsof -ti "tcp:$DAEMON_PORT" -sTCP:LISTEN 2>/dev/null || true); do
+                    if [[ "$pid" == "$was" ]]; then
+                        continue  # the pid file's daemon: this HOME's, wherever it runs from
+                    elif _is_this_daemon "$pid" "$DAEMON_SCRIPT"; then
+                        ours="$ours $pid"
+                        if [[ -z "$was" ]]; then
+                            was="$pid"
+                        fi
+                    elif _is_daemon "$pid" "$DAEMON_SCRIPT"; then
+                        others="$others $pid"
+                    fi
+                done
+                if [[ -n "$was" ]]; then
+                    daemon_shutdown "$DAEMON_PORT" "$DAEMON_TOKEN_FILE"
+                    # Up to half a second to exit on its own; a kill follows if not.
+                    for _ in 1 2 3 4 5 6 7 8 9 10; do
+                        _is_daemon "$was" "$DAEMON_SCRIPT" || break  # not kill -0: an exited child of the caller lingers as a zombie
+                        sleep 0.05
+                    done
+                fi
                 if pid=$(daemon_pid "$DAEMON_PID_FILE"); then
                     kill "$pid" 2>/dev/null || true
                 fi
-                # Kill any stale process still holding the port (e.g. after a crash)
-                lsof -ti ":$DAEMON_PORT" 2>/dev/null | xargs kill -9 2>/dev/null || true
+                # A daemon of ours still holding the port without its pid file.
+                for pid in $ours; do
+                    if _is_this_daemon "$pid" "$DAEMON_SCRIPT"; then
+                        kill -9 "$pid" 2>/dev/null || true
+                    fi
+                done
                 rm -f "$DAEMON_PID_FILE"
                 rm -f "$HOME/.claude/kokoro-daemon-starting" 2>/dev/null || true
-                echo -e "${GREEN}Daemon stopped${NC}"
+                if [[ -n "$was" ]]; then
+                    echo -e "${GREEN}Daemon stopped (pid $was)${NC}"
+                else
+                    echo "Daemon was not running"
+                fi
+                if [[ -n "$others" ]]; then
+                    echo -e "${YELLOW}Left alone: pid${others} on port $DAEMON_PORT, a $DAEMON_NAME daemon from another checkout${NC}"
+                fi
                 ;;
             status)
                 if pid=$(daemon_pid "$DAEMON_PID_FILE"); then
@@ -1107,13 +1166,12 @@ with open('$CONFIG_FILE', 'w') as f:
         echo -e "${GREEN}Voice set to: $new_voice${NC}"
 
         # Restart kokoro daemon if running so new voice takes effect
-        ko_pid_file="$HOME/.claude/kokoro-daemon.pid"
-        if pid=$(daemon_pid "$ko_pid_file" 2>/dev/null); then
+        if _daemon_vars_for_engine kokoro-realtime && pid=$(daemon_pid "$DAEMON_PID_FILE" 2>/dev/null); then
             echo "Restarting kokoro daemon for new voice..."
-            curl -s -X POST "http://127.0.0.1:19849/shutdown" >/dev/null 2>&1 || true
+            daemon_shutdown "$DAEMON_PORT" "$DAEMON_TOKEN_FILE"
             sleep 0.5
             kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null || true
-            rm -f "$ko_pid_file"
+            rm -f "$DAEMON_PID_FILE"
             echo -e "${YELLOW}Daemon stopped. It will restart automatically on next bark.${NC}"
         fi
 
@@ -1603,7 +1661,9 @@ PY
         fi
 
         # 6. Daemon status (daemon-based engines)
-        if [[ "$engine" == "kokoro-realtime" ]]; then
+        daemon_engine=false
+        if _daemon_vars_for_engine "$engine"; then
+            daemon_engine=true
             echo ""
             if pid=$(daemon_pid "$DAEMON_PID_FILE"); then
                 health=$(daemon_health "$DAEMON_PORT")
@@ -1646,7 +1706,7 @@ import decider
 cfg = load_config().get('decider', {})
 backend = cfg.get('backend', 'local')
 if backend == 'jev':
-    found = 'yes' if decider._find_key() else 'no'
+    found = 'yes' if decider.find_key() else 'no'
     print(f'jev|{found}')
 else:
     print(f'{backend}|')
@@ -1697,7 +1757,7 @@ else:
                 tips+=("Consider qwen3.5:0.8b for faster classification (you have ${ram_gb}GB RAM)")
             fi
         fi
-        if [[ "$engine" == "kokoro-realtime" ]] && ! daemon_pid "$DAEMON_PID_FILE" >/dev/null 2>&1; then
+        if [[ "$daemon_engine" == true ]] && ! daemon_pid "$DAEMON_PID_FILE" >/dev/null 2>&1; then
             tips+=("Start the daemon for faster first bark: hobson daemon start")
         fi
         if [[ "$engine" == "chatterbox" ]]; then

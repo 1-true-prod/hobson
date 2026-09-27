@@ -28,50 +28,38 @@ def test_the_dial_is_clamped_and_forgiving(chattiness, bar):
 
 
 @pytest.fixture
-def asked(monkeypatch):
-    """Record every decider question; answer P(worth) = `asked.p`."""
-    import decider
-
-    class Box:
-        p = 0.9
-        states = []
-
-    def fake_choice(state, instructions, criteria, config=None):
-        Box.states.append(state)
-        if Box.p is None:
-            return None
-        return decider.ChoiceResult(choice="worth", probs={"worth": Box.p}, confidence=1.0)
-
-    Box.states = []
-    monkeypatch.setattr(decider, "choice", fake_choice)
-    return Box
+def asked(jev):
+    """The decider on "jev", answering P(worth) = `asked.p`;
+    `asked.states()` is what left the machine."""
+    return jev
 
 
 def test_the_decider_scores_the_batch(asked):
     asked.p = 0.73
-    assert gate.worth_probability("Bash: Commit the retry fix", {}) == pytest.approx(0.73)
-    [state] = asked.states
+    assert gate.worth_probability("Bash: Commit the retry fix", asked.config) == pytest.approx(0.73)
+    [state] = asked.states()
     assert "Commit the retry fix" in state
 
 
 def test_the_batch_is_redacted_before_it_leaves(asked):
     gate.worth_probability(
-        "Bash: GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 gh; Edit: /Users/jdoe/app/Invoice.kt", {})
-    [state] = asked.states
+        "Bash: GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 gh; Edit: /Users/jdoe/app/Invoice.kt",
+        asked.config)
+    [state] = asked.states()
     assert "ghp_abcdef" not in state and "jdoe" not in state and "Invoice.kt" in state
 
 
 def test_an_edit_line_count_survives_redaction(asked):
-    gate.worth_probability("Edit: InvoiceService.kt (+4/-2 lines)", {})
-    [state] = asked.states
+    gate.worth_probability("Edit: InvoiceService.kt (+4/-2 lines)", asked.config)
+    [state] = asked.states()
     assert "(+4/-2 lines)" in state
 
 
 def test_no_opinion_and_nothing_to_ask(asked):
     asked.p = None
-    assert gate.worth_probability("Bash: run the tests", {}) is None
-    assert gate.worth_probability("", {}) is None
-    assert len(asked.states) == 1, "an empty batch is never asked about"
+    assert gate.worth_probability("Bash: run the tests", asked.config) is None
+    assert gate.worth_probability("", asked.config) is None
+    assert len(asked.states()) == 1, "an empty batch is never asked about"
 
 
 def test_the_local_backend_asks_nobody(fake_decider):
@@ -86,6 +74,7 @@ def _engine(verbosity="normal", **commentary):
     from engines.say import SayEngine
     return SayEngine({
         "engine": "say", "personality": "hobson", "events": ["commentary"],
+        "decider": {"backend": "jev"},
         "commentary": {"tools": ["bash", "edit"], "verbosity": verbosity, "cooldown": 0,
                        "min_tool_calls": 1, "min_seconds": 600.0, **commentary},
     })
@@ -150,7 +139,7 @@ def test_no_opinion_keeps_the_old_behaviour(claude_home, no_audio, asked, genera
 @pytest.mark.parametrize("verbosity", ["chatty", "anomaly"])
 def test_chatty_and_anomaly_never_ask(verbosity, claude_home, no_audio, asked, generated):
     _engine(verbosity).run(dict(_BASH))
-    assert asked.states == []
+    assert asked.states() == []
 
 
 def test_a_queued_call_asks_nobody(claude_home, no_audio, asked, generated):
@@ -162,7 +151,7 @@ def test_a_queued_call_asks_nobody(claude_home, no_audio, asked, generated):
     ss.save_session(st)
     for _ in range(3):
         eng.run(dict(_BASH))
-    assert asked.states == []
+    assert asked.states() == []
 
 
 # ── The phrasing prompt once the decider has said "speak" ─────────────────
@@ -191,4 +180,4 @@ def test_commentary_gets_no_task_line(claude_home, no_audio, asked, monkeypatch,
     asked.p = 0.9
     _engine().run({**_BASH, "transcript_path": str(transcript)})
     assert contexts and "Task:" not in contexts[0]
-    assert all("token refresh" not in s for s in asked.states)
+    assert all("token refresh" not in s for s in asked.states())

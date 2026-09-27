@@ -33,9 +33,8 @@ def test_default_backend_is_local_and_makes_no_request(claude_home, fake_decider
     cfg = home.load_config()
     assert cfg["decider"]["backend"] == "local"
 
-    assert decider.choice("some state", "pick one", {"a": "first", "b": "second"}, config=cfg) is None
-    assert decider.score("some state", "rate it", ["Calm", "Angry"], config=cfg) is None
-    assert decider.noul("some state", "this is urgent", config=cfg) is None
+    assert decider.probability("a", ["some state"], "pick one", {"a": "first", "b": "second"},
+                               config=cfg) is None
     assert fake_decider.calls() == 0
 
 
@@ -45,7 +44,7 @@ def test_jev_backend_no_key_falls_back_to_local(claude_home, fake_decider, monke
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     cfg = _jev_config()
 
-    result = decider.choice("some state", "pick one", {"a": "first", "b": "second"}, config=cfg)
+    result = decider.probability("a", ["some state"], "pick one", {"a": "first", "b": "second"}, config=cfg)
 
     assert result is None
     assert fake_decider.calls() == 0
@@ -60,14 +59,13 @@ def test_key_falls_back_to_hobson_env_file(claude_home, fake_decider, monkeypatc
         "answers": {"answer": {"type": "choice", "choice": "a", "probabilities": {"a": 0.9, "b": 0.1}, "confidence": 0.9}}
     })
 
-    result = decider.choice("some state", "pick one", {"a": "first", "b": "second"}, config=cfg)
+    result = decider.probability("a", ["some state"], "pick one", {"a": "first", "b": "second"}, config=cfg)
 
-    assert result is not None
-    assert result.choice == "a"
+    assert result == 0.9
     assert fake_decider.calls() == 1
 
 
-# ── 3. well-formed 200 -> parses answer/probs/confidence for all three shapes
+# ── 3. well-formed 200 -> the label's probability, from a choice question
 
 def test_jev_choice_parses_well_formed_response(claude_home, fake_decider, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
@@ -82,43 +80,15 @@ def test_jev_choice_parses_well_formed_response(claude_home, fake_decider, monke
         }
     })
 
-    result = decider.choice("customer says nothing loads", "route it", {"billing": "b", "technical": "t"}, config=cfg)
+    result = decider.probability("technical", ["customer says nothing loads"], "route it",
+                                 {"billing": "b", "technical": "t"}, config=cfg)
 
-    assert result == decider.ChoiceResult(
-        choice="technical", probs={"billing": 0.12, "technical": 0.88}, confidence=0.81
-    )
-
-
-def test_jev_score_parses_well_formed_response(claude_home, fake_decider, monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
-    cfg = _jev_config()
-    fake_decider.respond({
-        "answers": {
-            "answer": {
-                "type": "score", "score": 1.0,
-                "probabilities": {"Calm": 0.2, "Concerned": 0.7, "Angry": 0.1},
-                "confidence": 0.65,
-            }
-        }
-    })
-
-    result = decider.score("customer message", "rate tone", ["Calm", "Concerned", "Angry"], config=cfg)
-
-    assert result.score == 1.0
-    assert result.probs == {"Calm": 0.2, "Concerned": 0.7, "Angry": 0.1}
-    assert result.confidence == 0.65
-
-
-def test_jev_noul_parses_well_formed_response(claude_home, fake_decider, monkeypatch):
-    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
-    cfg = _jev_config()
-    fake_decider.respond({
-        "answers": {"answer": {"type": "noul", "noul": 0.73}}
-    })
-
-    result = decider.noul("customer message", "this is urgent", config=cfg)
-
-    assert result == decider.NoulResult(probability=0.73, confidence=None)
+    assert result == 0.88
+    [request] = fake_decider.sent()
+    assert request.payload["questions"]["answer"] == {
+        "type": "choice", "instructions": "route it", "criteria": {"billing": "b", "technical": "t"}}
+    assert request.headers["Authorization"] == f"Bearer {FAKE_KEY}"
+    assert FAKE_KEY not in json.dumps(request.payload), "the key goes in the header only"
 
 
 # ── 4. timeout -> local result, no raise ────────────────────────────────────
@@ -128,7 +98,7 @@ def test_jev_timeout_falls_back_to_local(claude_home, fake_decider, monkeypatch)
     cfg = _jev_config()
     fake_decider.error(TimeoutError("timed out"))
 
-    result = decider.noul("state", "statement", config=cfg)
+    result = decider.probability("a", ["state"], "statement", {"a": "A"}, config=cfg)
 
     assert result is None
     assert "request failed" in _log_text(claude_home)
@@ -141,7 +111,7 @@ def test_jev_non_200_falls_back_to_local(claude_home, fake_decider, monkeypatch)
     cfg = _jev_config()
     fake_decider.http_error(500)
 
-    result = decider.score("state", "rate", ["a", "b"], config=cfg)
+    result = decider.probability("a", ["state"], "rate", {"a": "A", "b": "B"}, config=cfg)
 
     assert result is None
     assert "request failed" in _log_text(claude_home)
@@ -154,7 +124,7 @@ def test_jev_unparseable_body_falls_back_to_local(claude_home, fake_decider, mon
     cfg = _jev_config()
     fake_decider.raw_body(b"not json at all")
 
-    result = decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)
+    result = decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)
 
     assert result is None
     assert "not valid JSON" in _log_text(claude_home)
@@ -165,7 +135,7 @@ def test_jev_unexpected_shape_falls_back_to_local(claude_home, fake_decider, mon
     cfg = _jev_config()
     fake_decider.respond({"unexpected": "shape"})
 
-    result = decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)
+    result = decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)
 
     assert result is None
     assert "missing an 'answers'/'results'" in _log_text(claude_home)
@@ -174,10 +144,10 @@ def test_jev_unexpected_shape_falls_back_to_local(claude_home, fake_decider, mon
 def test_jev_missing_field_falls_back_to_local(claude_home, fake_decider, monkeypatch):
     monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
     cfg = _jev_config()
-    # 'confidence' missing entirely.
+    # 'probabilities' missing entirely.
     fake_decider.respond({"answers": {"answer": {"type": "choice", "choice": "a"}}})
 
-    result = decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)
+    result = decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)
 
     assert result is None
     assert "malformed choice response" in _log_text(claude_home)
@@ -195,22 +165,22 @@ def test_key_never_appears_in_logs(claude_home, fake_decider, monkeypatch):
         "answers": {"answer": {"type": "choice", "choice": "a",
                                "probabilities": {}, "confidence": 0.5}}
     })
-    decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)
+    decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)
 
     fake_decider.error(TimeoutError("timed out"))
-    decider.noul("state", "statement", config=cfg)
+    decider.probability("a", ["state"], "statement", {"a": "A"}, config=cfg)
 
     fake_decider.http_error(500)
-    decider.score("state", "rate", ["a", "b"], config=cfg)
+    decider.probability("a", ["state"], "rate", {"a": "A", "b": "B"}, config=cfg)
 
     fake_decider.raw_body(b"not json")
-    decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)
+    decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)
 
-    fake_decider.respond({"answers": {"answer": {"type": "choice", "choice": "a"}}})  # missing confidence
-    decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)
+    fake_decider.respond({"answers": {"answer": {"type": "choice", "choice": "a"}}})  # no probabilities
+    decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)
 
     monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
-    decider.choice("state", "pick", {"a": "A", "b": "B"}, config=cfg)  # no-key path
+    decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=cfg)  # no-key path
 
     log_text = _log_text(claude_home)
     assert log_text  # sanity: something was actually logged
@@ -362,7 +332,7 @@ def test_response_cost_is_logged_for_spend_tracking(claude_home, fake_decider, m
                                "probabilities": {"a": 1.0}, "confidence": 0.9}},
         "usage": {"input_tokens": 319, "output_tokens": 20, "cost": 1.3398e-05},
     })
-    decider.choice("state", "pick", {"a": "A", "b": "B"}, config=_jev_config())
+    decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=_jev_config())
     assert "cost=$0.000013" in _log_text(claude_home)
 
 
@@ -373,7 +343,117 @@ def test_missing_usage_block_logs_without_a_cost(claude_home, fake_decider, monk
         "answers": {"answer": {"type": "choice", "choice": "a",
                                "probabilities": {"a": 1.0}, "confidence": 0.9}},
     })
-    decider.choice("state", "pick", {"a": "A", "b": "B"}, config=_jev_config())
+    decider.probability("a", ["state"], "pick", {"a": "A", "b": "B"}, config=_jev_config())
     text = _log_text(claude_home)
     assert "[decider] asked type=choice" in text
     assert "cost=$" not in text
+
+
+# ── What may leave: redaction, by kind, at the seam ───────────────────────
+
+
+@pytest.mark.parametrize("command, secret", [
+    ("curl -H 'Authorization: Bearer abc123secretvalue' https://api.example.com/v1", "abc123secretvalue"),
+    ("API_KEY=sk-live-0123456789abcdefghij npm run deploy", "0123456789abcdefghij"),
+    ("GITHUB_TOKEN=ghp_abcdefghijklmnopqrstuvwxyz0123 gh pr create", "ghp_abcdef"),
+    ("deploy --token=s3cr3t-value-here --env prod", "s3cr3t-value-here"),
+    ("mysql --password hunter2hunter2 -u root", "hunter2hunter2"),
+    ("aws s3 ls --profile x AKIAABCDEFGHIJKLMNOP", "AKIAABCDEFGHIJKLMNOP"),
+    ("curl -H 'x: eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxIn0.sig_part' localhost", "eyJhbGci"),
+    ("git clone https://user:pass@github.com/org/repo.git", "user:pass"),
+    ("ssh deploy@10.0.0.12 uptime", "10.0.0.12"),
+    ("scp build.zip jane.doe@corp.example.com:/srv", "jane.doe"),
+    ("ping db.internal.acme.io", "acme"),
+    ("cat /Users/jdoe/Projects/secret-client/notes.txt", "jdoe"),
+    ("cat ~/.ssh/id_rsa", ".ssh"),
+    # What the first version let through.
+    ("mysql -uroot -phunter2 appdb", "hunter2"),
+    ("sshpass -p hunter2 ssh deploy@box", "hunter2"),
+    ("docker login -u me -p hunter2 registry.example.com", "hunter2"),
+    ("curl -u admin:hunter2 https://api.example.com", "hunter2"),
+    ("curl --user 'admin:hunter2' localhost:8080", "hunter2"),
+    ("stripe listen --api-key rk_live_abcdefghij0123456789", "rk_live_abcdef"),
+    ("export KEY=x; echo rk_live_abcdefghij0123456789", "rk_live_abcdef"),
+    ("aws configure set aws_secret_access_key wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY", "K7MDENG"),
+    ("scp notes.txt user@myhost:/tmp", "user@myhost"),
+])
+def test_redaction_removes_what_identifies_or_authenticates(command, secret):
+    assert secret not in decider.redact(command)
+
+
+@pytest.mark.parametrize("command", [
+    "mkdir -p build/out", "ssh -p 2222 host", "git push -u origin main", "docker run -p 8080:80 app",
+])
+def test_a_short_flag_that_is_not_a_password_is_left_alone(command):
+    out = decider.redact(command)
+    assert "<secret>" not in out
+
+
+def test_redaction_keeps_what_the_command_does():
+    out = decider.redact("rm -rf /Users/jdoe/Dev/app/build && git push --force origin main")
+    assert "rm -rf" in out and "build" in out and "git push --force" in out
+
+
+def test_redaction_keeps_the_dangerous_roots():
+    assert decider.redact("rm -rf /") == "rm -rf /"
+    assert decider.redact("rm -rf ~") == "rm -rf ~"
+
+
+def test_heredoc_bodies_and_long_quoted_text_never_leave():
+    out = decider.redact("python3 - <<EOF\nprint('customer 42 owes 900')\nEOF\n"
+                         "git commit -m \"Fix the refund bug reported by the Acme account team last week\"")
+    assert "customer" not in out and "Acme" not in out
+
+
+def test_the_rest_of_a_heredocs_opening_line_is_still_shown():
+    out = decider.redact("cat <<EOF > dump.txt && redis-cli FLUSHALL\ncustomer 42\nEOF")
+    assert "FLUSHALL" in out and "customer" not in out
+
+
+def test_an_edit_line_count_is_not_a_path():
+    assert decider.redact("Edit: InvoiceService.kt (+4/-2 lines)") == "Edit: InvoiceService.kt (+4/-2 lines)"
+
+
+def test_redaction_is_bounded():
+    assert len(decider.redact("echo " + "a b " * 1000)) <= 602
+
+
+def test_every_question_redacts_what_it_sends(jev, claude_home):
+    """All three questions, through the real request: nothing a caller hands
+    over leaves unredacted. The duplicate check used to send phrases as spoken."""
+    import gate
+    import risk
+    risk.remote_destructive_probability("mysql -uroot -phunter2 -h db.acme.io appdb", jev.config)
+    gate.worth_probability("Bash: curl -u admin:hunter2 https://api.acme.io; "
+                           "Edit: /Users/jdoe/app/Invoice.kt (+4/-2 lines)", jev.config)
+    phrase_gen._p_restates("I pushed the fix to cache.acme.io for jdoe@acme.io.",
+                           ["I read /Users/jdoe/Projects/notes.txt."], jev.config)
+    states = jev.states()
+    assert len(states) == 3
+    sent = "\n".join(states)
+    for leak in ("hunter2", "acme", "jdoe"):
+        assert leak not in sent
+    assert "Invoice.kt (+4/-2 lines)" in sent and "notes.txt" in sent
+
+
+def test_framing_goes_as_written_and_the_layout_is_unchanged(jev, claude_home):
+    phrase_gen._p_restates("I fixed the invoice sync.", ["I'm fixing the invoice sync.", "I ran the tests."],
+                           jev.config)
+    [state] = jev.states()
+    assert state == ("Announcements already spoken, most recent last:\n"
+                     "- I'm fixing the invoice sync.\n- I ran the tests.\n\n"
+                     "Candidate announcement:\n- I fixed the invoice sync.")
+
+
+def test_session_text_must_say_what_kind_it_is(jev):
+    with pytest.raises(TypeError):
+        decider.probability("a", [("raw", "text")], "pick", {"a": "A"}, config=jev.config)
+
+
+@pytest.mark.parametrize("endpoint", ["http://decisions.example.com/x", "ftp://example.com", ""])
+def test_the_key_goes_only_to_https(endpoint, claude_home, fake_decider, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    cfg = _jev_config(endpoint=endpoint)
+    assert decider.probability("a", ["state"], "pick", {"a": "A"}, config=cfg) is None
+    assert decider.check_key(FAKE_KEY, cfg) == {"ok": False, "reason": "the endpoint is not https"}
+    assert fake_decider.calls() == 0

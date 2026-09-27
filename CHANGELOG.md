@@ -50,6 +50,28 @@
 
 ### Fixes
 
+- **The TTS daemons no longer take orders from web pages.** Any page open in a browser could stop
+  the Kokoro or Pocket TTS daemon, or make it speak, with a plain request to 127.0.0.1; and Pocket
+  TTS would fetch any URL, or load any file, a request named as its voice. The daemons now check
+  the Host and Origin headers, as the setup wizard does, require a token only Hobson can read for
+  anything that acts, and accept only catalogue voices or the one you configured
+- **The "Careful" warning can no longer be dodged by quoting.** A destructive command inside a
+  command substitution in double quotes (`echo "$(rm -rf ~)"`), in backticks, in an unquoted
+  heredoc, or after a heredoc on its opening line (`cat <<EOF && rm -rf ~`) was announced as an
+  ordinary request, and cleared as read-only
+- **Everything sent to Jev is redacted.** The near-duplicate check sent the phrases Hobson had
+  spoken as they were; they now go through the same redaction as commands. Redaction also catches
+  what it missed: `mysql -pSECRET`, `sshpass -p`, a registry login's `-p`, `curl -u user:pass`,
+  `rk_live_…` keys, an `aws_secret_access_key` passed as an argument, and `user@host:` logins.
+  The key is sent only to an https address
+- Installing, updating or uninstalling no longer deletes another tool's hook that shares a
+  matcher group with one of Hobson's: only Hobson's own hooks are taken out
+- A phrase is always read aloud as text: one starting with `-` (say, `-o<path>`) was taken by
+  macOS `say` as an option, and could write audio over a file
+- Uninstalling removes a symlinked voice cache as a link, instead of emptying the directory it
+  points to
+- `hobson daemon stop` kills only the daemon: it used to `kill -9` every process connected to its
+  port. It, the voice switch and uninstall now check that a pid is the daemon's before signalling it
 - `hobson recap` speaks again. Since the log started carrying dates it found no activity at all;
   it now reads dated lines, and says each phrase once rather than three times
 - Hooks that overlap no longer lose each other's session state. A commentary flush or a Stop saved

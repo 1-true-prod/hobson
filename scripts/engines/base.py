@@ -681,7 +681,9 @@ class BaseEngine(ABC):
         """Speak via macOS `say` honoring self.volume.
 
         `say` has no volume flag, so render to a temp AIFF and play with
-        `afplay -v`. Temp file is cleaned up after playback.
+        `afplay -v`. Temp file is cleaned up after playback. The text comes
+        after `--`: a phrase is model output, and one starting "-o<path>"
+        was taken as an option and wrote audio over that file.
         """
         import shlex
         import tempfile
@@ -692,7 +694,7 @@ class BaseEngine(ABC):
         afplay_cmd = " ".join(shlex.quote(a) for a in self._afplay_args(tmp.name))
         cmd = (
             f"say -v {shlex.quote(self._say_voice)} "
-            f"-o {shlex.quote(tmp.name)} {shlex.quote(text)} && "
+            f"-o {shlex.quote(tmp.name)} -- {shlex.quote(text)} && "
             f"{afplay_cmd}; "
             f"rm -f {shlex.quote(tmp.name)}"
         )

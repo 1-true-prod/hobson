@@ -67,7 +67,7 @@ jobs:
         if: matrix.shell == '/bin/bash'
         run: |
           brew install shellcheck >/dev/null
-          shellcheck -S warning install.sh install-remote.sh uninstall.sh hobson
+          shellcheck -S warning install.sh install-remote.sh uninstall.sh hobson scripts/sandbox.sh
       - name: curl | bash into a scratch HOME, with someone else's hook already there
         run: |
           bash --version | head -1

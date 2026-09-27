@@ -102,10 +102,10 @@ const MODULES = [
 ];
 
 const ENGINES = {
-  "say": { name: "SAY", desc: "The voice built into macOS. Instant, nothing to download, a little robotic.", q: 2, size: "0 MB", how: "INSTANT" },
-  "kokoro-realtime": { name: "KOKORO", desc: "A small neural voice running on this Mac. Each phrase is written live by the brain, so it fits what just happened.", q: 4, size: "~340 MB", how: "LIVE" },
-  "pocket-tts": { name: "POCKET", desc: "Kyutai's Pocket TTS on this Mac: a warmer neural voice, written live by the brain. Heavier, and slow to wake after a quiet spell.", q: 5, size: "~1 GB", how: "LIVE" },
-  "chatterbox": { name: "CHATTERBOX", desc: "Clones any voice from a 10-second sample. Speaks a pre-generated set of fixed phrases. Heavy; a GPU helps.", q: 5, size: "~2 GB", how: "CACHED" },
+  "say": { name: "SAY", desc: "The voice built into macOS. Instant, nothing to download, a little robotic.", q: 2, size: "0 MB", how: "instant, built into macOS" },
+  "kokoro-realtime": { name: "KOKORO", desc: "A small neural voice running on this Mac. Each phrase is written live by the brain, so it fits what just happened.", q: 4, size: "~340 MB", how: "live, written by the brain" },
+  "pocket-tts": { name: "POCKET", desc: "Kyutai's Pocket TTS on this Mac: a warmer neural voice, written live by the brain. Heavier, and slow to wake after a quiet spell.", q: 5, size: "~1 GB", how: "live, warmer, slow to wake" },
+  "chatterbox": { name: "CHATTERBOX", desc: "Clones any voice from a 10-second sample. Speaks a pre-generated set of fixed phrases. Heavy; a GPU helps.", q: 5, size: "~2 GB", how: "fixed phrases, cloned voice" },
 };
 
 const EVENTS = [
@@ -275,11 +275,7 @@ const Voice = {
 
 function paintTop() {
   const p = S.probe;
-  if (p) {
-    $("#t-node").textContent = p.host;
-    $("#t-mem").textContent = `${p.ram_gb} GB`;
-    $("#t-arch").textContent = `${p.arch} · macOS ${p.macos}`;
-  }
+  if (p) $("#t-node").textContent = p.host;
   $("#t-sfx").textContent = Sfx.on ? "[M] BLIPS ON" : "[M] BLIPS OFF";
   $("#t-voice").textContent = Voice.on ? "[V] VOICE ON" : "[V] VOICE OFF";
 }
@@ -304,11 +300,12 @@ function paintRail() {
   }).join("");
   const p = S.probe;
   rail.innerHTML = `<div class="rail-h">MODULES</div>${items}
+    <div class="mon-slot"></div>
     <div class="rail-foot">
-      <div>${S.flow ? S.flow.toUpperCase() + " MODE" : ""}</div>
-      <div class="hex">${p ? `0x${(p.ram_gb * 1024).toString(16).toUpperCase()} · ${p.disk_free_gb} GB FREE` : ""}</div>
+      <div>${S.flow ? S.flow.toUpperCase() + " MODE" : ""}${p ? ` · ${p.disk_free_gb} GB free` : ""}</div>
       <div>nothing is written or installed until the last step, COMMIT</div>
     </div>`;
+  Art.mount($(".mon-slot", rail), S.screen);
 }
 
 // ── Screens ─────────────────────────────────────────────────────────────
@@ -327,24 +324,22 @@ function footNav(opts) {
 const SCREENS = {};
 
 SCREENS.voice = () => {
-  const cards = Object.keys(ENGINES).map((id, i) => {
+  const cards = `<div class="eng-h"><span></span><span>ENGINE</span><span>QUALITY</span><span>HOW</span><span class="sz">DOWNLOAD</span><span></span></div>` + Object.keys(ENGINES).map((id) => {
     const e = ENGINES[id];
     const info = S.probe.engines.find((x) => x.id === id) || {};
-    const sel = S.a.engine === id ? " sel" : "";
-    const state = info.ready ? tag("INSTALLED", "ok") : tag("NOT INSTALLED", "warn");
-    return `<button class="opt card fx${sel}" data-act="engine" data-arg="${id}" data-group="engine">
-      <span class="mark">[■]</span>
-      <div class="top"><span class="key">${"ABCD"[i]}</span><span class="name">${e.name}</span></div>
-      <div class="desc">${e.desc}</div>
-      <div class="stats"><span>QUALITY ${meter(e.q)}</span><span>SIZE <b>${e.size}</b></span><span>${e.how}</span>${state}</div>
+    const on = S.a.engine === id;
+    return `<button class="opt row eng fx${on ? " sel" : ""}" data-act="engine" data-arg="${id}" data-group="engine">
+      <span class="box">${on ? "(●)" : "( )"}</span><span class="t">${e.name}</span><span>${meter(e.q)}</span>
+      <span class="how">${e.how}</span><span class="sz">${e.size === "0 MB" ? "—" : e.size}</span>
+      <span class="r">${info.ready ? '<span class="ok">installed</span>' : ""}</span>
     </button>`;
-  }).join("");
+  }).join("") + `<p class="eng-desc">${ENGINES[S.a.engine].desc}</p>`;
   const chips = S.probe.personalities.map((p) => {
     const sel = S.a.personality === p.id ? " sel" : "";
     return `<button class="opt chip fx${sel}" data-act="personality" data-arg="${p.id}" data-group="personality">
       <div class="name">${esc(p.name.toUpperCase())}</div>
       <div class="desc">${esc(p.desc)}</div>
-      <div class="play">▶ PREVIEW [P]</div>
+      <div class="play">▶ P to preview</div>
     </button>`;
   }).join("");
   const kokoroNote = (S.a.engine === "kokoro-realtime" || S.a.engine === "pocket-tts") && !S.probe.uv
@@ -360,15 +355,15 @@ SCREENS.voice = () => {
       const sel = S.a.voice === v.id || (!S.a.voice && !yours && i === 0) ? " sel" : "";
       return `<button class="opt chip fx${sel}" data-act="voice" data-arg="${v.id}" data-group="voice">
         <div class="name">${esc(v.name.toUpperCase())}</div>
-        <div class="desc">${esc(v.accent)} ${esc(v.sex)}</div>
-        <div class="play">${tag(v.sex === "female" ? "F" : "M", v.sex === "female" ? "mg" : "cy")} ${i === 0 ? tag("DEFAULT") : ""} ▶</div></button>`;
+        <div class="desc">${esc(v.accent)} ${esc(v.sex)}${i === 0 ? ", the default" : ""}</div>
+        <div class="play">▶ plays a recording</div></button>`;
     }).join("")}</div>` : "";
   const cbNote = S.a.engine === "chatterbox"
     ? `<div class="readout warn">Chatterbox needs a 10–30 second voice sample to clone, and about two hours on Apple silicon to make its phrases. Setup saves the choice; <b>hobson setup chatterbox</b> does the rest when you're ready. Until then I use the built-in voice.</div>` : "";
   return {
     path: "01 :: VOICE",
     say: L("screen.voice"),
-    body: `<h2 class="sec">ENGINE <span class="hint">picking one downloads nothing: the last step installs it</span></h2><div class="grid g4">${cards}</div>${kokoroNote}${cbNote}${voicePicker}
+    body: `<h2 class="sec">ENGINE <span class="hint">picking one downloads nothing: the last step installs it</span></h2>${cards}${kokoroNote}${cbNote}${voicePicker}
       <h2 class="sec">PERSONALITY <span class="hint">what I say, whichever voice says it</span></h2><div class="chips">${chips}</div>`,
     foot: footNav(),
   };
@@ -491,7 +486,7 @@ function jevBlock() {
         <div class="field"><span class="p">KEY&gt;</span><span class="ok">FOUND IN ${j.key.source === "env" ? "YOUR ENVIRONMENT" : "~/.claude/hobson.env"}</span>
         <span class="faint">sk-or-…${esc(j.key.tail)}</span><span class="sp" style="flex:1"></span>
         <button class="btn ghost fx" data-act="jevother">USE ANOTHER</button>
-        <button class="btn fx" data-act="jevtest">TEST LINK</button></div>${readout}${j.key.source === "env" ? `
+        <button class="btn fx" data-act="jevtest">TEST KEY</button></div>${readout}${j.key.source === "env" ? `
         <button class="opt row fx${a.save_env_key !== false ? " sel" : ""}" data-act="saveenv" style="margin-top:10px">
           <span class="box">${a.save_env_key !== false ? "[x]" : "[ ]"}</span>
           <span><div class="t">ALSO SAVE IT TO ~/.claude/hobson.env</div><div class="d">Claude Code started from the desktop app or an IDE does not see your shell's environment, so without this I may not find the key.</div></span><span class="r"></span>
@@ -500,7 +495,7 @@ function jevBlock() {
       body += `<h2 class="sec" style="margin-top:18px">KEY <span class="hint">openrouter.ai/keys</span></h2>
         <div class="field"><span class="p">KEY&gt;</span>
         <input class="fx" id="jevkey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-v1-…  paste, then ⏎" data-enter="jevtest">
-        <button class="btn fx" data-act="jevtest">TEST LINK</button></div>${readout}
+        <button class="btn fx" data-act="jevtest">TEST KEY</button></div>${readout}
         <p class="lede faint" style="margin-top:10px">No key? Carry on: I will stay local, and <b>hobson setup</b> can add one later.</p>`;
     }
   }
@@ -516,7 +511,7 @@ SCREENS.jev = () => ({
 
 function jevNote() {
   if (S.a.decider !== "jev") return "";
-  if (S.a.jev_verified) return '<span class="ok">link verified</span>';
+  if (S.a.jev_verified) return '<span class="ok">key verified</span>';
   return '<span class="warn">no verified key: I\'ll stay local</span>';
 }
 
@@ -689,10 +684,10 @@ SCREENS.commit = () => {
       <h2 class="sec">TASKS</h2><div class="tasks">${p.tasks.map(taskRow).join("")}</div>
       ${failed ? `<div class="readout bad">A task failed. What worked is kept; <b>hobson doctor</b> shows the rest, and <b>hobson setup</b> can pick up where this left off.</div>` : ""}`,
     foot: running
-      ? `<span class="sp"></span><span class="note">please wait</span><button class="btn go primary" disabled>EXECUTING…</button>`
+      ? `<span class="sp"></span><span class="note">please wait</span><button class="btn go primary" disabled>INSTALLING…</button>`
       : S.run && S.run.done
         ? `<span class="sp"></span><button class="btn go fx primary" data-act="finish">CONTINUE <span class="k">⏎</span></button>`
-        : `<button class="btn ghost fx" data-act="back"><span class="k">ESC</span> BACK</button><span class="sp"></span><button class="btn go fx primary" data-act="execute">EXECUTE <span class="k">⏎</span></button>`,
+        : `<button class="btn ghost fx" data-act="back"><span class="k">ESC</span> BACK</button><span class="sp"></span><button class="btn go fx primary" data-act="execute">INSTALL <span class="k">⏎</span></button>`,
   };
 };
 
@@ -782,8 +777,11 @@ function paint(full) {
   const main = $("#main");
   const key = focusKey(focused);
   if (full || !$(".pane", main)) {
+    // "03 :: BRAIN" reads as BRAIN, 3 of 7; "EXPRESS :: LOADOUT" as LOADOUT, express.
+    const [where, name] = scr.path.split(" :: ");
+    const of = /^\d+$/.test(where) ? `${+where} of ${MODULES.length}` : where.toLowerCase();
     main.innerHTML = `<section class="pane glitch-in">
-      <div class="pane-h"><span class="path">${scr.path}</span><span class="sp"></span><span>HOBSON://SETUP</span><span class="dots"><i></i><i></i><i></i></span></div>
+      <div class="pane-h"><span class="path">${name}</span><span class="sp"></span><span class="of">${of}</span></div>
       <div class="pane-b"><div class="say"><span class="who">HOBSON&gt;</span><span class="txt"></span><span class="cur"></span></div><div class="body"></div></div>
       <div class="pane-f"></div></section>`;
     typeInto($(".say .txt", main), scr.say);
@@ -808,10 +806,15 @@ function resay() {
 }
 
 async function go(screen) {
+  const first = !S.visited.has(screen) && S.flow !== "update";
   const pane = $("#main .pane");
-  if (pane) {
+  if (pane && !(first && Art.has(screen))) {
     pane.classList.add("glitch-out");
-    await sleep(190);
+    await sleep(120);
+  }
+  if (first && Art.has(screen)) {
+    const m = MODULES.find((x) => x.id === screen);
+    await Art.cutscene(screen, +m.n, m.title);
   }
   S.screen = screen;
   if (MODULES.some((m) => m.id === screen)) S.visited.add(screen);
@@ -819,6 +822,7 @@ async function go(screen) {
   if (screen === "commit") {
     S.plan = null;
     S.run = null;
+    Art.progress = 0;
     paint(true);
     try {
       S.plan = await api.post("plan", { answers: S.a });
@@ -945,7 +949,7 @@ const ACT = {
     const input = $("#jevkey");
     const typed = input ? input.value.trim() : "";
     if (input && !typed) { Sfx.err(); S.jev = { ...S.jev, state: "bad", msg: "PASTE A KEY FIRST · or pick LOCAL" }; paint(false); return; }
-    S.jev = { ...S.jev, state: "busy", msg: "HANDSHAKE ▒▒▒ one call to " + esc(S.probe.jev.model) + "…" };
+    S.jev = { ...S.jev, state: "busy", msg: "TESTING THE KEY · one call to " + esc(S.probe.jev.model) + "…" };
     paint(false);
     let r;
     try { r = await api.post("jev/test", typed ? { key: typed } : {}); } catch (e) { r = { ok: false, reason: e.message }; }
@@ -954,13 +958,13 @@ const ACT = {
       Sfx.ok();
       S.a.jev_verified = true;
       S.a.key_typed = !!typed;
-      S.jev = { ...S.jev, state: "ok", msg: `LINK UP · ${r.ms} ms · $${Number(r.cost).toFixed(6)} for that call · Jev will decide` };
-      log("jev link up");
+      S.jev = { ...S.jev, state: "ok", msg: `KEY WORKS · ${r.ms} ms · $${Number(r.cost).toFixed(6)} for that call · Jev will decide` };
+      log("jev key works");
     } else {
       Sfx.err();
       S.a.jev_verified = false;
-      S.jev = { ...S.jev, state: "bad", msg: `LINK FAILED · ${esc(r.reason)} · I will stay local unless another key works` };
-      log("jev link failed");
+      S.jev = { ...S.jev, state: "bad", msg: `KEY REFUSED · ${esc(r.reason)} · I will stay local unless another key works` };
+      log("jev key refused");
     }
     paint(false);
     const out = $("#main .readout.ok, #main .readout.bad");
@@ -1008,13 +1012,19 @@ const ACT = {
   },
   async fliptest() {
     Sfx.pick();
-    S.phone.test = { step: 0, done: [false, false], finished: false, timeout: false };
+    // Choosing another phone, or none, replaces S.phone.test (it used to be
+    // written through as null, and threw); leaving the screen abandons it.
+    // Either way this run stops, quietly.
+    const test = { step: 0, done: [false, false], finished: false, timeout: false };
+    S.phone.test = test;
     paint(false);
     await api.post("phone/test", { serial: S.a.phone }).catch(() => {});
+    const over = () => S.phone.test !== test || S.screen !== "phone";
     const want = ["down", "up"];
     const lines = [L("flip.down"), L("flip.up")];
     for (let i = 0; i < 2; i++) {
-      S.phone.test.step = i;
+      if (over()) { test.finished = true; return; }
+      test.step = i;
       paint(false);
       const deadline = Date.now() + 30000;
       let hit = false;
@@ -1023,13 +1033,14 @@ const ACT = {
         if (S.phone.pos === want[i]) { hit = true; break; }
         await sleep(900);
       }
-      if (!hit) { S.phone.test.timeout = true; S.phone.test.finished = true; Sfx.err(); paint(false); return; }
-      S.phone.test.done[i] = true;
+      if (over()) { test.finished = true; return; }
+      if (!hit) { test.timeout = true; test.finished = true; Sfx.err(); paint(false); return; }
+      test.done[i] = true;
       Sfx.ok();
       Voice.say(lines[i]);
       paint(false);
     }
-    S.phone.test.finished = true;
+    test.finished = true;
     log("flip test passed");
     paint(false);
   },
@@ -1117,6 +1128,8 @@ async function pollPhoneOnce() {
 
 function repaintTasks() {
   if (!S.plan) return;
+  const n = S.plan.tasks.length || 1;
+  Art.progress = S.plan.tasks.filter((t) => ["ok", "fail", "skip"].includes(((S.run && S.run.tasks[t.id]) || {}).state)).length / n;
   for (const t of S.plan.tasks) {
     const el = document.getElementById(`task-${t.id}`);
     if (el) el.outerHTML = taskRow(t);
@@ -1166,10 +1179,10 @@ function partOfDay() {
 async function boot() {
   document.body.classList.add("booting");
   City.mode("warp");
-  $("#main").innerHTML = `<div class="boot"><div class="bootlog"><div class="head">HOBSON/OS · SYSTEM PROBE</div><div id="bootlog"></div></div><div class="hero" id="hero"></div></div>`;
+  $("#main").innerHTML = `<div class="boot"><div class="bootlog"><div class="head">SURVEYING THIS MAC</div><div id="bootlog"></div></div><div class="hero" id="hero"></div></div>`;
   paintRail();
   const probing = api.get("probe");
-  await bootLine("HANDSHAKE", "127.0.0.1", "cy");
+  await bootLine("SETUP SERVER", "127.0.0.1", "cy");
   try {
     S.probe = await probing;
   } catch (e) {
@@ -1190,7 +1203,7 @@ function bootHero(returning) {
   S.screen = "boot";
   document.body.classList.add("booting");
   if (returning) {
-    $("#main").innerHTML = `<div class="boot"><div class="bootlog"><div class="head">HOBSON/OS · SYSTEM PROBE</div><div id="bootlog"></div></div><div class="hero" id="hero"></div></div>`;
+    $("#main").innerHTML = `<div class="boot"><div class="bootlog"><div class="head">SURVEYING THIS MAC</div><div id="bootlog"></div></div><div class="hero" id="hero"></div></div>`;
     for (const [k, v, cls] of bootLines(S.probe)) {
       const dots = ".".repeat(Math.max(2, 46 - k.length - v.length - 2));
       $("#bootlog").insertAdjacentHTML("beforeend", `<div class="l"><span class="k">${esc(k)}</span> <span class="faint">${dots}</span> <span class="${cls}">${esc(v)}</span></div>`);
@@ -1284,6 +1297,7 @@ document.addEventListener("mousemove", (e) => {
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (Art.cutting) { e.preventDefault(); Art.skip(); return; }
   const inInput = document.activeElement && document.activeElement.tagName === "INPUT";
   const k = e.key;
   if (!inInput) listenForHack(k);

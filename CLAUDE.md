@@ -52,7 +52,33 @@ hobson.py -> DaemonEngine.run(hook_input)
 The two are one engine, `DaemonEngine` in `engines/daemon.py`. Each backend is a `DaemonSpec`
 (`kokoro_realtime.py`, `pocket_tts_realtime.py`): its config section, venv, daemon script, playback
 file, startup polls, generate timeout, and which options go to the daemon's CLI and which into every
-request. They were two copies until a fix to one kept missing the other.
+request. They were two copies until a fix to one kept missing the other. `hobson daemon` reads the
+same spec, through `DaemonEngine.cli_lines()` (port, files, the start command): the CLI kept its own
+copy, for Kokoro alone, and could not start, stop or report Pocket TTS. Its `stop` kills a listener
+on the port only when that listener runs this checkout's script: matched by name alone, it killed
+another checkout's daemon on the same port (the sandbox's, or yours from a scratch HOME).
+
+The daemons were the same story on the other side of the seam, and it cost more: two near-copies
+of an HTTP server with no guard at all, so any web page could POST `/shutdown` or `/generate` (a
+`text/plain` body needs no CORS preflight), and Pocket TTS fetched whatever URL, or loaded whatever
+path, a request named as its voice. Now `kokoro-daemon.py` and `pocket-tts-daemon.py` are only
+backends (load a model, turn text into WAV); `scripts/tts_daemon.py` serves both, behind
+`scripts/loopback.py`, the guard the setup wizard runs too:
+
+- **Host** must be `127.0.0.1:PORT` or `localhost:PORT` (DNS rebinding), on every method and route.
+- **Origin**, when a browser sends one, must be this server. The engine and curl send none.
+- **Token** in `X-Hobson-Token`, compared in constant time, on `/generate` and `/shutdown`
+  (`/health` needs none). A daemon writes a fresh one at mode 600 to
+  `~/.claude/<script>.token`, **after** it holds the port: of two cold starts at once, the loser
+  must not overwrite the winner's token, which would lock every client out until idle-out. The
+  engine, `hobson daemon stop` and uninstall read it from there.
+- **Voice**: a request may name one from its backend's catalogue (Kokoro's voices file; Pocket
+  TTS's own table of names, read from the library, empty if it ever moves) or the voice the daemon
+  was started with, which may be a path the user configured. Anything else is a 400.
+
+Test the guard through `tests/test_loopback.py`, which drives the runner over real HTTP with a
+stand-in backend. A new local server takes `loopback.Server` and `GuardedHandler`; it does not
+grow its own checks.
 
 **Experimental realtime engine** (`pocket-tts`) follows the same live-only shape as
 `kokoro-realtime` — a persistent HTTP daemon (`scripts/pocket-tts-daemon.py`, default port
@@ -189,8 +215,8 @@ completions, errors, questions: Ollama spoke on 106 and caught 5 of 7; P ≥ 0.4
 third as many and caught all 7 (lowest 0.46 and 0.49), AUC 0.91 on both sets. Its false positives
 lean towards starting big work (dispatching an agent, booting an emulator). A PreToolUse batch says
 what the agent is about to do, never how it went, so failures cannot show up here — Stop carries
-those. The summary goes out through `risk.redact()`, at most 220 characters, with an Edit's
-`(+3/-2 lines)` shielded from the path rule.
+those. The summary goes out as a `decider.Summary`: redacted by the decider, at most 220
+characters, an Edit's `(+3/-2 lines)` kept (the path rule skips it).
 
 **Commentary must be about its batch** (`phrase_gen._off_batch_reason`, in the guard). Blind-labelled,
 130 of 399 spoken commentary phrases did not describe the batch they were spoken for: the model
@@ -368,7 +394,7 @@ project on purpose: a single global token meant typing in one tab silenced every
 that was waiting on you.
 
 **Decider (Jev)** (`scripts/decider.py`): an optional remote classifier — Jev, via OpenRouter's
-Decisions API — behind one seam with three question shapes (`choice`, `score`, `noul`).
+Decisions API — behind one seam, `decider.probability()`: P(label) for a `choice` question.
 `decider.backend` is `"local"` by default, which makes no network call and returns "no opinion".
 Every failure (no key, timeout, bad response) is logged once and fails closed to the local result.
 One question, `phrase_gen._p_restates()` — does this phrase restate one just spoken? — used two
@@ -379,17 +405,30 @@ see, "I fixed the invoice sync" after "I'm fixing the invoice sync". **Block**: 
 the paraphrase Jaccard misses. The block is commentary-only — a Stop is also the turn-ended
 signal, and in calibration one of its two high scores was a completion — compares only against
 phrases from the last 120s with a known timestamp, and fails open. Those questions send the
-candidate phrase and up to six recently spoken phrases. The commentary gate (see Batching) sends
-the redacted batch summary.
+candidate phrase and up to six recently spoken phrases, each redacted. The commentary gate (see
+Batching) sends the redacted batch summary.
+
+**The decider is where data leaves the Mac.** A question's state is a list of parts: a plain
+string is Hobson's own framing, sent as written; session text goes as a `decider.Command`,
+`Summary` or `Phrase`, and `decider.redact()` runs on it by kind, to the length its question was
+calibrated on (600, 220, 200 characters). Redaction used to be each caller's job and lived in
+`risk.py`; the duplicate check skipped it, so spoken phrases went out as spoken. The key goes
+only to an https endpoint (plain http only on loopback). Tests see what left through the `jev`
+fixture, which records each request after redaction: stubbing a caller's decider call would
+test the state before it.
 
 **Permission risk** (`scripts/risk.py`): a destructive Bash permission request is announced as
 "Careful — this one deletes files. It needs your approval." — a fixed sentence, never the model,
 and never deduped. Three tiers: local rules (any `rm`, force-push, `reset --hard`, `DROP TABLE`
 through a DB client, …) are instant and final; a strictly read-only command is cleared locally;
-only the rest goes to the decider, as `risk.redact()` leaves it (no heredoc bodies or long quoted
-text; URLs, hosts, IPs, emails, secrets, long tokens and every path but its last component
+only the rest goes to the decider, as a `decider.Command` (redacted: no heredoc bodies or long
+quoted text; URLs, hosts, IPs, emails, secrets, long tokens and every path but its last component
 replaced), warning at P(destructive) ≥ `decider.permission_risk_min` (0.5). Rules match with quoted
-text and heredoc bodies blanked, except code handed to an interpreter (`bash -c`, `python3 - <<EOF`).
+text and heredoc bodies blanked, except code handed to an interpreter (`bash -c`, `python3 - <<EOF`)
+and command substitutions, which run wherever they are written: blanking a double-quoted string
+whole let `echo "$(rm -rf ~)"` pass as read-only, with no warning. `_code_only` keeps every
+`$(…)` and backtick, in double quotes and unquoted heredocs too, and reads each heredoc body in its
+own language, so a Python string's backticks are not taken for the shell's.
 The log records the reason, never the command. Fitted on 10,760 real Bash commands; the tests pin
 the first draft's false alarms (e.g. `git restore --staged .`, which only unstages).
 The key is `OPENROUTER_API_KEY` from the environment or `~/.claude/hobson.env` — **never**
@@ -447,12 +486,13 @@ decides nothing: `probe()` reads the Mac, `recommend()` makes the Express loadou
 the diff, `apply()` runs the tasks and streams each step (NDJSON) back to the page. Nothing is
 written or installed before COMMIT; closing the window before it changes nothing.
 
-- **The server is the security boundary.** A `ThreadingHTTPServer` on 127.0.0.1, random port. Every
-  `/api` call needs the random token from the window's URL (`X-Hobson-Token`, compared with
-  `hmac.compare_digest`) and a `127.0.0.1`/`localhost` Host header (DNS rebinding); static files
-  are an allowlist (`STATIC`, plus clips matching `CLIP`). It writes config, saves a key and runs
-  installers, and any web page in a browser can send requests to localhost — do not loosen any of
-  the three. It exits with the window, or after `IDLE_EXIT_SECONDS` (1800) idle with no task
+- **The server is the security boundary.** A `loopback.Server` on 127.0.0.1, random port, behind
+  the guard it shares with the TTS daemons (`scripts/loopback.py`): a `127.0.0.1`/`localhost`
+  Host header (DNS rebinding) and a same-server Origin on every request, and on every `/api` call
+  the random token from the window's URL (`X-Hobson-Token`, compared in constant time); static
+  files are an allowlist (`STATIC`, plus clips matching `CLIP`). It writes config, saves a key and
+  runs installers, and any web page in a browser can send requests to localhost — do not loosen
+  any of it. It exits with the window, or after `IDLE_EXIT_SECONDS` (1800) idle with no task
   running.
 - **What reaches the config.** `clean_answers()` drops anything off-catalogue: engine, events and
   verbosity from fixed lists, a voice only as a catalogue id for that engine (`VOICES`, never a
@@ -481,10 +521,32 @@ written or installed before COMMIT; closing the window before it changes nothing
   or a voice without a clip, an orphan clip, or fewer than two female voices per engine. Only
   Kokoro (Apache-2.0) and Pocket TTS/VCTK (CC BY 4.0) voices, credited in `LICENSES.md`: a voice
   cloned from someone's recording is never shipped.
+- **Its pictures** (`setup/ui/art.js`): each module has one, shown full-screen for ~0.9s the first
+  time you arrive (the cutscene, instead of the glitch tear; any key skips it, and Back, revisits,
+  Update mode and reduced motion never play it), then in a small monitor in the rail. Every picture
+  goes through one treatment: a 280×185 greyscale frame, ordered-dithered to five tones of the
+  colour the city is tinted for that module. That treatment is why a 1930s photograph and a line
+  drawing read as one set. Four are public-domain photographs (`setup/ui/art/`, credited in
+  `art/LICENSES.md`); EVENTS, PRESENCE and COMMIT are drawn in code, and COMMIT's tower follows
+  the real task progress. Nothing from a film is shipped, however it is filtered: a dithered frame
+  is still a copy of that frame. A new still goes in `STATIC`, or the server refuses it and the
+  monitor just stays black; `test_every_picture_art_js_shows_is_served` catches that.
+- **The look**: the neon city, the ANSI block logo with its RGB split, the rail and the typed
+  `HOBSON>` line are the identity. The rest is kept quiet on purpose: one glow on the pane
+  (Hobson's line), no frosted glass, corner brackets or window dots, tracking at 0.06–0.12em,
+  the current module in inverse video, plain words on buttons (TEST KEY, INSTALL). The earlier
+  version had every sci-fi-terminal trope switched on at once and read as generated.
 - **Developing it**: the page runs against a mock backend (`setup/ui/mock.js`) at
   `index.html?mock`, `?mock=update` or `?mock=bare`, in any browser. A real run writes
   `~/.claude` and `settings.json`, and the hooks it installs point at the checkout it ran from, so
-  run a worktree's wizard only under a scratch `HOME`.
+  run a real one in the sandbox: `scripts/sandbox.sh new` installs a snapshot of the working tree
+  through `install-remote.sh` into a scratch HOME, in an empty environment, and the wizard opens;
+  `shell` is a shell there (`hobson setup`, `hobson uninstall`), `check` compares your own install
+  with the baseline `new` took, `destroy` removes it. A scratch HOME alone is not a sandbox: an
+  uninstall run in one revoked the real camera grant (`tccutil` acts on the macOS user). So the
+  sandbox's sensor is built as `local.hobson.presence.sandbox`, shims pass only its `tccutil`
+  reset and Homebrew's read-only verbs, and `new` warns about the rest (Ollama's model store, the
+  TTS daemons' ports).
 
 **Installer** (`install.sh`): hooks, the CLI link and the presence sensor build, then the wizard
 for a new install on a desktop, or for kept settings when `unseen()` has sections and you say yes.
@@ -561,8 +623,8 @@ wraps midnight. Both are read only through `silence_reason()`.
 ## Key paths
 
 Every path under `~/.claude` comes from `scripts/home.py`, resolved from `$HOME` each time it is
-asked for (`state_dir()`), so a test isolates all of it by setting HOME. The shell scripts and the
-two TTS daemon scripts keep their own copies.
+asked for (`state_dir()`), so a test isolates all of it by setting HOME. The shell scripts keep their
+own copies; the TTS daemons take theirs from `home.py` through `tts_daemon.py`.
 
 - Config: `~/.claude/hobson.json` (engine, personality, events, cooldown, volume, Ollama models, per-engine settings)
 - Personalities: `scripts/personalities/<name>/personality.json` (templates)
@@ -576,9 +638,9 @@ two TTS daemon scripts keep their own copies.
 - Activity token: `~/.claude/hobson-activity-<key>`, one per project (written by the UserPromptSubmit hook; cancels that project's nudge)
 - Presence: `~/.claude/hobson-presence.json` (the helper's state, rewritten every second; removed when it exits), `hobson-presence.lock` (one helper), `hobson-presence.spawn` (spawn throttle), `hobson-presence-lines.json` (the last greeting/farewell said, and when); the salver `hobson-held.json` + `hobson-held.lock`; the helper at `build/HobsonPresence.app` (gitignored)
 - Setup record: `~/.claude/hobson-setup.json` (the wizard sections this install has seen); the wizard's page at `setup/ui/` (its voice clips in `setup/ui/voice/`), its window at `build/HobsonSetup.app` (gitignored)
-- Decider key: `~/.claude/hobson.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider._find_key()`, never logged)
+- Decider key: `~/.claude/hobson.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider.find_key()`, never logged)
 - Log: `~/.claude/hobson.log` — `[YYYY-MM-DD HH:MM:SS] [project] [engine] msg` (engine lines) or `[…] [project] msg`; older lines have only `HH:MM:SS`. Written and read only through `scripts/log_record.py`
-- Daemon pid/log: `~/.claude/{kokoro,pocket-tts}-daemon.{pid,log}`; playback scratch WAVs at `~/.claude/kokoro-playback.wav`, `~/.claude/pocket-tts-playback.wav`
+- Daemon pid/log/token: `~/.claude/{kokoro,pocket-tts}-daemon.{pid,log,token}` (the token mode 600, written by the daemon once it holds its port); playback scratch WAVs at `~/.claude/kokoro-playback.wav`, `~/.claude/pocket-tts-playback.wav`
 - Caches: `~/.claude/voice-cache-chatterbox/` (pre-gen), `~/.claude/voice-cache-kokoro-realtime/` (runtime)
 - Venvs: `venvs/{kokoro,chatterbox,pocket-tts,dev}/` (created by the wizard or `hobson setup <engine>`, gitignored)
 - Models: `models/` (kokoro ONNX models, chatterbox reference audio -- gitignored)
@@ -610,7 +672,7 @@ hobson config reset        # Back up and reset config to defaults
 hobson cache-gen [--force] # Generate voice cache for current engine
 hobson setup               # The setup wizard: every choice in one window, written on COMMIT
 hobson setup kokoro|pocket-tts|chatterbox  # Install one engine's venv + models, no window
-hobson daemon start|stop|status # Manage TTS daemon (kokoro)
+hobson daemon start|stop|status # The engine's TTS daemon (kokoro-realtime, pocket-tts)
 hobson version             # Print the version
 hobson update              # Fast-forward the checkout, refresh hooks, keep settings
 hobson uninstall [--yes]   # Remove hobson (--yes: everything incl. the managed checkout, no prompts)
@@ -628,11 +690,12 @@ python3 -m venv venvs/dev && ./venvs/dev/bin/pip install -r requirements-dev.txt
 ./venvs/dev/bin/python -m pytest tests/ --cov=scripts --cov-report=term-missing  # + coverage
 ```
 
-Coverage is report-only (no failing threshold). The kokoro / pocket-tts daemon and
-`_speak_live` native paths are intentionally uncovered — they need a live daemon and ML
-models. So is the presence helper (`presence/main.swift`): it needs a camera and a desk, and is
-checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run. The suite is **919 tests** and runs in about two seconds; if it takes much longer,
-something is reaching the network.
+Coverage is report-only (no failing threshold). The kokoro / pocket-tts backends (model load and
+synthesis) and `_speak_live` native paths are intentionally uncovered — they need ML models; the
+runner both backends share, its guard included, is tested over real HTTP with a stand-in. So is the presence helper (`presence/main.swift`): it needs a camera and a desk, and is
+checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run. The suite is **1001 tests** and runs in about four seconds, a second of it `tests/test_daemon_cli.py`
+driving the real CLI against a stand-in daemon on loopback; if it takes much longer, something is
+reaching the network.
 
 Do not read a pass from a pipeline: `pytest | tail` masks pytest's exit code, so an `&&`
 chain will happily proceed past a real failure. Check the exit status explicitly.
@@ -671,7 +734,7 @@ python3 scripts/settings-merge.py --check
 
 - macOS only (depends on `afplay` and `say` commands, and `fcntl` for file locking)
 - `bark_hash()` must produce identical output in all files -- changing the hash function breaks all caches
-- `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/hobson.py` in the command (plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word: a bare name claims the hooks of anyone whose home is named after it, and uninstall deletes them -- and Hobson is a surname. Every cleanup of an old link checks for our `scripts/settings-merge.py` first, so another tool's command is never touched
+- `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/hobson.py` in the command (plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word: a bare name claims the hooks of anyone whose home is named after it, and uninstall deletes them -- and Hobson is a surname. Ownership is per hook, not per matcher group (`_without_ours`): a foreign hook in the same entry as ours stays, where dropping the entry deleted it. Every cleanup of an old link checks for our `scripts/settings-merge.py` first, so another tool's command is never touched
 - Legacy names: `migrate_legacy_state()` in `home.py` moves a `claude-bark.json` to `hobson.json`, only when the target is missing, and turns `personality: alfred` into `hobson`; the installer, the CLI and every hook but UserPromptSubmit call it, one `lstat` once done. The chatterbox lookup still finds `models/alfred-reference.*`
 - The `${CLAUDE_PLUGIN_ROOT}` variable in `hooks/hooks.json` is for future plugin mode; standalone install uses absolute paths via `settings-merge.py --install-dir`
 - Hook commands are `"<python>" "<install_dir>/scripts/hobson.py"`, the interpreter pinned by absolute path at install time: Claude Code runs hooks with its own `PATH`, which from the desktop app or an IDE can resolve `python3` to the Command Line Tools stub. The code must keep running on the stock macOS **Python 3.9** (CI runs the suite on it)

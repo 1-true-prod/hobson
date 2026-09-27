@@ -39,6 +39,21 @@ echo '{"hook_event_name":"Stop"}' | python3 scripts/hobson.py
 ./hobson test
 ```
 
+The installer, the setup wizard and uninstall change your real setup, so try them in the sandbox
+instead: a scratch home, installed from a snapshot of your working tree through the same
+`curl | bash` path a new user takes.
+
+```bash
+scripts/sandbox.sh new       # install into the sandbox; the setup wizard opens
+scripts/sandbox.sh shell     # a shell there: hobson setup, hobson status, hobson uninstall, ...
+scripts/sandbox.sh check     # is your own install as it was?
+scripts/sandbox.sh destroy   # remove the sandbox and everything it started
+```
+
+A scratch `HOME` alone is not enough: the camera permission belongs to your macOS account, not to
+a home, and Homebrew, Ollama's models and the voice daemons' ports are shared. The script's header
+says what it guards and what it only warns about.
+
 ## Adding a Personality
 
 1. Create `scripts/personalities/<name>/personality.json`

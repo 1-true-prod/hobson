@@ -160,15 +160,38 @@ _OUR_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\]hobson\.py\b")
 _LEGACY_MARKERS = ("claude-bark", "voice-bark")  # names from before the rename
 
 
+def _is_our_command(hook):
+    """Whether one hook in an entry's "hooks" list is hobson's (or legacy claude-bark's)."""
+    cmd = (hook.get("command") or "") if isinstance(hook, dict) else ""
+    return bool(_OUR_ENTRYPOINT.search(cmd)) or any(m in cmd for m in _LEGACY_MARKERS)
+
+
 def _is_our_hook(hook_entry):
-    """Check if a hook entry belongs to hobson (or legacy claude-bark)."""
+    """Whether a hook entry holds any of hobson's hooks."""
     if not isinstance(hook_entry, dict):
         return False
-    for h in hook_entry.get("hooks") or []:
-        cmd = (h.get("command") or "") if isinstance(h, dict) else ""
-        if _OUR_ENTRYPOINT.search(cmd) or any(m in cmd for m in _LEGACY_MARKERS):
-            return True
-    return False
+    return any(_is_our_command(h) for h in hook_entry.get("hooks") or [])
+
+
+def _without_ours(entries):
+    """`entries` with hobson's hooks taken out, and whether there were any.
+
+    Ownership is per hook, not per entry: a hook someone else put in the
+    same entry (the same matcher group) stays there. Dropping a whole entry
+    for one hook of ours deleted theirs, on install as well as uninstall.
+    An entry is dropped only when nothing but ours was in it.
+    """
+    kept, found = [], False
+    for entry in entries:
+        hooks = entry.get("hooks") if isinstance(entry, dict) else None
+        if not isinstance(hooks, list) or not any(_is_our_command(h) for h in hooks):
+            kept.append(entry)
+            continue
+        found = True
+        theirs = [h for h in hooks if not _is_our_command(h)]
+        if theirs:
+            kept.append({**entry, "hooks": theirs})
+    return kept, found
 
 
 def merge_hooks(install_dir, python=DEFAULT_PYTHON):
@@ -186,8 +209,8 @@ def merge_hooks(install_dir, python=DEFAULT_PYTHON):
     for event, new_entries in HOOKS_TO_INJECT.items():
         existing = _entries(hooks, event)
 
-        # Remove any existing hobson/claude-bark hooks
-        existing = [e for e in existing if not _is_our_hook(e)]
+        # Remove any existing hobson/claude-bark hooks, and only those
+        existing, _ = _without_ours(existing)
 
         # Add our hooks with the correct command
         for entry in new_entries:
@@ -227,8 +250,8 @@ def remove_hooks():
         entries = hooks[event]
         if not isinstance(entries, list):
             continue  # not a shape hobson ever wrote; leave it be
-        kept = [e for e in entries if not _is_our_hook(e)]
-        if len(kept) < len(entries):
+        kept, found = _without_ours(entries)
+        if found:
             removed.append(event)
             # Drop an event hobson emptied; one that was already empty is theirs
             if kept:

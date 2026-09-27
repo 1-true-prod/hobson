@@ -342,9 +342,9 @@ phrases get a second opinion from Jev, TypeSafe AI's fast classifier, through
 - **What is sent:** the phrase in question and up to six phrases Hobson recently spoke. A one-line
   summary of each commentary batch — tool names, file names, and each command's description (or
   its first 40 characters) — such as `3 Bash (Run the test suite); Edit: Invoice.kt (+4/-2 lines)`. And, for a permission prompt on a shell command Hobson's own rules can't place (see
-  below), that command. The summary and the command go out with paths, hosts, URLs, emails,
-  secrets, tokens, scripts and long quoted text stripped out. No code, file contents, or
-  conversation.
+  below), that command. All of it goes out with paths, hosts, URLs, emails, logins, secrets,
+  tokens, scripts and long quoted text stripped out, and only to an https address. No code, file
+  contents, or the conversation itself: the nearest thing is what Hobson said aloud about it.
 - **Key:** put `OPENROUTER_API_KEY=...` in `~/.claude/hobson.env` (`chmod 600`), or export it. It
   is never read from or written to `hobson.json`.
 - **Cost:** about $0.00002 per call: one per commentary batch, plus the odd rejection or

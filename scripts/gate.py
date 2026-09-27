@@ -21,8 +21,6 @@ turned out — hobson does not hook tool results — so "tests passed" or "it
 failed" cannot appear here; the Stop announcement is where those land.
 """
 
-import re
-
 # Where the chattiness dial sits by default: a threshold of 0.4. Leaning
 # quiet on purpose -- the user's standing complaint is that models blab.
 DEFAULT_CHATTINESS = 0.6
@@ -49,32 +47,22 @@ def worth_probability(batch_detail, config):
     """P(worth a spoken update) for a batch summary, per the decider, or
     None for no opinion (backend local, any failure, no probability).
 
-    The summary is redacted as a shell command would be (risk.redact): it
-    carries Bash descriptions and the first 40 characters of commands. It
-    goes out exactly as it did in the calibration, 220 characters at most.
+    The summary carries Bash descriptions and the first 40 characters of
+    commands, so it goes as a decider.Summary: redacted, 220 characters at
+    most, exactly as it went out in the calibration.
     """
     if not batch_detail:
         return None
     try:
         import decider
-        from risk import redact
     except ImportError:
         return None
-    # "+3/-2 lines" is an Edit's line count, not a path: shield it, or the
-    # path rule turns it into "<path>/-2 lines".
-    shielded = re.sub(r"\+(\d+)/-(\d+)", r"PLUS\1MINUS\2", batch_detail)
-    summary = re.sub(r"PLUS(\d+)MINUS(\d+)", r"+\1/-\2", redact(shielded, 220))
-    result = decider.choice(
-        "A coding agent just did this batch of work (a summary of its tool calls):\n\n"
-        + summary,
+    return decider.probability(
+        "worth",
+        ["A coding agent just did this batch of work (a summary of its tool calls):\n\n",
+         decider.Summary(batch_detail)],
         "Decide whether this batch deserves a short spoken update to a user who is not "
         "watching the screen.",
         _CRITERIA,
         config=config,
     )
-    if result is None:
-        return None
-    try:
-        return float(result.probs["worth"])
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return None

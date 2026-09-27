@@ -57,9 +57,12 @@ for spec in "kokoro:19849" "pocket-tts:19850"; do
     pid_file="$CLAUDE_DIR/$name-daemon.pid"
     [[ -f "$pid_file" ]] || continue
     pid=$(cat "$pid_file" 2>/dev/null || true)
-    if [[ -n "$pid" ]] && kill -0 "$pid" 2>/dev/null; then
+    # The daemon itself, not whatever process reused a pid a crash left behind.
+    if [[ -n "$pid" ]] && [[ "$(ps -p "$pid" -o command= 2>/dev/null)" == *"$name-daemon.py"* ]]; then
         info "Stopping $name daemon (pid $pid)..."
-        curl -s -X POST "http://127.0.0.1:$port/shutdown" >/dev/null 2>&1 || true
+        token=$(cat "$CLAUDE_DIR/$name-daemon.token" 2>/dev/null || true)
+        curl -s --max-time 2 -X POST -H "X-Hobson-Token: $token" \
+            "http://127.0.0.1:$port/shutdown" >/dev/null 2>&1 || true
         sleep 0.5
         kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null || true
         ok "$name daemon stopped"
@@ -107,6 +110,8 @@ state=(
     "$CLAUDE_DIR/hobson-setup.json"
     "$CLAUDE_DIR/kokoro-daemon.log"
     "$CLAUDE_DIR/pocket-tts-daemon.log"
+    "$CLAUDE_DIR/kokoro-daemon.token"
+    "$CLAUDE_DIR/pocket-tts-daemon.token"
     "$CLAUDE_DIR/kokoro-playback.wav"
     "$CLAUDE_DIR/pocket-tts-playback.wav"
     # Legacy names from claude-bark installs
@@ -131,9 +136,18 @@ ok "Removed config and state ($removed items)"
 
 # ── Optional: caches, venvs, log, key ────────────────────────────────
 
-caches=("$CLAUDE_DIR"/voice-cache-*/)
+# No trailing slash on these: "link/" names what a symlink points at, and
+# rm -rf of it emptied a cache kept elsewhere. A link is removed, not followed.
+caches=()
+for entry in "$CLAUDE_DIR"/voice-cache-*; do
+    [[ -d "$entry" ]] && caches+=("$entry")
+done
 if [[ ${#caches[@]} -gt 0 ]]; then
     for dir in "${caches[@]}"; do
+        if [[ -L "$dir" ]]; then
+            echo "  $(basename "$dir")  [a link to $(readlink "$dir"): only the link is removed]"
+            continue
+        fi
         count=$(find "$dir" -type f | wc -l | tr -d ' ')
         size=$(du -sh "$dir" 2>/dev/null | cut -f1)
         echo "  $(basename "$dir")/  [$count files, $size]"

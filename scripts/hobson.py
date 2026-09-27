@@ -25,19 +25,24 @@ ENGINES = {
 }
 
 
+def engine_class(engine_name):
+    """The class ENGINES names for engine_name, or None if it names none."""
+    engine_path = ENGINES.get(engine_name)
+    if not engine_path:
+        return None
+    module_path, class_name = engine_path.rsplit(".", 1)
+    import importlib
+    return getattr(importlib.import_module(module_path), class_name)
+
+
 def load_engine(config):
     """Instantiate the configured TTS engine."""
     engine_name = config.get("engine", "say")
-    engine_path = ENGINES.get(engine_name)
-    if not engine_path:
+    cls = engine_class(engine_name)
+    if cls is None:
         log_record.write(f"unknown engine {engine_name!r}, falling back to say")
-        engine_path = ENGINES["say"]
-
-    module_path, class_name = engine_path.rsplit(".", 1)
-    import importlib
-    module = importlib.import_module(module_path)
-    engine_class = getattr(module, class_name)
-    return engine_class(config)
+        cls = engine_class("say")
+    return cls(config)
 
 
 def _record_alive(hook_input):

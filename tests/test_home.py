@@ -38,10 +38,9 @@ def test_no_other_module_builds_a_state_path():
     """A path built from "~/.claude" outside home.py is one that setting HOME
     in a test does not move -- which is how a test once wrote to the real
     ~/.claude. The exceptions are not Hobson's state: Claude Code's own
-    settings and transcripts, and the TTS daemons, which run in their own
-    venvs and keep their own pid and log files."""
-    allowed = {"home.py", "settings-merge.py", "stop_outcome.py",
-               "kokoro-daemon.py", "pocket-tts-daemon.py"}
+    settings and transcripts. The TTS daemons were exceptions too, until
+    their runner (tts_daemon.py) took its paths from home.py like the rest."""
+    allowed = {"home.py", "settings-merge.py", "stop_outcome.py"}
     built = re.compile(r"""(expanduser|join)\(\s*f?["']~/\.claude""")
     offenders = []
     for path in glob.glob(os.path.join(SCRIPTS, "**", "*.py"), recursive=True):

@@ -24,6 +24,7 @@ from urllib.error import URLError
 from .base import BaseEngine, describe_generation_failure, event_kind
 import home
 import log_record
+import loopback
 
 
 # A cold Ollama load takes ~8s, and a shorter timeout cancels the load
@@ -74,6 +75,9 @@ class DaemonEngine(BaseEngine):
         self._options = {o.key: cfg[o.key] for o in spec.options}
         self._venv_python = os.path.join(home.ROOT, "venvs", spec.venv, "bin", "python3")
         self._daemon_script = os.path.join(home.ROOT, "scripts", spec.script)
+        # Written by the daemon once it holds the port, named after its
+        # script (tts_daemon.py); /generate is refused without it.
+        self._token_file = home.path(os.path.splitext(spec.script)[0] + ".token")
 
     # ── Daemon management ──────────────────────────────────────────────
 
@@ -83,6 +87,21 @@ class DaemonEngine(BaseEngine):
             if o.flag:
                 argv += [o.flag, str(self._options[o.key])]
         return argv + ["--idle-timeout", str(self._daemon_idle_timeout)]
+
+    def cli_lines(self):
+        """What `hobson daemon` needs, as this engine sees it: KEY=value
+        lines, then one ARG= line per word of the command that starts the
+        daemon. The CLI used to keep its own copy, for Kokoro alone, and could
+        neither start, stop nor report Pocket TTS."""
+        stem = os.path.splitext(self.spec.script)[0]
+        lines = [f"PORT={self._daemon_port}",
+                 f"PID_FILE={home.path(stem + '.pid')}",
+                 f"TOKEN_FILE={self._token_file}",
+                 f"LOG={home.path(stem + '.log')}",
+                 f"VENV={self._venv_python}",
+                 f"SCRIPT={self._daemon_script}",
+                 f"POLLS={self.spec.startup_polls}"]
+        return lines + [f"ARG={word}" for word in self._daemon_argv()]
 
     def _daemon_alive(self):
         try:
@@ -140,13 +159,13 @@ class DaemonEngine(BaseEngine):
         payload = {"text": text}
         payload.update({o.key: self._options[o.key] for o in self.spec.options if o.in_payload})
         body = json.dumps(payload).encode()
+        headers = {"Content-Type": "application/json"}
+        token = loopback.read_token(self._token_file)
+        if token:
+            headers[loopback.TOKEN_HEADER] = token
 
         try:
-            req = Request(
-                f"{self._daemon_url}/generate",
-                data=body,
-                headers={"Content-Type": "application/json"},
-            )
+            req = Request(f"{self._daemon_url}/generate", data=body, headers=headers)
             with urlopen(req, timeout=self.spec.generate_timeout) as resp:
                 wav_bytes = resp.read()
         except (URLError, OSError) as e:

@@ -22,4 +22,7 @@ security surface is:
 - The installer's edit of `~/.claude/settings.json` (hooks only; backed up first, other entries
   untouched, no permissions granted)
 - Ollama API calls to localhost, and OpenRouter calls when Jev is enabled
+- The HTTP servers Hobson runs on 127.0.0.1: the TTS daemons (ports 19849 and 19850) and the setup
+  wizard (a random port, while its window is open). Each checks the Host and Origin headers and
+  requires a token for anything that acts (`scripts/loopback.py`)
 - Audio file caching and session state in `~/.claude/`

@@ -2,6 +2,7 @@
 
 import json
 import os
+import re
 import stat
 import threading
 from urllib.error import HTTPError
@@ -216,7 +217,7 @@ def test_save_key_is_private_and_readable_by_the_decider(claude_home):
     sw.save_key("sk-or-v1-test")
     path = home.env_file()
     assert stat.S_IMODE(os.stat(path).st_mode) == 0o600
-    assert decider._find_key() == "sk-or-v1-test"
+    assert decider.find_key() == "sk-or-v1-test"
 
 
 # ── The key check ──────────────────────────────────────────────────────────
@@ -300,12 +301,14 @@ def server():
     srv.shutdown()
 
 
-def call(port, path, token=None, body=None, host=None):
+def call(port, path, token=None, body=None, host=None, origin=None):
     headers = {"Content-Type": "application/json"}
     if token:
         headers["X-Hobson-Token"] = token
     if host:
         headers["Host"] = host
+    if origin:
+        headers["Origin"] = origin
     data = json.dumps(body).encode() if body is not None else None
     req = Request(f"http://127.0.0.1:{port}{path}", data=data, headers=headers)
     try:
@@ -328,6 +331,24 @@ def test_another_host_name_is_refused(server):
     # A DNS-rebinding page reaches 127.0.0.1 under its own host name.
     wiz, port = server
     assert call(port, "/api/probe", token=wiz.token, host=f"evil.example:{port}")[0] == 403
+    assert call(port, "/api/plan", token=wiz.token, body={"answers": {}},
+                host=f"evil.example:{port}")[0] == 403
+    assert call(port, "/", host=f"evil.example:{port}")[0] == 403
+
+
+def test_another_origin_is_refused_even_with_the_token(server):
+    """The guard is loopback's, shared with the TTS daemons: a page elsewhere
+    posts with its own Origin, token or not; the wizard's page with this one."""
+    wiz, port = server
+    plan = {"answers": {}}
+    assert call(port, "/api/plan", token=wiz.token, body=plan, origin="https://evil.example")[0] == 403
+    assert call(port, "/api/plan", token=wiz.token, body=plan, origin="null")[0] == 403
+    assert call(port, "/api/plan", token=wiz.token, body=plan, origin=f"http://127.0.0.1:{port}")[0] == 200
+
+
+def test_a_post_outside_the_api_is_not_routed(server):
+    wiz, port = server
+    assert call(port, "/xxxxplan", token=wiz.token, body={"answers": {}})[0] == 404
 
 
 def test_only_the_wizard_files_are_served(server):
@@ -418,6 +439,28 @@ def test_clips_are_served_and_nothing_else_in_the_voice_folder(server):
     assert call(port, "/lines.json")[0] == 200
 
 
+def test_every_picture_art_js_shows_is_served(server):
+    # A still the allowlist refuses is not an error anyone sees: the monitor
+    # just stays black.
+    wiz, port = server
+    with open(os.path.join(home.ROOT, "setup", "ui", "art.js"), encoding="utf-8") as f:
+        stills = re.findall(r'still\("([^"]+)"\)', f.read())
+    assert len(stills) == 4
+    for path in stills:
+        status, body = call(port, "/" + path)
+        assert status == 200 and body.startswith(b"\x89PNG"), path
+    assert call(port, "/art.js")[0] == 200
+    assert call(port, "/art/LICENSES.md")[0] == 404
+
+
+def test_every_picture_is_credited():
+    art = os.path.join(home.ROOT, "setup", "ui", "art")
+    with open(os.path.join(art, "LICENSES.md"), encoding="utf-8") as f:
+        credits = f.read()
+    pictures = [n for n in os.listdir(art) if n.endswith(".png")]
+    assert pictures and all(f"`{n}`" in credits for n in pictures)
+
+
 # ── Any Ollama model ───────────────────────────────────────────────────────
 
 @pytest.mark.parametrize("name", ["mistral:7b", "qwen3:8b", "library/llama3", "hf.co/user/repo:Q4_K_M",
@@ -443,3 +486,10 @@ def test_a_model_outside_the_catalogue_is_written_and_pulled():
 def test_a_model_already_pulled_is_not_pulled_again():
     f = facts(ollama={"models": ["mistral:7b"]})
     assert "pull" not in ids(sw.tasks_for({"model": "mistral:7b"}, f, False))
+
+
+def test_an_audition_reads_the_page_text_as_text(no_audio):
+    """The page sends the text; before `--`, "-o<path>" was an option to say."""
+    sw.speak("-o/Users/me/notes.txt", "hobson")
+    [argv] = [a for a in no_audio["popen"] if a and a[0] == "say"]
+    assert argv[-2:] == ["--", "-o/Users/me/notes.txt"]

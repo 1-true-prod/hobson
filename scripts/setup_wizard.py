@@ -16,7 +16,8 @@ page decides nothing:
 
 The server listens on 127.0.0.1 only, on a random port, and every /api call
 must carry the random token that is in the window's URL, from a page served
-by this same server (the Host header is checked too). It writes config,
+by this same server (the Host and Origin headers are checked too: see
+loopback.py, which guards the TTS daemons the same way). It writes config,
 saves an API key and runs installers, and any web page open in a browser can
 send requests to localhost.
 
@@ -28,7 +29,6 @@ Exit status: 0 applied, 1 a task failed, 3 no desktop to show a window on,
 """
 
 import argparse
-import hmac
 import json
 import mimetypes
 import os
@@ -43,7 +43,6 @@ import sys
 import threading
 import time
 import webbrowser
-from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from urllib.error import URLError
 from urllib.parse import parse_qs, urlparse
 from urllib.request import Request, urlopen
@@ -52,6 +51,7 @@ import bark_templates
 import decider
 import home
 import log_record
+import loopback
 import presence
 
 # Every section the wizard can show. A new one added here is offered to
@@ -119,7 +119,8 @@ DEFAULT_MODEL_MIN_RAM_GB = 8
 HELLO = "Good day. Hobson, at your service."
 IDLE_EXIT_SECONDS = 1800
 MAX_BODY = 64 * 1024
-STATIC = {"index.html", "wizard.css", "wizard.js", "city.js", "lines.json", "voice/manifest.json"}
+STATIC = {"index.html", "wizard.css", "wizard.js", "city.js", "art.js", "lines.json", "voice/manifest.json",
+          "art/voice.png", "art/brain.png", "art/jev.png", "art/phone.png"}
 CLIP = re.compile(r"^voice/[0-9a-f]{16}\.m4a$")
 # Any name Ollama accepts: library (mistral:7b), namespaced (user/model) or
 # Hugging Face (hf.co/user/repo:Q4_K_M). It only ever goes to Ollama's API,
@@ -607,7 +608,7 @@ def personalities():
 def key_facts():
     """Where an OpenRouter key was found, and its last four characters."""
     source = "env" if os.environ.get("OPENROUTER_API_KEY") else None
-    key = decider._find_key()
+    key = decider.find_key()
     if key and not source:
         source = "file"
     return {"source": source, "tail": key[-4:]} if key else None
@@ -680,7 +681,8 @@ def speak(text, personality=None):
         return
     voice = next((p["voice"] for p in personalities() if p["id"] == personality), "Daniel")
     try:
-        subprocess.Popen(["say", "-v", voice, text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        # After `--`: the page sends the text, and "-o<path>" would be an option.
+        subprocess.Popen(["say", "-v", voice, "--", text], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
     except OSError:
         pass
 
@@ -745,7 +747,7 @@ class Wizard:
 
     def jev_test(self, body):
         typed = str(body.get("key") or "").strip()
-        key = typed or decider._find_key()
+        key = typed or decider.find_key()
         result = decider.check_key(key)
         if result.get("ok"):
             self.jev_verified = True
@@ -958,104 +960,81 @@ def install_pocket(on_line, env=None, voice="charles"):
 def make_handler(wizard):
     ui_dir = os.path.join(home.ROOT, "setup", "ui")
 
-    class Handler(BaseHTTPRequestHandler):
+    # The Host, Origin and token checks are loopback's, shared with the TTS
+    # daemons. Static files need no token (they are an allowlist and hold no
+    # secret: the page gets the token from its own URL); every /api call does.
+    class Handler(loopback.GuardedHandler):
         server_version = "HobsonSetup"
-
-        def log_message(self, *args):
-            pass  # the URL carries the token: nothing about requests is logged
-
-        def _allowed_host(self):
-            port = self.server.server_address[1]
-            return self.headers.get("Host") in (f"127.0.0.1:{port}", f"localhost:{port}")
-
-        def _send(self, status, body, ctype="application/json"):
-            data = body if isinstance(body, bytes) else json.dumps(body).encode("utf-8")
-            self.send_response(status)
-            self.send_header("Content-Type", ctype)
-            self.send_header("Content-Length", str(len(data)))
-            self.send_header("Cache-Control", "no-store")
-            self.send_header("X-Content-Type-Options", "nosniff")
-            self.end_headers()
-            self.wfile.write(data)
-
-        def _authorized(self):
-            token = self.headers.get("X-Hobson-Token") or ""
-            return hmac.compare_digest(token.encode(), wizard.token.encode())
-
-        def _body(self):
-            length = int(self.headers.get("Content-Length") or 0)
-            if length > MAX_BODY:
-                raise ValueError("too large")
-            raw = self.rfile.read(length) if length else b"{}"
-            data = json.loads(raw or b"{}")
-            return data if isinstance(data, dict) else {}
+        max_body = MAX_BODY
 
         def do_GET(self):
             wizard.last_request = time.time()
-            if not self._allowed_host():
-                return self._send(403, {"error": "forbidden"})
             url = urlparse(self.path)
-            if url.path.startswith("/api/"):
-                if not self._authorized():
-                    return self._send(403, {"error": "forbidden"})
+            api = url.path.startswith("/api/")
+            if not self.guard(token=api):
+                return None
+            if api:
                 return self._api_get(url)
             name = url.path.lstrip("/") or "index.html"
             if name not in STATIC and not CLIP.match(name):
-                return self._send(404, {"error": "not found"})
+                return self.send_json(404, {"error": "not found"})
             try:
                 with open(os.path.join(ui_dir, name), "rb") as f:
                     data = f.read()
             except OSError:
-                return self._send(404, {"error": "not found"})
+                return self.send_json(404, {"error": "not found"})
             ctype = "audio/mp4" if name.endswith(".m4a") else mimetypes.guess_type(name)[0] or "application/octet-stream"
             if ctype.startswith("text/") or ctype.endswith("javascript"):
                 ctype += "; charset=utf-8"
-            self._send(200, data, ctype)
+            self.send_body(200, data, ctype)
 
         def _api_get(self, url):
             route = url.path[len("/api/"):]
             if route == "probe":
-                return self._send(200, wizard.get_facts(fresh=True))
+                return self.send_json(200, wizard.get_facts(fresh=True))
             if route == "phone":
                 serial = (parse_qs(url.query).get("serial") or [""])[0]
-                return self._send(200, read_phone(serial))
+                return self.send_json(200, read_phone(serial))
             if route == "phone/scan":
                 facts = wizard.get_facts()
                 facts["phone"] = phone_facts(home.load_config())
-                return self._send(200, facts["phone"])
-            self._send(404, {"error": "not found"})
+                return self.send_json(200, facts["phone"])
+            self.send_json(404, {"error": "not found"})
 
         def do_POST(self):
             wizard.last_request = time.time()
-            if not self._allowed_host() or not self._authorized():
-                return self._send(403, {"error": "forbidden"})
+            if not self.guard(token=True):
+                return None
+            path = urlparse(self.path).path
+            if not path.startswith("/api/"):
+                return self.send_json(404, {"error": "not found"})
             try:
-                body = self._body()
+                body = self.read_json()
             except ValueError:
-                return self._send(400, {"error": "bad request"})
-            route = urlparse(self.path).path[len("/api/"):]
+                return self.send_json(400, {"error": "bad request"})
+            route = path[len("/api/"):]
             if route == "speak":
                 speak(body.get("text"), body.get("personality"))
-                return self._send(200, {"ok": True})
+                return self.send_json(200, {"ok": True})
             if route == "jev/test":
-                return self._send(200, wizard.jev_test(body))
+                return self.send_json(200, wizard.jev_test(body))
             if route == "presence/look":
-                return self._send(200, presence.look_now(request_permission=bool(body.get("request_permission"))))
+                return self.send_json(200, presence.look_now(request_permission=bool(body.get("request_permission"))))
             if route == "phone/test":
-                return self._send(200, {"ok": True})
+                return self.send_json(200, {"ok": True})
             if route == "plan":
-                return self._send(200, wizard.plan(clean_answers(body.get("answers"))))
+                return self.send_json(200, wizard.plan(clean_answers(body.get("answers"))))
             if route == "apply":
                 return self._stream_apply(clean_answers(body.get("answers")))
             if route == "done":
-                self._send(200, {"ok": True})
+                self.send_json(200, {"ok": True})
                 wizard.done.set()
                 return None
-            self._send(404, {"error": "not found"})
+            self.send_json(404, {"error": "not found"})
 
         def _stream_apply(self, answers):
             if not wizard.busy.acquire(blocking=False):
-                return self._send(409, {"error": "already running"})
+                return self.send_json(409, {"error": "already running"})
             try:
                 self.send_response(200)
                 self.send_header("Content-Type", "application/x-ndjson")
@@ -1085,8 +1064,7 @@ def gui_session():
 
 
 def serve(wizard, port=0):
-    server = ThreadingHTTPServer(("127.0.0.1", port), make_handler(wizard))
-    server.daemon_threads = True
+    server = loopback.Server(port, make_handler(wizard), token=wizard.token)
     # shutdown() waits out one poll: at the default 0.5s, closing the window
     # (and every server test) stalled half a second for nothing.
     thread = threading.Thread(target=server.serve_forever, kwargs={"poll_interval": 0.05}, daemon=True)

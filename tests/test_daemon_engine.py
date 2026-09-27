@@ -35,7 +35,7 @@ class FakeDaemon:
             if not self.alive:
                 raise OSError("connection refused")
             return _Resp(b"ok")
-        self.requests.append({"url": url, "timeout": timeout,
+        self.requests.append({"url": url, "timeout": timeout, "headers": dict(req.header_items()),
                               "payload": json.loads(req.data.decode())})
         if self.fail:
             raise self.fail
@@ -112,6 +112,19 @@ def test_pocket_requests_name_only_the_voice(fake_daemon, claude_home):
     assert req["payload"] == {"text": "I pushed the branch.", "voice": "alba"}
     assert req["timeout"] == 10
     assert path == str(claude_home / "pocket-tts-playback.wav")
+
+
+@pytest.mark.parametrize("cls, token_file", [(KokoroRealtimeEngine, "kokoro-daemon.token"),
+                                              (PocketTTSRealtimeEngine, "pocket-tts-daemon.token")])
+def test_generate_carries_the_token_its_daemon_wrote(cls, token_file, fake_daemon, claude_home):
+    """The daemon refuses /generate without it (tts_daemon.py); it names the
+    file after its script, and so does the engine."""
+    eng = _engine(cls)
+    eng._daemon_generate("I pushed the branch.")
+    assert "X-hobson-token" not in fake_daemon.requests[-1]["headers"]
+    (claude_home / token_file).write_text("t0k3n\n")
+    eng._daemon_generate("I pushed the branch.")
+    assert fake_daemon.requests[-1]["headers"]["X-hobson-token"] == "t0k3n"
 
 
 def test_an_unset_option_takes_the_config_default(fake_daemon):

@@ -11,16 +11,22 @@ Three tiers, cheapest first:
      local verdict down.
   2. Local read-only check — a command whose every segment is a known
      read-only program is harmless and never leaves the machine.
-  3. Everything else goes to the decider (backend "jev" only), REDACTED:
-     heredoc bodies and long quoted text dropped, and URLs, hosts, IPs,
-     emails, secrets, long tokens and every path but its last component
-     replaced. What remains is program names, flags and file names.
+  3. Everything else goes to the decider (backend "jev" only) as a
+     decider.Command, which the decider redacts before it leaves: heredoc
+     bodies and long quoted text dropped, and URLs, hosts, IPs, emails,
+     secrets, long tokens and every path but its last component replaced.
+     What remains is program names, flags and file names.
 
 Rules match the command with quoted text and heredoc bodies blanked out, so
 `pgrep -fl 'curl.*|bash'` or an `echo` of documentation does not trip them —
 except code handed to an interpreter with -c / -e, which is exactly where a
-`bash -c "rm -rf …"` hides. Measured on 10,760 real Bash commands before
-the rules shipped; see the notes on each for what they got wrong first.
+`bash -c "rm -rf …"` hides, and command substitutions, which run wherever
+they are written: `echo "$(rm -rf ~)"` is an rm. Measured on 10,760 real
+Bash commands before the rules shipped; see the notes on each for what they
+got wrong first. The substitution reading was replayed on 10,992: it flags
+3 more (all Python heredocs ending in a `python -c` holding test strings)
+and clears 91 fewer as read-only (a `$(git …)` in quotes), which costs a
+decider call each, not a warning.
 """
 
 import re
@@ -61,30 +67,156 @@ _SQL_DESTRUCTIVE = re.compile(
     r"(?i)\b(?:drop\s+(?:table|database|schema|collection)|truncate\s+(?:table\s+)?\w+"
     r"|delete\s+from\s+\w+\s*(?:;|$|['\"]))|\.drop\(\)")
 
-_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1[^\n]*\n.*?\n\s*\2\s*(?:\n|$)", re.S)
+# Group 3 is the rest of the opening line, which is still code; group 4 the body.
+_HEREDOC = re.compile(r"<<-?\s*(['\"]?)(\w+)\1([^\n]*)\n(.*?)\n\s*\2\s*(?:\n|$)", re.S)
 # A heredoc an interpreter reads is code; one `cat` writes to a file is data.
 _INTERPRETER_BEFORE = re.compile(r"(?:\b(?:ba|z)?sh|\bpython3?|\bnode|\bperl|\bruby|\bpsql|\bsqlite3"
                                  r"|\bmysql)\b[^\n|;&]*$")
-_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_SHELL_BEFORE = re.compile(r"\b(?:ba|z)?sh\b[^\n|;&]*$")
 _INTERPRETER_ARG = re.compile(r"(?:\b(?:ba|z)?sh|\bpsql|\bsqlite3|\bmysql|\bpython3?|\bnode|\bperl|\bruby)"
                               r"\s+(?:\S+\s+)*?-[ce]\s*$")
+# Substitutions nested deeper than this are read as raw text: every level
+# rescans what follows it, and 25,000 unclosed `$(` took 8 seconds.
+_MAX_DEPTH = 20
+# String literals in another language's source, and the stray quotes left over.
+_QUOTED = re.compile(r"'[^']*'|\"(?:[^\"\\]|\\.)*\"")
+_STRAY_QUOTE = re.compile(r"['\"`]")
 
 
 def _code_only(command):
-    """The command with heredoc bodies and quoted text blanked, except a
-    quoted argument handed to an interpreter via -c / -e, which is code."""
+    """What the shell would run, as one text every rule reads: quoted text
+    and heredoc bodies blanked, except code handed to an interpreter (-c /
+    -e, or a heredoc it reads), which is kept minus its string literals.
+
+    Every command substitution is kept, rewritten as $(…), because it runs
+    wherever it is written: inside double quotes and unquoted heredocs too.
+    Blanking those whole is how `echo "$(rm -rf ~)"` passed as read-only.
+    The rest of a heredoc's opening line is kept too: `cat <<EOF && rm -rf
+    ~` runs the rm."""
     def heredoc(m):
-        line_start = command.rfind("\n", 0, m.start()) + 1
-        return m.group(0) if _INTERPRETER_BEFORE.search(command[line_start:m.start()]) else "<<heredoc\n"
-    text = _HEREDOC.sub(heredoc, command)
-    out, last = [], 0
-    for m in _QUOTED.finditer(text):
-        out.append(text[last:m.start()])
-        before = text[max(0, m.start() - 80):m.start()]
-        out.append(m.group(0) if _INTERPRETER_ARG.search(before) else "''")
-        last = m.end()
-    out.append(text[last:])
+        before = command[command.rfind("\n", 0, m.start()) + 1:m.start()]
+        body = m.group(4)
+        if _SHELL_BEFORE.search(before):
+            kept = _blank_literals(body)
+        elif _INTERPRETER_BEFORE.search(before):
+            # Another language: its quotes are not the shell's, so none may
+            # survive to pair with a quote outside the heredoc.
+            kept = _STRAY_QUOTE.sub(" ", _QUOTED.sub(" _ ", body))
+        else:
+            kept = ""
+        # With an unquoted delimiter the shell runs these before anything reads the body.
+        runs = [] if m.group(1) else _expansions(body, 0, None)[0]
+        return ("<<heredoc" + m.group(3) + "\n" + kept + "\n"
+                + "".join("$(" + s + ")\n" for s in runs))
+    try:
+        return _blank_literals(_HEREDOC.sub(heredoc, command))
+    except RecursionError:  # absurd nesting: let every rule see all of it
+        return command
+
+
+def _blank_literals(text, depth=0):
+    """`text` with each quoted string blanked to '', followed by any
+    substitution inside it, and each substitution, quoted or not, as $(…)
+    with its own quoting read afresh."""
+    if depth > _MAX_DEPTH:
+        return text  # too deep to be real: let every rule see all of it
+    out, i, n = [], 0, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            out.append(text[i:i + 2])
+            i += 2
+        elif c == "'" or text.startswith("$'", i):
+            start = i
+            i = (_close(text, i + 2, "'") if c == "$" else _close_single(text, i + 1)) + 1
+            out.append(_quoted(text, start, i, [], depth))
+        elif c == '"':
+            start = i
+            runs, close = _expansions(text, i + 1, '"')
+            i = close + 1
+            out.append(_quoted(text, start, i, runs, depth))
+        elif text.startswith("$(", i):
+            close = _close_paren(text, i + 2)
+            out.append("$(" + _blank_literals(text[i + 2:close], depth + 1) + ")")
+            i = close + 1
+        elif c == "`":
+            close = _close(text, i + 1, "`")
+            out.append("$(" + _blank_literals(text[i + 1:close], depth + 1) + ")")
+            i = close + 1
+        else:
+            out.append(c)
+            i += 1
     return "".join(out)
+
+
+def _quoted(text, start, end, runs, depth):
+    """A quoted string as code: whole when handed to an interpreter, else
+    blank, with the substitutions inside it still run."""
+    if _INTERPRETER_ARG.search(text[max(0, start - 80):start]):
+        return text[start:end]
+    return "''" + "".join(" $(" + _blank_literals(s, depth + 1) + ")" for s in runs)
+
+
+def _expansions(text, i, stop):
+    """The substitutions in `text` from i where quotes are plain characters:
+    inside double quotes (stop='"') or an unquoted heredoc body (stop=None).
+    Returns their bodies and the index of `stop`, or len(text)."""
+    runs, n = [], len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+        elif c == stop:
+            return runs, i
+        elif text.startswith("$(", i):
+            close = _close_paren(text, i + 2)
+            runs.append(text[i + 2:close])
+            i = close + 1
+        elif c == "`":
+            close = _close(text, i + 1, "`")
+            runs.append(text[i + 1:close])
+            i = close + 1
+        else:
+            i += 1
+    return runs, n
+
+
+def _close_paren(text, i):
+    """The index of the `)` closing a `$(` that ends at i, or len(text)."""
+    depth, n = 1, len(text)
+    while i < n:
+        c = text[i]
+        if c == "\\":
+            i += 2
+            continue
+        if c == "'":
+            i = _close_single(text, i + 1)
+        elif c == '"':
+            i = _expansions(text, i + 1, '"')[1]
+        elif c == "`":
+            i = _close(text, i + 1, "`")
+        elif c == "(":
+            depth += 1
+        elif c == ")":
+            depth -= 1
+            if not depth:
+                return i
+        i += 1
+    return n
+
+
+def _close_single(text, i):
+    """The closing ' of a single-quoted string (no escapes), or len(text)."""
+    end = text.find("'", i)
+    return len(text) if end < 0 else end
+
+
+def _close(text, i, quote):
+    """The unescaped `quote` closing a string that opened before i, or len(text)."""
+    n = len(text)
+    while i < n and text[i] != quote:
+        i += 2 if text[i] == "\\" else 1
+    return min(i, n)
 
 
 def local_risk(command):
@@ -121,7 +253,8 @@ def is_read_only(command):
     loses its warning, while a harmless one wrongly kept out costs one
     decider call."""
     code = _code_only(command or "")
-    if not code.strip() or _WRITES.search(code) or "$(" in code or "`" in code or "<<" in code:
+    if (not code.strip() or _WRITES.search(code)
+            or any(s in code for s in ("$(", "`", "<(", "<<"))):
         return False
     for segment in _SEGMENT.split(code):
         words = [w for w in segment.split() if not _ASSIGNMENT.match(w)]
@@ -139,47 +272,6 @@ def is_read_only(command):
     return True
 
 
-# ── Redaction: what may leave the machine ──────────────────────────────────
-
-_TLDS = r"(?:com|net|org|io|dev|ai|co|app|cloud|internal|local|lan|corp|xyz|us|uk|de|eu)"
-_REDACTIONS = [
-    (re.compile(r"(?i)\b[a-z][a-z0-9+.-]*://\S+"), "<url>"),
-    (re.compile(r"(?i)\bbearer\s+[^\s'\"]+"), "Bearer <secret>"),
-    (re.compile(r"(?i)\b(authorization|proxy-authorization|x-api-key|api-key|cookie|x-auth-token)\s*:\s*[^'\"\n]+"),
-     r"\1: <secret>"),
-    (re.compile(r"(?i)\b([A-Z0-9_]*(?:TOKEN|SECRET|PASSWORD|PASSWD|PASS|PWD|API_?KEY|ACCESS_?KEY"
-                r"|PRIVATE_?KEY|AUTH|CREDENTIALS?|SESSION|COOKIE)[A-Z0-9_]*)=(\"[^\"]*\"|'[^']*'|\S+)"),
-     r"\1=<secret>"),
-    (re.compile(r"(?i)(--?(?:token|password|passwd|pass|secret|api-?key|key|auth|access-key"
-                r"|private-key|client-secret)(?:=|\s+))(\"[^\"]*\"|'[^']*'|\S+)"), r"\1<secret>"),
-    (re.compile(r"\b(?:sk|pk|rk)-[A-Za-z0-9_-]{16,}|\bgh[pousr]_[A-Za-z0-9]{20,}|\bgithub_pat_\w{20,}"
-                r"|\bxox[abprs]-[\w-]{10,}|\bAKIA[0-9A-Z]{16}\b|\bAIza[\w-]{30,}|\beyJ[\w-]+\.[\w-]+\.[\w-]+"),
-     "<secret>"),
-    (re.compile(r"[\w.+-]+@[\w-]+(?:\.[\w-]+)+"), "<email>"),
-    (re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}(?::\d+)?\b"), "<ip>"),
-    (re.compile(r"(?i)\b(?:[a-z0-9-]+\.)+" + _TLDS + r"\b(?::\d+)?"), "<host>"),
-    (re.compile(r"\b[0-9a-f]{24,}\b|\b[A-Za-z0-9+/_-]{32,}={0,2}"), "<token>"),
-    # Any path keeps only its last component, which says what is touched;
-    # the directories above it say whose machine and which project.
-    (re.compile(r"(?:~|\$\{?\w+\}?)?(?:\.{0,2}/)?(?:[\w.@%+-]+/)+([\w.@%+*-]+)"), r"<path>/\1"),
-]
-_LONG_QUOTED = re.compile(r"'[^']{60,}'|\"(?:[^\"\\]|\\.){60,}\"")
-
-
-def redact(command, limit=600):
-    """The command as it may be shown to a third party. 600 characters
-    covers 99% of real commands once redacted; truncating at 300 first hid
-    the tail, which is where a destructive step in a compound command sits.
-    Heredoc bodies are always dropped here, even ones an interpreter reads:
-    a script can contain anything, so it never leaves the machine."""
-    text = _HEREDOC.sub("<<heredoc\n", command or "")
-    text = _LONG_QUOTED.sub("<text>", text)
-    for rx, replacement in _REDACTIONS:
-        text = rx.sub(replacement, text)
-    text = re.sub(r"\s+", " ", text).strip()
-    return text if len(text) <= limit else text[:limit] + " …"
-
-
 # ── The decider, for what the local rules cannot place ────────────────────
 
 _CRITERIA = {
@@ -192,27 +284,21 @@ _CRITERIA = {
 
 
 def remote_destructive_probability(command, config):
-    """P(destructive) for a redacted command, per the decider, or None for
-    no opinion (backend local, any failure, or no probability returned)."""
+    """P(destructive) for the command, per the decider (which redacts it),
+    or None for no opinion (backend local, any failure, or no probability)."""
     try:
         import decider
     except ImportError:
         return None
-    state = ("A coding agent is asking permission to run this shell command. Paths, hosts, "
-             "URLs and secrets are redacted.\n\n" + redact(command))
-    result = decider.choice(
-        state,
+    return decider.probability(
+        "destructive",
+        ["A coding agent is asking permission to run this shell command. Paths, hosts, "
+         "URLs and secrets are redacted.\n\n", decider.Command(command)],
         "Decide what running this command would do to the user's files, repositories, "
         "machine or services.",
         _CRITERIA,
         config=config,
     )
-    if result is None:
-        return None
-    try:
-        return float(result.probs["destructive"])
-    except (AttributeError, KeyError, TypeError, ValueError):
-        return None
 
 
 # Measured on the same corpus: the 40 real commands that would go to the
