@@ -1,0 +1,85 @@
+{
+  "_comment": "Written by scripts/cache-gen/setup_voice_gen.py; licences in LICENSES.md.",
+  "narrator": {
+    "engine": "pocket-tts",
+    "voice": "charles",
+    "temp": 0.4
+  },
+  "lines": {
+    "Working late, I see. Shall we bring me online?": "voice/9517d1dda26dd303.m4a",
+    "Good morning. Shall we bring me online?": "voice/5fa88066d9c49759.m4a",
+    "Good afternoon. Shall we bring me online?": "voice/a5eb16fce705d397.m4a",
+    "Good evening. Shall we bring me online?": "voice/581f8b6bdd4dd384.m4a",
+    "Working late, I see. There is something new since we last spoke.": "voice/4176681726ec19e8.m4a",
+    "Good morning. There is something new since we last spoke.": "voice/4f5edb66a4638428.m4a",
+    "Good afternoon. There is something new since we last spoke.": "voice/7ac47f0f19797f58.m4a",
+    "Good evening. There is something new since we last spoke.": "voice/a4ea0947b07dc954.m4a",
+    "I have surveyed this machine. Here is what I would recommend.": "voice/fb8d35f19d7e156b.m4a",
+    "First, a formality. How would you like me to sound?": "voice/8879793f43ddd639.m4a",
+    "When would you care to hear from me?": "voice/9f5b5b4d4b88ac23.m4a",
+    "I reason with a small local model. Which one shall I use?": "voice/a2d19f9f55be26ce.m4a",
+    "One question I will ask, rather than assume.": "voice/353d12e9cbd83537.m4a",
+    "Shall I notice when you are here? Whatever I would say to an empty room, I will keep until you return.": "voice/d27a36f9abd9f8bb.m4a",
+    "Lay your phone face down and my eye stays closed. Face up, and I may look.": "voice/90f0b17df46f9de9.m4a",
+    "The phone switch opens and closes my eye. With the camera off, there is nothing to switch.": "voice/2ea4a9f50f2480f9.m4a",
+    "One moment. I am writing that down.": "voice/cbcbd0016229990c.m4a",
+    "Nothing has been written yet. Here is precisely what will be.": "voice/107afe3037493dc8.m4a",
+    "Proceeding. Kindly bear with the progress bars.": "voice/917f56f76bcf2be1.m4a",
+    "There you are.": "voice/61edd5720f48ce24.m4a",
+    "Camera off.": "voice/1cb41afb4c413a6b.m4a",
+    "Camera on.": "voice/b7799c85eee023a1.m4a"
+  },
+  "auditions": {
+    "kokoro-realtime": {
+      "am_puck": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/eb149b86d62fd7ef.m4a",
+        "All sorted, sir. Tidied up nicely.": "voice/900215ac187b253d.m4a",
+        "Done. Ready for you.": "voice/661a9b93882403a5.m4a",
+        "Land ho! Smooth sailin' that was.": "voice/d3921a8ef7653c0c.m4a",
+        "Oh look, it works. Ship it before someone notices.": "voice/9c177c1cbd4e55cc.m4a"
+      },
+      "bm_george": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/cf1af96dda251aa5.m4a"
+      },
+      "bm_daniel": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/9f156883daee4073.m4a"
+      },
+      "bm_fable": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/a960d5b334d8586b.m4a"
+      },
+      "bf_emma": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/f6774031d41d14e4.m4a"
+      },
+      "bf_isabella": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/1af3b8efeacb97d7.m4a"
+      },
+      "af_heart": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/d7ae507a0af954ff.m4a"
+      }
+    },
+    "pocket-tts": {
+      "charles": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/e3cd755000f9c700.m4a",
+        "All sorted, sir. Tidied up nicely.": "voice/c2c8240246c24209.m4a",
+        "Done. Ready for you.": "voice/9672755fc60d001a.m4a",
+        "Land ho! Smooth sailin' that was.": "voice/f73b4d3afcf8b9c6.m4a",
+        "Oh look, it works. Ship it before someone notices.": "voice/798ab5a51b148bdc.m4a"
+      },
+      "paul": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/ef7864282ffc7606.m4a"
+      },
+      "anna": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/64c6f677acc509ef.m4a"
+      },
+      "vera": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/7a49300159c42ce2.m4a"
+      },
+      "fantine": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/2847074bbed77dc8.m4a"
+      },
+      "eponine": {
+        "Good evening. This is how I would sound, should you keep me.": "voice/4ed2db510db632a0.m4a"
+      }
+    }
+  }
+}

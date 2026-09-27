@@ -63,8 +63,9 @@ written to, ~/.claude/hobson.json -- that file is printed verbatim by
 
 import json
 import os
+import time
 from collections import namedtuple
-from urllib.error import URLError
+from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
 import home
@@ -113,6 +114,52 @@ def _find_key():
     except OSError:
         pass
     return None
+
+
+def check_key(key, config=None):
+    """One real call with `key`, whatever the backend: does it work?
+
+    For the setup wizard, which tests a key before it writes backend "jev",
+    and so has to say *why* one failed, where _ask only falls back. A noul
+    costs about $0.000017. Returns {"ok": True, "ms": .., "cost": ..} or
+    {"ok": False, "reason": ..}. Never raises; never logs the key.
+    """
+    if not key:
+        return {"ok": False, "reason": "no key"}
+    decider_cfg = _decider_config(config)
+    payload = {"model": decider_cfg["model"], "state": "Hobson's setup is checking this key.",
+               "questions": {"answer": {"type": "noul", "instructions": "This is a connection test."}}}
+    req = Request(decider_cfg["endpoint"], data=json.dumps(payload).encode("utf-8"),
+                  headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
+    started = time.monotonic()
+    try:
+        # Longer than a hook's budget: someone is waiting on this one, and a
+        # slow first handshake should not read as a bad key.
+        with urlopen(req, timeout=max(8.0, decider_cfg["timeout_ms"] / 1000.0)) as resp:
+            body = json.loads(resp.read())
+    except HTTPError as exc:
+        return {"ok": False, "reason": _HTTP_REASONS.get(exc.code, f"HTTP {exc.code}")}
+    except (URLError, OSError) as exc:
+        return {"ok": False, "reason": f"no connection ({type(exc).__name__})"}
+    except ValueError:
+        return {"ok": False, "reason": "the answer was not JSON"}
+    ms = int((time.monotonic() - started) * 1000)
+    answers = body.get("answers") if isinstance(body, dict) else None
+    if not isinstance(answers, dict) or not isinstance(answers.get("answer"), dict):
+        return {"ok": False, "reason": "an answer in a shape Hobson doesn't know"}
+    usage = body.get("usage") if isinstance(body.get("usage"), dict) else {}
+    cost = usage.get("cost") if isinstance(usage.get("cost"), (int, float)) else None
+    log_record.write(f"[decider] key check model={decider_cfg['model']} ok in {ms}ms"
+                     + (f" cost=${cost:.6f}" if cost is not None else ""))
+    return {"ok": True, "ms": ms, "cost": cost}
+
+
+_HTTP_REASONS = {
+    401: "the key was refused (401)",
+    402: "the account has no credit (402)",
+    403: "the key may not use this model (403)",
+    429: "rate limited (429): try again in a moment",
+}
 
 
 def _decider_config(config):

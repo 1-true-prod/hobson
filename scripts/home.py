@@ -56,6 +56,13 @@ def sessions_dir():
     return path("hobson-sessions")
 
 
+def setup_state_file():
+    """Which setup-wizard sections this install has seen (setup_wizard.py),
+    so an update offers only the new ones. Not config: nothing reads it to
+    decide what Hobson says."""
+    return path("hobson-setup.json")
+
+
 def bark_lock():
     """Cross-process lock and last-spoke timestamp, shared by every engine."""
     return path("hobson.lock")
@@ -258,6 +265,10 @@ DEFAULT_CONFIG = {
         # A floating window with the camera feed and what the sensor makes of
         # it (hobson presence preview on). On screen only; nothing is saved.
         "preview": False,
+        # Paused from the menu bar: the sensor stays only as the menu-bar
+        # icon, senses nothing, and Hobson speaks as with presence off.
+        # `hobson presence on` resumes it.
+        "paused": False,
     },
     # Optional remote decision model (Jev, via OpenRouter's Decisions API).
     # See scripts/decider.py. At "local" (the default) it makes zero network

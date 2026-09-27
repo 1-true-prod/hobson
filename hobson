@@ -454,6 +454,7 @@ engine_map = {
     "say": ("engines.say", "SayEngine"),
     "kokoro-realtime": ("engines.kokoro_realtime", "KokoroRealtimeEngine"),
     "chatterbox": ("engines.chatterbox", "ChatterboxEngine"),
+    "pocket-tts": ("engines.pocket_tts_realtime", "PocketTTSRealtimeEngine"),
 }
 mod_path, cls_name = engine_map.get(config.get("engine", "say"), ("engines.say", "SayEngine"))
 engine = getattr(importlib.import_module(mod_path), cls_name)(config)
@@ -813,7 +814,19 @@ with open('$CONFIG_FILE', 'w') as f:
 
     setup)
         setup_engine="${1:-}"
-        [[ -z "$setup_engine" ]] && setup_engine=$(get_engine)
+        if [[ -z "$setup_engine" ]]; then
+            # The wizard: a window with every choice, written only on COMMIT.
+            wizard_rc=0
+            python3 "$SCRIPT_DIR/scripts/setup_wizard.py" || wizard_rc=$?
+            case "$wizard_rc" in
+                0)  echo -e "${GREEN}Setup applied.${NC} Start a new Claude Code session to hear it." ;;
+                10) echo "Setup closed before COMMIT: nothing was changed." ;;
+                3)  ;;  # no desktop: the wizard said why
+                *)  echo -e "${YELLOW}Setup finished with a failed task: hobson doctor shows what's left.${NC}" ;;
+            esac
+            if [[ "$wizard_rc" == 10 ]]; then exit 0; fi
+            exit "$wizard_rc"
+        fi
         # Normalize: kokoro-realtime → kokoro
         case "$setup_engine" in
             kokoro|kokoro-realtime)
@@ -948,8 +961,11 @@ print('Models downloaded.')
                 echo ""
                 echo -e "Run: ${YELLOW}hobson test${NC}"
                 ;;
+            pocket|pocket-tts)
+                python3 "$SCRIPT_DIR/scripts/setup_wizard.py" --install pocket-tts
+                ;;
             *)
-                echo "Usage: hobson setup {kokoro|chatterbox}"
+                echo "Usage: hobson setup [kokoro|pocket-tts|chatterbox]  (no argument: the setup wizard)"
                 exit 1
                 ;;
         esac
@@ -1956,7 +1972,7 @@ with open(config_file, 'w') as f:
         ;;
 
     help|--help|-h)
-        echo "Hobson — a well-mannered butler for Claude Code"
+        echo "Hobson — a synthetic butler for Claude Code"
         echo ""
         echo "Usage:"
         echo "  hobson status              Show current engine and config"
@@ -1981,7 +1997,8 @@ with open(config_file, 'w') as f:
         echo "  hobson doctor              Run diagnostics"
         echo "  hobson config show|reset   Show or reset configuration"
         echo "  hobson cache-gen [--force] Generate voice cache for current engine"
-        echo "  hobson setup kokoro|chatterbox  Install engine venv + download models"
+        echo "  hobson setup               The setup wizard: voice, brain, Jev, presence, phone"
+        echo "  hobson setup kokoro|pocket-tts|chatterbox  Install one engine's venv + models"
         echo "  hobson daemon start|stop   Manage TTS daemon (kokoro)"
         echo "  hobson version             Print the version"
         echo "  hobson update              Pull the latest hobson and refresh its hooks"

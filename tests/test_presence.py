@@ -556,6 +556,64 @@ def test_the_preview_is_off_by_default():
     assert home.DEFAULT_CONFIG["presence"]["preview"] is False
 
 
+# ── Paused from the menu bar ───────────────────────────────────────────────
+
+def _paused_state(claude_home, **fields):
+    return _state(claude_home, state="off", source="paused", paused=True, **fields)
+
+
+def test_a_paused_sensor_is_no_audience_but_still_running(claude_home, no_audio, built):
+    record = _paused_state(claude_home, pid=555)
+    assert presence.audience_of(record, time.time()) == "unknown"  # speaks as with presence off
+    assert presence.paused(record, time.time())
+    assert not presence.ensure_running(_config(enabled=True, mode="auto", paused=True))
+    assert no_audio["popen"] == []  # no `open` every 15s at a sensor that is already there
+
+
+def test_the_pause_reaches_the_helper_and_a_mismatch_restarts_it(claude_home, no_audio, built, monkeypatch):
+    presence.ensure_running(_config(enabled=True, paused=True))
+    assert "--paused" in no_audio["popen"][-1]
+    _paused_state(claude_home, mode="auto", pid=556)
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    presence.ensure_running(_config(enabled=True, mode="auto", paused=False))
+    assert killed == [556]
+
+
+def test_the_menu_writes_its_setting_without_a_restart(claude_home, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(presence, "stop_helper", lambda *a: stopped.append(1) or True)
+    monkeypatch.setattr(presence, "ensure_running", lambda *a: None)
+    monkeypatch.setattr(presence.time, "sleep", lambda s: None)
+    presence.main(["--set", "preview", "true", "--keep-running"])
+    presence.main(["--set", "paused", "true", "--keep-running"])
+    assert stopped == []
+    cfg = presence.settings(json.loads((claude_home / "hobson.json").read_text()))
+    assert cfg["preview"] is True and cfg["paused"] is True
+    presence.main(["--set", "preview", "false"])  # from the CLI: restarted at once
+    assert stopped == [1]
+
+
+def test_presence_on_resumes_a_pause(claude_home, monkeypatch):
+    restarted = []
+    monkeypatch.setattr(presence, "_restart", lambda: restarted.append(1))
+    presence.main(["--set", "paused", "true", "--keep-running"])
+    presence.main(["--set", "enabled", "true"])
+    assert restarted == [1]
+    cfg = presence.settings(json.loads((claude_home / "hobson.json").read_text()))
+    assert cfg["enabled"] is True and cfg["paused"] is False
+    presence.main(["--set", "enabled", "true"])  # not paused: nothing to restart
+    assert restarted == [1]
+
+
+def test_status_says_paused(claude_home, built):
+    _paused_state(claude_home)
+    lines = presence.status_lines(_config(enabled=True, mode="continuous"))
+    assert lines[0].startswith("Presence:    paused")
+    assert not any("not running" in line for line in lines)
+    assert presence.doctor_lines(_config(enabled=True))[-1][1].startswith("Presence paused")
+
+
 # ── Waves ──────────────────────────────────────────────────────────────────
 
 def test_a_wave_is_answered_with_a_hello_when_nothing_is_on(claude_home, spoken):

@@ -4,8 +4,14 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## What this is
 
-Hobson is a well-mannered butler for Claude Code: he says, out loud, when Claude has finished, needs
-permission, or is waiting on you, and otherwise keeps quiet. It hooks into five events (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), classifies the output via a local Ollama model, selects or generates a personality-driven phrase, and plays it via one of four TTS engines.
+Hobson is a synthetic butler for Claude Code: he says, out loud, when Claude has finished, needs
+permission, or is waiting on you, and otherwise keeps a discreet silence. It hooks into five events (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), classifies the output via a local Ollama model, selects or generates a personality-driven phrase, and plays it via one of four TTS engines.
+
+**The persona** is a courteous machine intelligence with a butler's manners: precise, unflappable,
+formal (no contractions), faintly uncanny, dry rather than jokey. The reference is the AI concierge
+archetype, Delamain in Cyberpunk 2077 above all. That is a brief for the tone, not material: his
+name and his lines stay out of anything shipped. Descriptions and the wizard's lines carry it; the
+507 phrase templates predate it, and rewriting them would invalidate every chatterbox cache.
 
 ## Architecture
 
@@ -65,10 +71,14 @@ It differs from kokoro in three ways worth knowing:
   gap distribution puts 600s at ~1.1%, which is where the curve flattens. The daemon engine takes
   every default from its `DEFAULT_CONFIG` section, so none can drift.
 
-Deliberately **not** wired into the interactive picker in `hobson` or `install.sh` — select it by hand-editing `"engine": "pocket-tts"` in
-`~/.claude/hobson.json`. Setup is manual: create `venvs/pocket-tts` and
-`pip install -r requirements-pocket-tts.txt`. Without that venv the engine loads but every
-phrase falls back to macOS `say`, silently and permanently.
+The setup wizard offers it as a fourth engine card and installs it (`setup_wizard.install_pocket`:
+`venvs/pocket-tts` with Python 3.13 via uv, `requirements-pocket-tts.txt`, then a warm load that
+fetches the ~240 MB of weights — about 1 GB in all); `hobson setup pocket-tts` runs the same
+install without the window. Express never recommends it: it is heavier and slower to wake than
+Kokoro. `hobson use` still does not offer it. Without that venv the engine loads but every phrase
+falls back to macOS `say`, silently and permanently — which is why the wizard marks an engine
+NOT INSTALLED (`engine_ready`: for pocket-tts, the venv *and* the weights in the Hugging Face
+cache) and installs it on COMMIT.
 
 **What the model is given** (`stop_outcome.py`, `session_state.build_session_context`): the event line and
 a session block. A **Stop's** event line is `Earlier: … | …` (up to three prior turns, 200 characters
@@ -297,6 +307,22 @@ for, so a 4:3 mapping put the boxes below the video. A sensor launched with `ope
 hidden, so with the preview it unhides itself (without taking focus) and is launched without `-j`.
 Changing `mode`, `phone` or `preview` through the CLI restarts the sensor at once.
 
+The menu bar (`MenuBar`, `Controls` in `main.swift`): while the sensor runs it has an icon (an SF
+Symbol per state; `eye.slash` paused) and a menu: the state, **Show Preview** and **Presence On**.
+Show Preview shows or hides the window in place, and closing the window unticks it. Unticking
+Presence *pauses* it (`presence.paused`, `--paused`): the camera off, nothing sensed, the state
+file `"off"` (no audience, so Hobson speaks as with presence off), and the icon kept so you can
+resume. `hobson presence off` is different: nothing runs. `hobson presence on` resumes a pause
+too. A toggle runs `presence.py --set KEY VALUE --keep-running` and **waits for it before the
+sensor changes**, then rewrites the state file at once: `ensure_running` restarts a sensor whose
+`mode`, `phone`, `preview` or `paused` disagree with the config, and a hook landing between the
+two would have. It treats any fresh record as a running sensor (`helper_alive`), paused included;
+gated on a known audience, it `open`ed a paused sensor every 15s. Paused, the sensor still exits
+after `exit_after` without a hook, and the next hook starts it paused. Verified live: toggling the
+preview and pausing from the menu left the same pid and no `sensor started` line. The icon
+appears for everyone with presence on (the default), which is also how the camera-capable helper
+shows itself.
+
 Waves (continuous mode only; `WaveDetector`): 15 times a second the newest frame goes through
 Vision's hand pose, on its own queue. A wave is a raised, open hand (three fingertips above the
 wrist) swinging side to side: three reversals of at least 2.5% of the frame's width inside 2.5s,
@@ -411,19 +437,73 @@ Model choice is validated empirically by `scripts/ab_models.py` (dev-only, needs
 
 **Presets**: One-shot config appliers in `scripts/presets.json`. Apply engine + personality + events in one command. After applying, user has normal config they can customize.
 
-**CLI shared picker**: `_pick_menu()` in `hobson` is a reusable arrow-key picker. Callers set `_PICK_OPTIONS[@]` and `_PICK_DESCS[@]`, call `_pick_menu $initial_sel`, and read `PICK_RESULT`. Used by `use`, `voice`, `personality`, and `preset` commands. The `events` command uses a separate multi-select (`_check_menu` in `install.sh`, inline in the CLI).
+**CLI shared picker**: `_pick_menu()` in `hobson` is a reusable arrow-key picker. Callers set `_PICK_OPTIONS[@]` and `_PICK_DESCS[@]`, call `_pick_menu $initial_sel`, and read `PICK_RESULT`. Used by `use`, `voice`, `personality`, and `preset` commands. The `events` command has its own multi-select, inline in the CLI.
 
-**Installer UX**: `install.sh` uses its own copies of `_pick_menu()` and `_check_menu()` (multi-select with checkboxes). Walks through engine, personality, and event selection with interactive menus. Checks for Ollama + model availability. Plays a first-run hello bark via `say` after verification.
+**Setup wizard** (`scripts/setup_wizard.py`; the page is `setup/ui/`, the window
+`setup/main.swift`, built by `scripts/build-setup.sh` into `build/HobsonSetup.app`): every choice
+the installer used to ask in the terminal, and the new ones — engine and voice, personality,
+events and commentary, the Ollama model, Jev, presence, the phone switch — in one window. The page
+decides nothing: `probe()` reads the Mac, `recommend()` makes the Express loadout, `plan()` shows
+the diff, `apply()` runs the tasks and streams each step (NDJSON) back to the page. Nothing is
+written or installed before COMMIT; closing the window before it changes nothing.
+
+- **The server is the security boundary.** A `ThreadingHTTPServer` on 127.0.0.1, random port. Every
+  `/api` call needs the random token from the window's URL (`X-Hobson-Token`, compared with
+  `hmac.compare_digest`) and a `127.0.0.1`/`localhost` Host header (DNS rebinding); static files
+  are an allowlist (`STATIC`, plus clips matching `CLIP`). It writes config, saves a key and runs
+  installers, and any web page in a browser can send requests to localhost — do not loosen any of
+  the three. It exits with the window, or after `IDLE_EXIT_SECONDS` (1800) idle with no task
+  running.
+- **What reaches the config.** `clean_answers()` drops anything off-catalogue: engine, events and
+  verbosity from fixed lists, a voice only as a catalogue id for that engine (`VOICES`, never a
+  path; a custom voice already in the config is shown as YOURS and kept), a model only if it matches
+  `MODEL_NAME` (any Ollama name — the brain screen takes any model, pulled on COMMIT), the phone
+  only when the page answered it. `apply_settings()` writes only values that differ from
+  `DEFAULT_CONFIG` and **removes** one set back to its default, so an improved default still
+  reaches the install. `decider.backend: "jev"` is written only after `decider.check_key()`
+  passed a real call in this session; the key goes to `hobson.env` (mode 600 from creation),
+  typed, or found only in this shell's environment — which hooks started from the desktop app or
+  an IDE do not inherit.
+- **Sections seen** (`~/.claude/hobson-setup.json`): COMMIT records every section in `SECTIONS`.
+  `unseen()` is what the installer offers the wizard for when it keeps a config (asked, and only
+  interactively; `--update`/`--yes` just name them in the summary). An install older than the
+  wizard (config, no record) counts as having seen `LEGACY_SEEN` (voice, events), which the old
+  installer asked.
+- **Exit status**: 0 applied, 1 a task failed, 3 no desktop (SSH, or no GUI login; the installer
+  then writes the defaults), 10 closed before COMMIT. No Swift toolchain means the page opens in
+  the browser instead.
+- **Its voice is shipped as clips, not a model.** `setup/ui/lines.json` is everything the wizard
+  says, by key; `scripts/cache-gen/setup_voice_gen.py` renders each line in Charles (Pocket TTS at
+  temp 0.4) and, per offered voice, an audition line at the engine's default setting, in that
+  engine's own venv (no daemons: their pid files belong to the running Hobson), as 48 kbps AAC in
+  `setup/ui/voice/`, named by `bark_hash` of engine, voice, setting and text, listed in
+  `manifest.json`. A line with no clip goes to `say`. `tests/test_setup_voice.py` fails on a line
+  or a voice without a clip, an orphan clip, or fewer than two female voices per engine. Only
+  Kokoro (Apache-2.0) and Pocket TTS/VCTK (CC BY 4.0) voices, credited in `LICENSES.md`: a voice
+  cloned from someone's recording is never shipped.
+- **Developing it**: the page runs against a mock backend (`setup/ui/mock.js`) at
+  `index.html?mock`, `?mock=update` or `?mock=bare`, in any browser. A real run writes
+  `~/.claude` and `settings.json`, and the hooks it installs point at the checkout it ran from, so
+  run a worktree's wizard only under a scratch `HOME`.
+
+**Installer** (`install.sh`): hooks, the CLI link and the presence sensor build, then the wizard
+for a new install on a desktop, or for kept settings when `unseen()` has sections and you say yes.
+With no desktop or `--yes` (which `--update`, run by `hobson update`, implies), a new install gets
+`engine: say` and the default events, and nothing heavy (uv, Ollama, a model, a TTS venv) is
+installed; `hobson setup` opens the wizard later. The camera permission prompt is the wizard's (on
+COMMIT, a look with `request_permission`), not the installer's. The first-run hello goes through
+`say` only when the wizard did not run: the wizard says its own, through the engine it configured.
 
 **Distribution** (`install-remote.sh`, the `curl … | bash` entry point): clones into
 `~/.local/share/hobson` (`HOBSON_DIR`) at `HOBSON_REF` (default `main`), then execs `install.sh`
-with stdin reattached to `/dev/tty` — piped, the pickers would read EOF and `set -e` would end the
+with stdin reattached to `/dev/tty` — piped, a prompt would read EOF and `set -e` would end the
 install before any hook was written. No tty at all means `--yes`. Everything is inside `main()` so a
 truncated download runs nothing. `install.sh --yes` never installs anything heavy (uv, Ollama,
 models) — `confirm` answers no unattended. **Re-running is the update path**: an existing
 `hobson.json` is kept, and `settings-merge.py` leaves a `settings.json` that is already current
-untouched (no rewrite, no backup). The installer writes only `engine`/`personality`/`events`; every
-other key comes from `DEFAULT_CONFIG` at load time, so a default improved later reaches old installs.
+untouched (no rewrite, no backup). Neither the installer (`engine`/`personality`/`events` only) nor
+the wizard (non-defaults only) writes a default; every other key comes from `DEFAULT_CONFIG` at
+load time, so a default improved later reaches old installs.
 `hobson update` fast-forwards the checkout and runs `install.sh --update`. CI
 (`.github/workflows/ci.yml`) runs that whole cycle under bash 3.2 and Homebrew bash 5.
 
@@ -464,7 +544,7 @@ Config lives at `~/.claude/hobson.json`. Key sections:
   },
   "nudge": { "enabled": true, "delays": [45, 120, 300] },
   "watchdog": { "enabled": true, "minutes": 10 },
-  "presence": { "enabled": true, "mode": "signals|auto|continuous", "idle_seconds": 60, "away_after": 30, "greetings": true, "preview": false, "exit_after": 1800, "call_apps": [], "phone": null, "adb": null },
+  "presence": { "enabled": true, "mode": "signals|auto|continuous", "idle_seconds": 60, "away_after": 30, "greetings": true, "preview": false, "paused": false, "exit_after": 1800, "call_apps": [], "phone": null, "adb": null },
   "decider": { "backend": "local|jev", "model": "typesafe/jev-1.13", "timeout_ms": 4000, "dedup_restates_max": 0.5 }
 }
 ```
@@ -495,11 +575,12 @@ two TTS daemon scripts keep their own copies.
 - Liveness: `~/.claude/hobson-alive-<key>`, one per project (last tool call or permission request: time, event, tool, timeout — never its contents; read by the watchdog)
 - Activity token: `~/.claude/hobson-activity-<key>`, one per project (written by the UserPromptSubmit hook; cancels that project's nudge)
 - Presence: `~/.claude/hobson-presence.json` (the helper's state, rewritten every second; removed when it exits), `hobson-presence.lock` (one helper), `hobson-presence.spawn` (spawn throttle), `hobson-presence-lines.json` (the last greeting/farewell said, and when); the salver `hobson-held.json` + `hobson-held.lock`; the helper at `build/HobsonPresence.app` (gitignored)
+- Setup record: `~/.claude/hobson-setup.json` (the wizard sections this install has seen); the wizard's page at `setup/ui/` (its voice clips in `setup/ui/voice/`), its window at `build/HobsonSetup.app` (gitignored)
 - Decider key: `~/.claude/hobson.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider._find_key()`, never logged)
 - Log: `~/.claude/hobson.log` — `[YYYY-MM-DD HH:MM:SS] [project] [engine] msg` (engine lines) or `[…] [project] msg`; older lines have only `HH:MM:SS`. Written and read only through `scripts/log_record.py`
 - Daemon pid/log: `~/.claude/{kokoro,pocket-tts}-daemon.{pid,log}`; playback scratch WAVs at `~/.claude/kokoro-playback.wav`, `~/.claude/pocket-tts-playback.wav`
 - Caches: `~/.claude/voice-cache-chatterbox/` (pre-gen), `~/.claude/voice-cache-kokoro-realtime/` (runtime)
-- Venvs: `venvs/{kokoro,chatterbox,pocket-tts,dev}/` (created by install.sh, gitignored)
+- Venvs: `venvs/{kokoro,chatterbox,pocket-tts,dev}/` (created by the wizard or `hobson setup <engine>`, gitignored)
 - Models: `models/` (kokoro ONNX models, chatterbox reference audio -- gitignored)
 
 ## CLI commands
@@ -508,7 +589,7 @@ two TTS daemon scripts keep their own copies.
 hobson status              # Show engine, personality, events, config
 hobson on                  # Unmute
 hobson off [duration]      # Mute, optionally timed: 45, 90s, 30m, 2h (recurring: quiet_hours in config)
-hobson use [engine]        # Switch engine (interactive picker; pocket-tts is config-only)
+hobson use [engine]        # Switch engine (interactive picker; pocket-tts only through hobson setup)
 hobson personality [name]  # Switch voice personality (interactive picker)
 hobson preset [name]       # Apply a configuration preset (interactive picker)
 hobson events              # Configure which events trigger voice (interactive multi-select)
@@ -527,7 +608,8 @@ hobson doctor              # Run diagnostics (config, hooks, personality, deps, 
 hobson config show         # Pretty-print full config with defaults
 hobson config reset        # Back up and reset config to defaults
 hobson cache-gen [--force] # Generate voice cache for current engine
-hobson setup kokoro|chatterbox  # Install engine venv + download models
+hobson setup               # The setup wizard: every choice in one window, written on COMMIT
+hobson setup kokoro|pocket-tts|chatterbox  # Install one engine's venv + models, no window
 hobson daemon start|stop|status # Manage TTS daemon (kokoro)
 hobson version             # Print the version
 hobson update              # Fast-forward the checkout, refresh hooks, keep settings
@@ -549,7 +631,7 @@ python3 -m venv venvs/dev && ./venvs/dev/bin/pip install -r requirements-dev.txt
 Coverage is report-only (no failing threshold). The kokoro / pocket-tts daemon and
 `_speak_live` native paths are intentionally uncovered — they need a live daemon and ML
 models. So is the presence helper (`presence/main.swift`): it needs a camera and a desk, and is
-checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run. The suite is **842 tests** and runs in well under a second; if it takes longer,
+checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run. The suite is **919 tests** and runs in about two seconds; if it takes much longer,
 something is reaching the network.
 
 Do not read a pass from a pipeline: `pytest | tail` masks pytest's exit code, so an `&&`

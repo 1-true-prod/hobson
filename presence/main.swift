@@ -28,6 +28,12 @@
 // `presence.py --wave`, and Hobson answers. Only faces are people: not
 // bodies, not outlines, not anything else that moves.
 //
+// The menu bar: an icon for the state, "Show Preview" and "Presence On".
+// Unticking Presence pauses it (--paused): no camera, no sensing, state
+// "off", and Hobson speaks as with presence off; the icon stays to resume.
+// Each toggle is written to the config (presence.py --set ... --keep-running)
+// before the sensor changes, so a hook never sees the two disagree.
+//
 // The phone switch (--phone): an Android phone lying face down turns the camera
 // off, face up turns it on -- read over adb from the accelerometer Android keeps
 // running for its own face-down detection. A switch that cannot be read counts
@@ -67,6 +73,7 @@ struct Options {
     var phone: String?           // the camera switch: "auto" or an adb serial prefix
     var adb = "adb"
     var preview = false          // a floating window: the feed and what the sensor makes of it
+    var paused = false           // paused from the menu bar: an icon, and nothing sensed
 }
 
 func parseOptions() -> Options {
@@ -92,6 +99,7 @@ func parseOptions() -> Options {
         case "--adb": o.adb = take() ?? o.adb
         case "--read-phone": o.command = "phone"
         case "--preview": o.preview = true
+        case "--paused": o.paused = true
         case "--look": o.command = "look"
         default: break  // LaunchServices may add its own arguments
         }
@@ -604,14 +612,17 @@ struct DebugSnapshot {
     let last: String
     let hand: [CGPoint]
     let wavedAgo: Double?
+    let paused: Bool
+    let preview: Bool
 }
 
 /// A small floating panel: the camera feed (mirrored, as a mirror is), a box
 /// around each face, the fingertips of a raised hand, and what the sensor
 /// makes of it all. It only shows what the sensor already has; it
-/// saves nothing. Closing it hides it until the sensor restarts.
-final class DebugWindow {
+/// saves nothing. Closing it is the same as unticking Show Preview.
+final class DebugWindow: NSObject, NSWindowDelegate {
     let panel: NSPanel
+    var onClose: (() -> Void)?
     let preview = AVCaptureVideoPreviewLayer()
     let faceBoxes = CAShapeLayer()
     let handDots = CAShapeLayer()
@@ -624,13 +635,15 @@ final class DebugWindow {
         "present": .systemGreen, "away": .systemYellow, "company": .systemTeal, "call": .systemPink,
     ]
 
-    init() {
+    override init() {
         let width: CGFloat = 360, height: CGFloat = 270, strip: CGFloat = 96
         video = CGRect(x: 0, y: strip, width: width, height: height)
         let frame = NSRect(x: 0, y: 0, width: width, height: height + strip)
         panel = NSPanel(contentRect: frame,
                         styleMask: [.titled, .closable, .utilityWindow, .hudWindow, .nonactivatingPanel],
                         backing: .buffered, defer: false)
+        super.init()
+        panel.delegate = self
         panel.title = "Hobson Presence"
         panel.level = .floating
         panel.isFloatingPanel = true
@@ -681,8 +694,9 @@ final class DebugWindow {
         if let screen = NSScreen.main?.visibleFrame {
             panel.setFrameTopLeftPoint(NSPoint(x: screen.maxX - frame.width - 20, y: screen.maxY - 20))
         }
-        panel.orderFrontRegardless()
     }
+
+    func windowWillClose(_ notification: Notification) { onClose?() }
 
     func attach(_ session: AVCaptureSession?) {
         CATransaction.begin()
@@ -736,7 +750,9 @@ final class DebugWindow {
         let waving = (s.wavedAgo ?? 99) < 2
         frameBorder.borderWidth = waving ? 8 : 3
 
-        if s.cameraOn {
+        if s.paused {
+            placeholder.string = "presence paused (menu bar)"
+        } else if s.cameraOn {
             placeholder.string = ""
         } else if !s.cameraAllowed && s.phone != nil {
             placeholder.string = "camera off: phone \(s.phone!)"
@@ -758,6 +774,116 @@ final class DebugWindow {
             "last  \(s.last)" + (s.wavedAgo.map { $0 < 60 ? "   wave \(Int($0))s ago" : "" } ?? ""),
         ].joined(separator: "\n")
         CATransaction.commit()
+    }
+}
+
+// MARK: - The menu bar
+
+/// The icon in the menu bar, and its menu. Main thread only.
+final class MenuBar: NSObject {
+    let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
+    let menu = NSMenu()
+    let status = NSMenuItem(title: "Hobson Presence", action: nil, keyEquivalent: "")
+    let previewItem = NSMenuItem(title: "Show Preview", action: #selector(togglePreview), keyEquivalent: "")
+    let presenceItem = NSMenuItem(title: "Presence On", action: #selector(togglePresence), keyEquivalent: "")
+    var onPreview: (() -> Void)?
+    var onPresence: (() -> Void)?
+    private var shown = ""
+
+    static let symbols: [String: String] = [
+        "present": "person.fill", "away": "person", "company": "person.2.fill",
+        "call": "phone.fill", "paused": "eye.slash",
+    ]
+
+    override init() {
+        super.init()
+        for entry in [previewItem, presenceItem] { entry.target = self }
+        status.isEnabled = false
+        menu.autoenablesItems = false
+        menu.addItem(status)
+        menu.addItem(.separator())
+        menu.addItem(previewItem)
+        menu.addItem(presenceItem)
+        item.menu = menu
+        item.button?.toolTip = "Hobson Presence"
+        show("present")
+    }
+
+    @objc func togglePreview() { onPreview?() }
+    @objc func togglePresence() { onPresence?() }
+
+    func update(_ s: DebugSnapshot) {
+        previewItem.state = s.preview ? .on : .off
+        presenceItem.state = s.paused ? .off : .on
+        status.title = s.paused ? "Paused: Hobson speaks as usual" : "\(s.state.capitalized) (\(s.source))"
+        show(s.paused ? "paused" : s.state)
+    }
+
+    private func show(_ state: String) {
+        guard state != shown, let button = item.button else { return }
+        shown = state
+        let name = MenuBar.symbols[state] ?? "person.fill"
+        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Hobson: \(state)") {
+            image.isTemplate = true
+            button.image = image
+            button.title = ""
+        } else {
+            button.title = "H"
+        }
+    }
+}
+
+/// What the menu and the preview window do, on the main thread; the sensor
+/// itself changes on its own queue.
+final class Controls {
+    let monitor: Monitor
+    let menuBar = MenuBar()
+    var window: DebugWindow?
+    var session: AVCaptureSession?
+
+    init(_ monitor: Monitor) {
+        self.monitor = monitor
+        monitor.camera.onSession = { [weak self] session in
+            DispatchQueue.main.async {
+                self?.session = session
+                self?.window?.attach(session)
+            }
+        }
+        monitor.onSnapshot = { [weak self] snapshot in
+            DispatchQueue.main.async { self?.update(snapshot) }
+        }
+        monitor.onPreview = { [weak self] on in
+            DispatchQueue.main.async { self?.showPreview(on) }
+        }
+        menuBar.onPreview = { [weak monitor] in
+            monitor?.work.async { monitor?.setPreview(!(monitor?.preview ?? false)) }
+        }
+        menuBar.onPresence = { [weak monitor] in
+            monitor?.work.async { monitor?.setPaused(!(monitor?.paused ?? false)) }
+        }
+        if monitor.preview { showPreview(true) }
+    }
+
+    func showPreview(_ on: Bool) {
+        guard on else {
+            window?.panel.orderOut(nil)
+            return
+        }
+        if window == nil {
+            let w = DebugWindow()
+            w.attach(session)
+            w.onClose = { [weak monitor] in monitor?.work.async { monitor?.setPreview(false) } }
+            window = w
+        }
+        // Launched with `open -j`, the app starts hidden, and so would the
+        // window. Shown without taking focus from whatever you are doing.
+        NSApplication.shared.unhideWithoutActivation()
+        window?.panel.orderFrontRegardless()
+    }
+
+    func update(_ s: DebugSnapshot) {
+        menuBar.update(s)
+        if let w = window, w.panel.isVisible { w.update(s) }
     }
 }
 
@@ -803,7 +929,10 @@ final class Monitor {
     var lastSignals: [String: Any] = [:]
     let phone: PhoneSwitch?
     var phoneKnown = false
-    var debug: DebugWindow?
+    var preview: Bool
+    var paused: Bool
+    var onSnapshot: ((DebugSnapshot) -> Void)?
+    var onPreview: ((Bool) -> Void)?
     let waves = WaveDetector()
     var lastSighting: Sighting?
     var lastTransition = "none yet"
@@ -814,6 +943,8 @@ final class Monitor {
 
     init(_ o: Options) {
         self.o = o
+        preview = o.preview
+        paused = o.paused
         phone = o.phone.map { PhoneSwitch(want: $0, adb: o.adb) }
     }
 
@@ -843,6 +974,17 @@ final class Monitor {
     func tick() {
         var t = now()
         ticks += 1
+        if paused {
+            lookRequested = false  // nothing is looked at while paused, nor on resume
+            if camera.running {
+                waves.stop()
+                camera.stop()
+            }
+            writeState(t, idle: 0)
+            publish(t, idle: Signals.idleSeconds(), cameraOK: false, callApp: nil, locked: false)
+            if ticks % 60 == 0 { exitIfUnneeded(t) }
+            return
+        }
         if ticks % 15 == 1 { cameraStatus = Camera.status() }
         let idle = Signals.idleSeconds()
         let (locked, onConsole) = Signals.session()
@@ -884,16 +1026,54 @@ final class Monitor {
                               microphone: microphone, cameraOK: cameraOK)
         settle(s, src, t)
         writeState(t, idle: idle)
-        if let window = debug {
-            let snapshot = DebugSnapshot(
-                state: state, source: source, since: t - since, idle: idle, mode: o.mode,
-                camera: cameraStatus, cameraOn: camera.running, cameraAllowed: cameraOK,
-                phone: phone?.report, callApp: callApp, locked: locked || !onConsole,
-                sighting: lastSighting, sightingAge: t - glanceAt, last: lastTransition,
-                hand: waves.hand, wavedAgo: waves.wavedAt > 0 ? t - waves.wavedAt : nil)
-            DispatchQueue.main.async { window.update(snapshot) }
-        }
+        publish(t, idle: idle, cameraOK: cameraOK, callApp: callApp, locked: locked || !onConsole)
         if ticks % 60 == 0 { exitIfUnneeded(t) }
+    }
+
+    /// What the menu bar and the preview show, handed to the main thread.
+    func publish(_ t: Double, idle: Double, cameraOK: Bool, callApp: String?, locked: Bool) {
+        onSnapshot?(DebugSnapshot(
+            state: state, source: source, since: t - since, idle: idle, mode: o.mode,
+            camera: cameraStatus, cameraOn: camera.running, cameraAllowed: cameraOK,
+            phone: phone?.report, callApp: callApp, locked: locked,
+            sighting: lastSighting, sightingAge: t - glanceAt, last: lastTransition,
+            hand: waves.hand, wavedAgo: waves.wavedAt > 0 ? t - waves.wavedAt : nil,
+            paused: paused, preview: preview))
+    }
+
+    /// From the menu. The config is written first, and waited for, then the
+    /// sensor changes and says so at once: a hook in between would see the
+    /// two disagree and restart the sensor.
+    func setPreview(_ on: Bool) {
+        guard on != preview, runScriptAndWait(["--set", "preview", on ? "true" : "false", "--keep-running"])
+        else { return }
+        preview = on
+        writeState(now(), idle: 0)
+        onPreview?(on)
+        publish(now(), idle: Signals.idleSeconds(), cameraOK: false, callApp: nil, locked: false)
+    }
+
+    /// Paused: nothing sensed, the camera off, state "off" (no audience, so
+    /// Hobson speaks as with presence off). Resumed: a fresh start, with no
+    /// transition to announce -- you are right here, at the menu.
+    func setPaused(_ on: Bool) {
+        guard on != paused, runScriptAndWait(["--set", "paused", on ? "true" : "false", "--keep-running"])
+        else { return }
+        paused = on
+        if on {
+            waves.stop()
+            camera.stop()
+        }
+        state = "present"
+        source = on ? "paused" : "start"
+        since = now()
+        lastSeen = now()
+        candidate = nil
+        glanceVerdict = nil
+        companyHits = []
+        lastSighting = nil
+        writeState(now(), idle: 0)
+        publish(now(), idle: Signals.idleSeconds(), cameraOK: false, callApp: nil, locked: false)
     }
 
     func sample(_ t: Double) {
@@ -1000,7 +1180,30 @@ final class Monitor {
         try? p.run()
     }
 
+    /// presence.py, waited for: true when it succeeded.
+    func runScriptAndWait(_ args: [String]) -> Bool {
+        guard let python = o.python, let script = o.script else { return false }
+        let p = Process()
+        p.executableURL = URL(fileURLWithPath: python)
+        p.arguments = [script] + args
+        var env = ProcessInfo.processInfo.environment
+        env["HOME"] = (o.home as NSString).deletingLastPathComponent
+        p.environment = env
+        p.standardOutput = FileHandle.nullDevice
+        p.standardError = FileHandle.nullDevice
+        guard (try? p.run()) != nil else { return false }
+        p.waitUntilExit()
+        return p.terminationStatus == 0
+    }
+
     func writeState(_ t: Double, idle: Double) {
+        if paused {
+            writeJSON(["state": "off", "source": "paused", "paused": true, "preview": preview,
+                       "ts": t, "since": since, "mode": o.mode, "pid": Int(getpid()),
+                       "camera": cameraStatus, "phone_setting": o.phone ?? NSNull(), "version": 1],
+                      to: statePath)
+            return
+        }
         var record: [String: Any] = [
             "state": state, "source": source, "since": since, "ts": t,
             "mode": o.mode, "camera": cameraStatus, "pid": Int(getpid()),
@@ -1009,7 +1212,8 @@ final class Monitor {
         record["people"] = people ?? NSNull()
         record["phone"] = phone?.report ?? NSNull()
         record["phone_setting"] = o.phone ?? NSNull()
-        record["preview"] = o.preview
+        record["preview"] = preview
+        record["paused"] = false
         record["camera_allowed"] = cameraStatus == "authorized" && o.mode != "signals"
             && (phone?.allowsCamera ?? true)
         for (k, v) in lastSignals { record[k] = v }
@@ -1019,10 +1223,10 @@ final class Monitor {
     /// Stay while anything could still need a return briefing; leave once no
     /// hook has run for --exit-after seconds and nothing is held.
     func exitIfUnneeded(_ t: Double) {
-        guard state == "present" else { return }
+        guard state == "present" || paused else { return }
         let fm = FileManager.default
         let held = "\(o.home)/hobson-held.json"
-        if let data = fm.contents(atPath: held),
+        if !paused, let data = fm.contents(atPath: held),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let items = obj["items"] as? [Any], !items.isEmpty {
             return
@@ -1104,15 +1308,8 @@ default:
     let monitor = Monitor(options)
     let app = NSApplication.shared
     app.setActivationPolicy(.accessory)
-    if options.preview {
-        let window = DebugWindow()
-        monitor.debug = window
-        monitor.camera.onSession = { session in DispatchQueue.main.async { window.attach(session) } }
-        // Launched with `open -j`, the app starts hidden, and so would the
-        // window. Shown without taking focus from whatever you are doing.
-        app.unhideWithoutActivation()
-        window.panel.orderFrontRegardless()
-    }
+    let controls = Controls(monitor)
     monitor.run()
     app.run()
+    _ = controls  // held for the life of the app: the menu-bar icon goes with it
 }

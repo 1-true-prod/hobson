@@ -28,7 +28,7 @@ main() {
 
     echo ""
     echo -e "  ${green}Hobson${nc} installer"
-    echo -e "  ${dim}A well-mannered butler for Claude Code${nc}"
+    echo -e "  ${dim}A synthetic butler for Claude Code${nc}"
     echo ""
 
     [[ "$(uname)" == "Darwin" ]] || die "Hobson requires macOS."

@@ -4,6 +4,22 @@
 
 ### New
 
+- **The setup wizard.** Installing opens a window that walks through every choice: the engine,
+  its voice and personality (each heard before anything is downloaded), when Hobson speaks, the
+  Ollama model (any model; the default is marked recommended), Jev, presence and the phone switch.
+  **Express** takes a loadout surveyed for this Mac. Nothing is written or installed until COMMIT,
+  which first lists exactly what will change and what it will download, and closing the window
+  before then changes nothing. Only settings that differ from the defaults are written.
+  `hobson setup` opens it again. Over SSH or with `--yes` the installer writes the defaults and
+  installs nothing heavy, as before
+- **Jev is asked, not assumed**: with an OpenRouter key (found, or pasted in), the wizard tests it
+  with one real call and turns Jev on only if that call works. The key is kept in
+  `~/.claude/hobson.env`, never in the config
+- **Pocket TTS can be installed from the wizard** (or `hobson setup pocket-tts`), about 1 GB
+- **Female voices**: the wizard offers several Kokoro and Pocket TTS voices, men and women, as
+  recorded samples
+- After an update, the installer names any setup sections this install has not seen, and
+  re-running it at the Mac offers to open the wizard for them
 - **Presence: Hobson knows whether anyone is listening.** A small Swift helper reads the
   keyboard, screen lock, display sleep and calls (a known call app capturing the microphone), and
   takes a two-second look through the camera only when he is about to speak to an idle desk. Away
@@ -26,6 +42,9 @@
   and the state the sensor reads from them
 - **Wave at Hobson** (`continuous` mode): a raised hand swung side to side, with your face in view,
   gets an answer — the briefing if anything is waiting, otherwise a hello
+- **A menu-bar icon** while presence runs: what the sensor sees, **Show Preview** to show or hide
+  the camera window, and **Presence On** to pause it (camera off, nothing sensed, Hobson speaks as
+  with presence off) and resume it. `hobson presence on` resumes a pause too
 - Only a human face counts as a person: bodies and anything else that moves never trigger an
   arrival, a departure, company or a wave. No face and no keystroke for 30 seconds is away
 
@@ -49,6 +68,11 @@
 
 ### Changes
 
+- **Hobson is now a synthetic butler**: a courteous machine intelligence, precise and faintly
+  uncanny. The README, the CLI and the hobson personality's description say so; the phrase
+  templates are unchanged
+- The installer no longer walks through choices in the terminal, installs no engine or model
+  itself, and leaves the camera prompt to the wizard
 - **say and chatterbox read a Stop the way the realtime engines do**: the same condensed last
   message for "waiting on you" and "still working", and a "broken" whose last message names no
   failure counts as done. Stats count their "still working" Stops too

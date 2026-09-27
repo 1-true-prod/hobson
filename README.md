@@ -4,8 +4,9 @@
 [![macOS](https://img.shields.io/badge/macOS-only-black?logo=apple)](https://github.com/1-true-prod/hobson)
 [![CI](https://github.com/1-true-prod/hobson/actions/workflows/ci.yml/badge.svg)](https://github.com/1-true-prod/hobson/actions/workflows/ci.yml)
 
-A well-mannered butler for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Hobson tells you, out loud, when Claude has
-finished, needs your permission, or is waiting on you — and otherwise knows to keep quiet.
+A synthetic butler for [Claude Code](https://docs.anthropic.com/en/docs/claude-code): a courteous machine intelligence that minds
+your terminal. Hobson tells you, out loud, when Claude has finished, needs your permission, or is waiting
+on you — and otherwise keeps a discreet silence.
 
 <!-- TODO: Add demo video here (with audio!) -->
 <!-- https://github.com/user-attachments/assets/XXXX -->
@@ -16,8 +17,12 @@ finished, needs your permission, or is waiting on you — and otherwise knows to
 curl -fsSL https://raw.githubusercontent.com/1-true-prod/hobson/main/install-remote.sh | bash
 ```
 
-The installer asks which voice, personality and events you want. To take the defaults with no
-questions (the macOS voice, nothing extra downloaded), add `-s -- --yes`:
+The installer then opens the **setup wizard**, a window where you choose, and hear before
+anything downloads, how Hobson sounds, when he speaks, the local model he thinks with, whether to
+use [Jev](#jev-optional), and [presence](#presence) with its phone switch. Nothing is written or
+installed until its last step, which lists exactly what it will do. `hobson setup` opens it again
+any time. To take the defaults with no questions and no window (the macOS voice, nothing extra
+downloaded), add `-s -- --yes`:
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/1-true-prod/hobson/main/install-remote.sh | bash -s -- --yes
@@ -33,8 +38,8 @@ Then start a new Claude Code session. Sessions already running keep the hooks th
   settings file (stow, chezmoi, a dotfiles repo) stays a symlink. The hooks run async, so they never
   hold Claude Code up.
 - Keeps its own config and state in `~/.claude/hobson*`.
-- Builds the presence sensor (`build/HobsonPresence.app`, in the checkout) and asks once whether
-  it may use the camera. Say no and it uses the keyboard, screen lock and calls only.
+- Builds the presence sensor (`build/HobsonPresence.app`, in the checkout). The wizard asks
+  whether it may use the camera; say no and it uses the keyboard, screen lock and calls only.
 - Nothing else: no permissions granted, no shell profile edited (the optional uv install, for the
   neural engines, adds itself to your PATH), nothing sent off your machine
   unless you turn on [Jev](#jev-optional).
@@ -85,9 +90,12 @@ Hobson hooks into five Claude Code events — four that can speak, and one that 
 | Engine | Quality | Setup | Notes |
 |--------|---------|-------|-------|
 | **say** | Basic | None | macOS built-in, instant, zero deps |
-| **kokoro-realtime** | Good | ~120MB models | Local neural TTS via daemon, AI-generated phrases, CPU-friendly |
-| **chatterbox** | Excellent | ~2GB models | Voice cloning from reference audio, pre-generated cache, GPU recommended |
-| **pocket-tts** | Excellent | manual venv | Experimental. Not in the installer or picker — set `"engine": "pocket-tts"` by hand |
+| **kokoro-realtime** | Good | ~340 MB | Local neural TTS via daemon, AI-generated phrases, CPU-friendly |
+| **pocket-tts** | Excellent | ~1 GB | Experimental. Local neural TTS via daemon, AI-generated phrases; slow to wake after a quiet spell |
+| **chatterbox** | Excellent | ~2 GB | Voice cloning from reference audio, pre-generated cache, GPU recommended |
+
+The setup wizard installs Kokoro and Pocket TTS, and plays each of their voices (male and female)
+from a recording first, so you choose before anything downloads.
 
 ### say (default)
 
@@ -103,11 +111,12 @@ Zero-dependency macOS text-to-speech. No setup, no cache. Good for trying Hobson
 
 ### pocket-tts (experimental)
 
-A second daemon-backed neural engine, shaped like kokoro-realtime. Deliberately left out of the
-installer and the `hobson use` picker: enable it by editing `"engine": "pocket-tts"` in
-`~/.claude/hobson.json`, and set it up by hand with `venvs/pocket-tts` +
-`pip install -r requirements-pocket-tts.txt`. Without that venv every phrase falls back to macOS
-`say`, silently.
+[Pocket TTS](https://huggingface.co/kyutai/pocket-tts) by Kyutai, a second daemon-backed neural
+engine shaped like kokoro-realtime, with a warmer voice (Charles, the setup wizard's narrator, by
+default). The wizard installs it, or `hobson setup pocket-tts`: a venv with PyTorch, then the
+240 MB of weights, about 1 GB in all. Its model is heavier than Kokoro's, so the first phrase after
+10 idle minutes takes a few seconds. Still not in the `hobson use` picker. Without its venv every
+phrase falls back to macOS `say`.
 
 ## Staying out of the way
 
@@ -171,6 +180,11 @@ and Hobson says so. A phone he cannot read counts as face down.
 on` floats a small window with the camera feed, a box around each face, and the state he reads
 from it (on your screen only; nothing is saved).
 
+**The menu bar.** While presence runs, an icon in the menu bar shows what he sees, with
+**Show Preview** to show or hide that window and **Presence On** to pause: unticked, the camera
+is off, nothing is sensed, and he speaks as if presence were off. Tick it again, or run
+`hobson presence on`, to resume. `hobson presence off` turns it off entirely, icon and all.
+
 Only a human face counts as someone: not a body, not a shape, not anything else that moves. In
 `continuous` mode, no face and no keystroke for 30 seconds is away (`presence.away_after`); looking
 down at a phone that long counts as leaving. Wave at the camera, with your face in view, and he
@@ -180,7 +194,7 @@ answers: the briefing if anything is waiting, otherwise a hello.
 
 | Personality | Style | Templates | AI phrases |
 |-------------|-------|-----------|------------|
-| **hobson** | The house butler: dry, impeccably mannered | ~507 | Yes |
+| **hobson** | The machine butler: courteous, precise, faintly uncanny | ~507 | Yes |
 | **minimal** | Terse, functional | ~50 | No |
 | **pirate** | Yarr, matey | ~48 | Yes |
 | **snarky-dev** | Sarcastic developer | ~48 | Yes |
@@ -236,7 +250,9 @@ hobson stats               Show what was spoken, queued, and suppressed
 hobson doctor              Run diagnostics
 hobson config show|reset   Show or reset configuration
 hobson cache-gen [--force] Generate voice cache for current engine
-hobson setup kokoro|chatterbox  Install engine venv + download models
+hobson setup               The setup wizard: every choice in one window
+hobson setup kokoro|pocket-tts|chatterbox
+                            Install one engine's venv + models, no window
 hobson daemon start|stop   Manage the TTS daemon
 hobson version             Print the version
 hobson update              Pull the latest hobson and refresh its hooks
@@ -358,7 +374,10 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines on adding personalities, e
 
 ## Credits
 
-- [Kokoro ONNX](https://github.com/hexgrad/kokoro-onnx) — Neural TTS engine
+- [Kokoro ONNX](https://github.com/hexgrad/kokoro-onnx) and [Kokoro-82M](https://huggingface.co/hexgrad/Kokoro-82M) — Neural TTS engine and voices (Apache-2.0)
+- [Pocket TTS](https://huggingface.co/kyutai/pocket-tts) by Kyutai — Neural TTS engine (CC BY 4.0), with voices from the
+  [CSTR VCTK Corpus](https://datashare.ed.ac.uk/handle/10283/3443) (CC BY 4.0). The setup wizard ships recordings made with both;
+  [setup/ui/voice/LICENSES.md](setup/ui/voice/LICENSES.md) lists which
 - [Chatterbox](https://github.com/resemble-ai/chatterbox) by Resemble AI — Voice cloning TTS
 - [Ollama](https://ollama.ai) — Local LLM inference
 

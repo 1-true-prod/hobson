@@ -4,8 +4,8 @@ set -euo pipefail
 # hobson installer
 #
 # Usage:
-#   ./install.sh            Interactive: pick an engine, personality and events
-#   ./install.sh --yes      No prompts. A new install gets the defaults (macOS `say`,
+#   ./install.sh            Install, then open the setup wizard (a window) for every choice
+#   ./install.sh --yes      No prompts, no window. A new install gets the defaults (macOS `say`,
 #                           hobson, stop/permission/notification) and installs nothing
 #                           heavy; an existing install keeps its settings
 #   ./install.sh --update   Keep the current settings, refresh hooks (used by `hobson update`)
@@ -53,17 +53,14 @@ while [[ $# -gt 0 ]]; do
 done
 [[ "${HOBSON_YES:-}" == "1" ]] && ASSUME_YES=true
 
-# The pickers read single keys from stdin. With no terminal there (CI, a
-# pipe) the first read hits EOF and `set -e` ends the install before any hook
-# is written -- so fall back to the defaults instead.
+# With no terminal (CI, a pipe) there is nobody to answer: take the defaults.
 if [[ "$ASSUME_YES" != true && ! -t 0 ]]; then
     warn "No terminal to answer prompts; installing with defaults (as --yes)."
     ASSUME_YES=true
 fi
 
 # confirm "Question" Y|N -- the default is what Enter picks. Unattended runs
-# answer no: nothing heavy (Homebrew formulae, 2 GB models) is installed
-# without someone having said yes to it.
+# answer no.
 confirm() {
     local prompt="$1" default="$2" answer
     if [[ "$ASSUME_YES" == true ]]; then
@@ -78,124 +75,10 @@ confirm() {
     fi
 }
 
-_spinner() {
-    local pid=$1 msg="${2:-Working...}"
-    local frames=('⠋' '⠙' '⠹' '⠸' '⠼' '⠴' '⠦' '⠧' '⠇' '⠏')
-    local i=0
-    printf "  ${DIM}%s %s${NC}" "${frames[0]}" "$msg"
-    while kill -0 "$pid" 2>/dev/null; do
-        printf "\r  ${DIM}%s %s${NC}" "${frames[$i]}" "$msg"
-        i=$(( (i + 1) % ${#frames[@]} ))
-        sleep 0.1
-    done
-    local rc=0
-    wait "$pid" 2>/dev/null || rc=$?
-    printf "\r\033[K"
-    return $rc
-}
-
-# ── Arrow-key picker ───────────────────────────────────────────────
-# Set _PICK_OPTIONS[@] and _PICK_DESCS[@] before calling.
-# After return, PICK_RESULT holds the selected option string.
-_pick_menu() {
-    local sel="${1:-0}"
-    local max_len=0
-    for opt in "${_PICK_OPTIONS[@]}"; do
-        (( ${#opt} > max_len )) && max_len=${#opt}
-    done
-    local col=$((max_len + 2))
-
-    tput civis 2>/dev/null || true  # TERM=dumb: tput fails, set -e would end the menu
-    trap 'tput cnorm 2>/dev/null || true' EXIT
-
-    _pick_draw() {
-        [[ "${1:-}" == "r" ]] && printf '\033[%dA' "${#_PICK_OPTIONS[@]}"
-        for i in "${!_PICK_OPTIONS[@]}"; do
-            if [[ $i -eq $sel ]]; then
-                printf "  ${GREEN}▸ %-${col}s${NC} ${DIM}%s${NC}\n" "${_PICK_OPTIONS[$i]}" "${_PICK_DESCS[$i]:-}"
-            else
-                printf "    %-${col}s ${DIM}%s${NC}\n" "${_PICK_OPTIONS[$i]}" "${_PICK_DESCS[$i]:-}"
-            fi
-        done
-    }
-    _pick_draw
-    while true; do
-        IFS= read -rsn1 key
-        case "$key" in
-            $'\x1b')
-                read -rsn2 rest
-                case "$rest" in
-                    '[A') ((sel > 0)) && sel=$((sel - 1)) ;;
-                    '[B') ((sel < ${#_PICK_OPTIONS[@]}-1)) && sel=$((sel + 1)) ;;
-                esac
-                _pick_draw r
-                ;;
-            '')
-                break
-                ;;
-        esac
-    done
-    tput cnorm 2>/dev/null || true
-    PICK_RESULT="${_PICK_OPTIONS[$sel]}"
-}
-
-# ── Multi-select picker ────────────────────────────────────────────
-# Set _CHECK_OPTIONS[@], _CHECK_DESCS[@], _CHECK_STATE[@] before calling.
-# After return, CHECK_RESULT holds space-separated selected options.
-_check_menu() {
-    local sel="${1:-0}"
-    local max_len=0
-    for opt in "${_CHECK_OPTIONS[@]}"; do
-        (( ${#opt} > max_len )) && max_len=${#opt}
-    done
-    local col=$((max_len + 2))
-
-    tput civis 2>/dev/null || true  # TERM=dumb: tput fails, set -e would end the menu
-    trap 'tput cnorm 2>/dev/null || true' EXIT
-
-    _check_draw() {
-        [[ "${1:-}" == "r" ]] && printf '\033[%dA' "${#_CHECK_OPTIONS[@]}"
-        for i in "${!_CHECK_OPTIONS[@]}"; do
-            local box="[ ]"
-            [[ ${_CHECK_STATE[$i]} -eq 1 ]] && box="${GREEN}[x]${NC}"
-            if [[ $i -eq $sel ]]; then
-                printf "  ${GREEN}▸${NC} %b %-${col}s ${DIM}%s${NC}\n" "$box" "${_CHECK_OPTIONS[$i]}" "${_CHECK_DESCS[$i]:-}"
-            else
-                printf "    %b %-${col}s ${DIM}%s${NC}\n" "$box" "${_CHECK_OPTIONS[$i]}" "${_CHECK_DESCS[$i]:-}"
-            fi
-        done
-    }
-    _check_draw
-    while true; do
-        IFS= read -rsn1 key
-        case "$key" in
-            $'\x1b')
-                read -rsn2 rest
-                case "$rest" in
-                    '[A') ((sel > 0)) && sel=$((sel - 1)) ;;
-                    '[B') ((sel < ${#_CHECK_OPTIONS[@]}-1)) && sel=$((sel + 1)) ;;
-                esac
-                _check_draw r
-                ;;
-            ' ')
-                if [[ ${_CHECK_STATE[$sel]} -eq 1 ]]; then
-                    _CHECK_STATE[$sel]=0
-                else
-                    _CHECK_STATE[$sel]=1
-                fi
-                _check_draw r
-                ;;
-            '')
-                break
-                ;;
-        esac
-    done
-    tput cnorm 2>/dev/null || true
-    CHECK_RESULT=""
-    for i in "${!_CHECK_OPTIONS[@]}"; do
-        [[ ${_CHECK_STATE[$i]} -eq 1 ]] && CHECK_RESULT="${CHECK_RESULT} ${_CHECK_OPTIONS[$i]}"
-    done
-    CHECK_RESULT="${CHECK_RESULT# }"
+# A desktop to put the wizard's window on: not over SSH, and a GUI login.
+_gui_session() {
+    [[ -z "${SSH_CONNECTION:-}" && -z "${SSH_TTY:-}" ]] || return 1
+    [[ "$(launchctl managername 2>/dev/null || true)" == "Aqua" ]]
 }
 
 # ── Pre-flight checks ────────────────────────────────────────────────
@@ -247,19 +130,6 @@ if ! command -v claude &>/dev/null && [[ ! -d "$SETTINGS_DIR" ]]; then
 fi
 mkdir -p "$CLAUDE_DIR"
 
-_ensure_uv() {
-    command -v uv &>/dev/null && return 0
-    [[ -x "$HOME/.local/bin/uv" ]] && export PATH="$HOME/.local/bin:$PATH" && return 0
-    warn "uv not found. It's needed to set up the Python venv for this engine."
-    if confirm "Install uv now (https://astral.sh/uv)?" Y; then
-        curl -LsSf https://astral.sh/uv/install.sh | sh
-        export PATH="$HOME/.local/bin:$PATH"
-        ok "uv installed"
-        return 0
-    fi
-    return 1
-}
-
 echo ""
 echo -e "${GREEN}"
 cat << 'LOGO'
@@ -270,7 +140,7 @@ cat << 'LOGO'
 |_| |_|\___/|_.__/|___/\___/|_| |_|
 LOGO
 echo -e "${NC}"
-echo -e "  ${DIM}A well-mannered butler for Claude Code${NC}"
+echo -e "  ${DIM}A synthetic butler for Claude Code${NC}"
 echo ""
 
 # ── Existing installation ────────────────────────────────────────────
@@ -314,270 +184,46 @@ print(" ".join(value) if isinstance(value, list) else value)
 PY
 }
 
+# The setup sections this install has not been shown (setup_wizard.unseen),
+# space-separated; empty when there are none.
+_unseen_sections() {
+    "$PYTHON" - "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null || true
+import os, sys
+sys.path.insert(0, sys.argv[1])
+import home, setup_wizard
+print(" ".join(setup_wizard.unseen(setup_wizard.load_setup_state(), os.path.isfile(home.config_file()))))
+PY
+}
+
+# ── The setup wizard, or the defaults ────────────────────────────────
+#
+# Every choice (voice, events, brain, decider, presence, phone) is made in
+# the wizard's window, and anything heavy is installed from it, with its size
+# shown first. Without a desktop to show it on, or unattended, a new install
+# gets the defaults and nothing heavy; `hobson setup` opens the wizard later.
+
+WIZARD=false
+UNSEEN=""
 if [[ "$KEEP_CONFIG" == true ]]; then
-    ENGINE=$(_config_value engine say)
-    PERSONALITY=$(_config_value personality hobson)
-    EVENTS=$(_config_value events "stop permission notification")
-elif [[ "$ASSUME_YES" == true ]]; then
-    ENGINE="say"
-    PERSONALITY="hobson"
-    EVENTS="stop permission notification"
-else
-    # ── Engine selection ─────────────────────────────────────────────
-
-    info "Choose a TTS engine:"
-    echo ""
-
-    _PICK_OPTIONS=("say" "kokoro-realtime" "chatterbox")
-    _PICK_DESCS=(
-        "instant & zero deps — robotic macOS voice, good enough to start"
-        "natural neural voice + AI phrases — needs Ollama, ~120MB models"
-        "clones any voice from a sample — cached templates only, HEAVY, GPU recommended (~2GB)"
-    )
-    _pick_menu 0
-    ENGINE="$PICK_RESULT"
-
-    # ── Personality selection ────────────────────────────────────────
-
-    echo ""
-    info "Choose a voice personality:"
-    echo ""
-
-    _PICK_OPTIONS=()
-    _PICK_DESCS=()
-    for pdir in "$SCRIPT_DIR/scripts/personalities"/*/; do
-        pjson="$pdir/personality.json"
-        [[ -f "$pjson" ]] || continue
-        pname=$("$PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1]))['name'])" "$pjson" 2>/dev/null) || continue
-        pdesc=$("$PYTHON" -c "import json,sys; d=json.load(open(sys.argv[1])); print(d.get('display_name','') + ' — ' + d.get('description',''))" "$pjson" 2>/dev/null) || continue
-        _PICK_OPTIONS+=("$pname")
-        _PICK_DESCS+=("$pdesc")
-    done
-
-    # Default to hobson
-    sel=0
-    for i in "${!_PICK_OPTIONS[@]}"; do
-        [[ "${_PICK_OPTIONS[$i]}" == "hobson" ]] && sel=$i
-    done
-    _pick_menu "$sel"
-    PERSONALITY="$PICK_RESULT"
-
-    # ── Event selection ──────────────────────────────────────────────
-
-    echo ""
-    info "Choose which events trigger voice (space to toggle, enter to confirm):"
-    echo ""
-
-    _CHECK_OPTIONS=("stop" "permission" "notification" "commentary")
-    _CHECK_DESCS=(
-        "Speak when Claude finishes a task"
-        "Speak when Claude requests tool permission"
-        "Speak when Claude sends a notification"
-        "Running commentary on tool use (needs Ollama)"
-    )
-    _CHECK_STATE=(1 1 1 0)  # defaults: stop, permission, notification on
-    _check_menu 0
-    EVENTS="$CHECK_RESULT"
-    [[ -z "$EVENTS" ]] && EVENTS="stop"  # fallback
+    UNSEEN="$(_unseen_sections)"
 fi
-
-# ── Engine-specific setup ────────────────────────────────────────────
-
-setup_kokoro() {
-    echo ""
-    info "Setting up Kokoro..."
-
-    if ! _ensure_uv; then
-        warn "Skipping Kokoro setup; run 'hobson setup kokoro' once uv is installed."
-        return 0
-    fi
-
-    VENV_DIR="$SCRIPT_DIR/venvs/kokoro"
-    if [[ ! -d "$VENV_DIR" ]]; then
-        uv venv --python 3.13 "$VENV_DIR" >/dev/null 2>&1
-    fi
-
-    uv pip install --python "$VENV_DIR/bin/python3" kokoro-onnx soundfile huggingface_hub >/dev/null 2>&1 &
-    if _spinner $! "Installing dependencies..."; then
-        ok "Dependencies installed"
-    else
-        warn "Failed to install Kokoro dependencies. Check your Python/uv setup."
-    fi
-
-    # Download models if needed — check both locations
-    MODEL_DIR="$SCRIPT_DIR/models"
-    mkdir -p "$MODEL_DIR"
-
-    _has_kokoro_model=false
-    for _d in "$MODEL_DIR" "$HOME/.claude/models"; do
-        [[ -f "$_d/kokoro-v1.0.int8.onnx" ]] && _has_kokoro_model=true && break
-    done
-    if [[ "$_has_kokoro_model" != "true" ]]; then
-        HF_BASE="https://huggingface.co/hexgrad/Kokoro-82M-v1.0-ONNX/resolve/main"
-        (
-            "$VENV_DIR/bin/python3" -c "
-from huggingface_hub import hf_hub_download
-hf_hub_download('hexgrad/Kokoro-82M-v1.0-ONNX', 'kokoro-v1.0.int8.onnx', local_dir='$MODEL_DIR')
-hf_hub_download('hexgrad/Kokoro-82M-v1.0-ONNX', 'voices-v1.0.bin', local_dir='$MODEL_DIR')
-" 2>/dev/null || {
-                curl -fsSL -o "$MODEL_DIR/kokoro-v1.0.int8.onnx" "$HF_BASE/kokoro-v1.0.int8.onnx" && \
-                curl -fsSL -o "$MODEL_DIR/voices-v1.0.bin" "$HF_BASE/voices-v1.0.bin"
-            }
-        ) &
-        _spinner $! "Downloading models (~92MB)..." || true
-        if [[ -f "$MODEL_DIR/kokoro-v1.0.int8.onnx" ]]; then
-            ok "Models downloaded"
-        else
-            warn "Auto-download failed. Download manually from:"
-            echo "  https://huggingface.co/hexgrad/Kokoro-82M-v1.0-ONNX"
-            echo "  Place kokoro-v1.0.int8.onnx and voices-v1.0.bin in $MODEL_DIR/"
-        fi
-    fi
-
-    ok "Kokoro ready"
-}
-
-setup_chatterbox() {
-    echo ""
-    info "Setting up Chatterbox..."
-
-    if ! _ensure_uv; then
-        warn "Skipping Chatterbox setup; run 'hobson setup chatterbox' once uv is installed."
-        return 0
-    fi
-
-    VENV_DIR="$SCRIPT_DIR/venvs/chatterbox"
-    if [[ ! -d "$VENV_DIR" ]]; then
-        uv venv --python 3.13 "$VENV_DIR" >/dev/null 2>&1
-    fi
-
-    uv pip install --python "$VENV_DIR/bin/python3" "numpy>=2.0" chatterbox-tts torch torchaudio >/dev/null 2>&1 &
-    if _spinner $! "Installing dependencies (this may take a few minutes)..."; then
-        ok "Dependencies installed"
-    else
-        warn "Failed to install Chatterbox dependencies. Check your Python/uv setup."
-    fi
-
-    # Reference audio
-    MODEL_DIR="$SCRIPT_DIR/models"
-    mkdir -p "$MODEL_DIR"
-
-    has_ref=false
-    for ext in wav mp3 flac ogg m4a; do
-        if [[ -f "$MODEL_DIR/hobson-reference.$ext" || -f "$MODEL_DIR/alfred-reference.$ext" ]]; then
-            has_ref=true
-            break
-        fi
-    done
-
-    if [[ "$has_ref" != "true" ]]; then
-        echo ""
-        warn "Chatterbox needs a reference audio file for voice cloning."
-        echo "  Place a 5-10 second audio clip at:"
-        echo "  $MODEL_DIR/hobson-reference.wav"
-        echo ""
-        read -rp "Path to your reference audio file (or press Enter to skip): " ref_path
-        if [[ -n "$ref_path" && -f "$ref_path" ]]; then
-            ext="${ref_path##*.}"
-            cp "$ref_path" "$MODEL_DIR/hobson-reference.$ext"
-            ok "Reference audio copied"
-        else
-            warn "No reference audio provided. You'll need to add one before generating cache."
-        fi
-    fi
-
-    ok "Chatterbox ready"
-}
-
-if [[ "$KEEP_CONFIG" != true ]]; then
-    case "$ENGINE" in
-        kokoro-realtime) setup_kokoro ;;
-        chatterbox)      setup_chatterbox ;;
-        say)             ;;
-    esac
-fi
-
-# ── Ollama (optional) ────────────────────────────────────────────────
-#
-# Without it hobson still speaks, from templates. With it, Stops are
-# classified (done / broken / waiting on you) and phrases fit the moment.
-# An Ollama the user already runs is never upgraded or restarted unasked, and
-# an update (existing settings kept) only reports -- it does not re-ask what
-# was already declined once.
-
-OLLAMA_MODEL="llama3.2:3b"
-OLLAMA_STATUS=""
-_offer() { [[ "$KEEP_CONFIG" != true ]] && confirm "$@"; }
-echo ""
-
-_ollama_up() { curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; }
-
-_ollama_brew_install() {
-    if ! command -v brew &>/dev/null; then
-        warn "Homebrew not found. Install Ollama from https://ollama.com/download"
-        return 1
-    fi
-    brew install ollama >/dev/null 2>&1 &
-    _spinner $! "Installing Ollama..." || { warn "brew install ollama failed"; return 1; }
-    brew services start ollama >/dev/null 2>&1 &
-    _spinner $! "Starting the Ollama service..." || true
-    for _ in $(seq 1 20); do _ollama_up && break; sleep 0.5; done
-    return 0
-}
-
-_ollama_pull() {
-    ollama pull "$OLLAMA_MODEL" >/dev/null 2>&1 &
-    _spinner $! "Pulling $OLLAMA_MODEL (~2 GB)..."
-}
-
-if ! command -v ollama &>/dev/null; then
-    info "Ollama is optional: it makes Hobson's phrases fit what just happened."
-    if _offer "Install Ollama with Homebrew now?" Y; then
-        _ollama_brew_install && ok "Ollama installed" || true
+if [[ "$ASSUME_YES" != true ]]; then
+    if ! _gui_session; then
+        info "No desktop here (SSH?): installing with defaults. Run 'hobson setup' at the Mac to choose."
+    elif [[ "$KEEP_CONFIG" != true ]]; then
+        WIZARD=true
+    elif [[ -n "$UNSEEN" ]] && confirm "Setup has new sections for you ($UNSEEN). Open the setup wizard?" Y; then
+        WIZARD=true
     fi
 fi
 
-if command -v ollama &>/dev/null; then
-    if ! _ollama_up; then
-        OLLAMA_STATUS="installed but not running — start the Ollama app, or: ollama serve"
-    # Not `ollama list | grep -q`: under pipefail, grep's early exit SIGPIPEs
-    # ollama and the check reports the model missing when it is there.
-    elif grep -q "llama3\.2.*3b" <<<"$(ollama list 2>/dev/null || true)"; then
-        OLLAMA_STATUS="ready ($OLLAMA_MODEL)"
-    elif _offer "Ollama model $OLLAMA_MODEL not found. Pull it now? (~2 GB)" Y; then
-        if _ollama_pull; then
-            ok "Model ready"
-            OLLAMA_STATUS="ready ($OLLAMA_MODEL)"
-        elif brew list ollama &>/dev/null \
-                && _offer "Pull failed; an older Ollama is the usual cause. Upgrade it with Homebrew and retry?" N; then
-            brew upgrade ollama >/dev/null 2>&1 &
-            _spinner $! "Upgrading Ollama..." || true
-            brew services restart ollama >/dev/null 2>&1 || true
-            sleep 2
-            if _ollama_pull; then
-                ok "Model ready"
-                OLLAMA_STATUS="ready ($OLLAMA_MODEL)"
-            fi
-        fi
-        [[ -z "$OLLAMA_STATUS" ]] && OLLAMA_STATUS="model missing — try: ollama pull $OLLAMA_MODEL"
-    else
-        OLLAMA_STATUS="model missing — for smarter phrases: ollama pull $OLLAMA_MODEL"
-    fi
-else
-    OLLAMA_STATUS="not installed — optional; see https://ollama.com (then: ollama pull $OLLAMA_MODEL)"
-fi
-
-# ── Write config ─────────────────────────────────────────────────────
-#
-# Only the choices made here are written. Everything else comes from
-# DEFAULT_CONFIG in home.py at load time, so an update that improves
-# a default reaches every install instead of being frozen by the installer.
-
-if [[ "$KEEP_CONFIG" != true ]]; then
-    # shellcheck disable=SC2086  # EVENTS is a space-separated list on purpose
-    "$PYTHON" - "$CONFIG_FILE" "$ENGINE" "$PERSONALITY" $EVENTS <<'PY'
+if [[ "$KEEP_CONFIG" != true && "$WIZARD" != true ]]; then
+    # Only what the installer chooses is written; every other key comes from
+    # DEFAULT_CONFIG in home.py at load time, so an improved default still
+    # reaches this install.
+    "$PYTHON" - "$CONFIG_FILE" <<'PY'
 import json, shutil, sys
-path, engine, personality, *events = sys.argv[1:]
+path = sys.argv[1]
 try:
     with open(path) as f:
         config = json.load(f)
@@ -587,10 +233,7 @@ except json.JSONDecodeError:
     shutil.copy2(path, path + ".invalid")
     print(f"  Previous config was not valid JSON; kept a copy at {path}.invalid")
     config = {}
-config.update(engine=engine, personality=personality, events=events or ["stop"])
-# Deprecated kokoro.realtime_events: superseded by the top-level events just set.
-if isinstance(config.get("kokoro"), dict):
-    config["kokoro"].pop("realtime_events", None)
+config.update(engine="say", personality="hobson", events=["stop", "permission", "notification"])
 with open(path, "w") as f:
     json.dump(config, f, indent=2)
     f.write("\n")
@@ -621,7 +264,8 @@ fi
 # Knows whether anyone is listening (scripts/presence.py), so what Hobson
 # would say to an empty room or over a call is held until you are back.
 # A one-file Swift helper, built with the Command Line Tools already on any
-# Mac that has git. The camera is asked for only here, never mid-session.
+# Mac that has git. The camera is asked for only in the wizard (or `hobson
+# presence setup`), never mid-session.
 
 if command -v swiftc >/dev/null 2>&1; then
     build_out=$("$SCRIPT_DIR/scripts/build-presence.sh" 2>&1) && build_rc=0 || build_rc=$?
@@ -631,19 +275,6 @@ if command -v swiftc >/dev/null 2>&1; then
         if [[ "$build_out" == *Built* ]]; then
             pkill -f "$SCRIPT_DIR/build/HobsonPresence.app/Contents/MacOS" 2>/dev/null || true
         fi
-        camera=$("$PYTHON" "$SCRIPT_DIR/scripts/presence.py" --camera-status 2>/dev/null || true)
-        if [[ "$ASSUME_YES" != true && "$camera" == "not-determined" ]]; then
-            echo ""
-            echo "Hobson can glance through the camera, only when he is about to speak"
-            echo "and you have been idle, to hold his news until you are back."
-            echo "Frames stay in memory on this Mac; nothing is saved or sent."
-            if confirm "Allow the camera? (macOS will ask)" Y; then
-                "$PYTHON" "$SCRIPT_DIR/scripts/presence.py" --look --request-permission >/dev/null 2>&1 || true
-            else
-                "$PYTHON" "$SCRIPT_DIR/scripts/presence.py" --set mode signals
-                info "Presence will use the keyboard, screen lock and calls only (hobson presence mode)"
-            fi
-        fi
     else
         warn "Could not build the presence sensor; 'hobson presence setup' shows why"
     fi
@@ -651,25 +282,20 @@ else
     info "Presence sensor skipped: no swiftc (xcode-select --install, then hobson presence setup)"
 fi
 
-# ── Optional: generate voice cache ───────────────────────────────────
+# ── Wizard ───────────────────────────────────────────────────────────
 
-if [[ "$ENGINE" == "chatterbox" && "$ASSUME_YES" != true ]]; then
-    CACHE_DIR="$CLAUDE_DIR/voice-cache-chatterbox"
-    if [[ -d "$CACHE_DIR" ]] && [[ -n "$(ls -A "$CACHE_DIR" 2>/dev/null)" ]]; then
-        cache_files=$(find "$CACHE_DIR" -type f -name '*.wav' | wc -l | tr -d ' ')
-        cache_size=$(du -sh "$CACHE_DIR" 2>/dev/null | cut -f1 | tr -d ' ')
-        ok "Existing voice cache found at $CACHE_DIR ($cache_files files, $cache_size)"
-        prompt="Regenerate cache?"
-    else
-        echo ""
-        echo "Generate voice cache now? This pre-generates ~507 phrases."
-        echo "  Estimated time: ~2 hours on MPS, ~45 min on CUDA"
-        echo ""
-        prompt="Generate now?"
-    fi
-    if confirm "$prompt" N; then
-        "$SCRIPT_DIR/venvs/chatterbox/bin/python3" "$SCRIPT_DIR/scripts/cache-gen/chatterbox_gen.py"
-    fi
+WIZARD_RC=""
+if [[ "$WIZARD" == true ]]; then
+    echo ""
+    info "Opening the setup wizard. Close its window when you're done."
+    WIZARD_RC=0
+    "$PYTHON" "$SCRIPT_DIR/scripts/setup_wizard.py" --python "$PYTHON" || WIZARD_RC=$?
+    case "$WIZARD_RC" in
+        0)  ok "Setup applied" ;;
+        10) info "The wizard closed before COMMIT: the defaults stand (hobson setup to choose later)" ;;
+        3)  ;;  # no desktop after all: it said why
+        *)  warn "A setup task failed: 'hobson doctor' shows what's left, 'hobson setup' retries" ;;
+    esac
 fi
 
 # ── Verification ─────────────────────────────────────────────────────
@@ -690,62 +316,50 @@ if ! echo '{"hook_event_name":"UserPromptSubmit"}' | HOME="$(mktemp -d)" "$PYTHO
 fi
 
 # ── Hello bark ───────────────────────────────────────────────────────
+#
+# The wizard says its own hello, through the voice chosen there; a new
+# install without it gets one from macOS `say`.
 
-if [[ "$KEEP_CONFIG" != true && "$INSTALL_OK" == true ]]; then
+if [[ "$KEEP_CONFIG" != true && "$WIZARD" != true && "$INSTALL_OK" == true ]]; then
     SAY_VOICE=$("$PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1])).get('say_voice', 'Daniel'))" \
-        "$SCRIPT_DIR/scripts/personalities/$PERSONALITY/personality.json" 2>/dev/null || echo "Daniel")
-    HELLO_PHRASE="Good day. Hobson, at your service."
-    _hello_spoken=false
+        "$SCRIPT_DIR/scripts/personalities/hobson/personality.json" 2>/dev/null || echo "Daniel")
+    # A voice this Mac lacks must not fail the install.
+    say -v "$SAY_VOICE" "Good day. Hobson, at your service." 2>/dev/null \
+        || say "Good day. Hobson, at your service." 2>/dev/null || true
+fi
 
-    # For kokoro-realtime, start daemon and use it for the hello bark
-    if [[ "$ENGINE" == "kokoro-realtime" ]]; then
-        DAEMON_VENV="$SCRIPT_DIR/venvs/kokoro/bin/python3"
-        DAEMON_SCRIPT="$SCRIPT_DIR/scripts/kokoro-daemon.py"
-        DAEMON_PORT=19849
-        DAEMON_PID_FILE="$HOME/.claude/kokoro-daemon.pid"
+# ── Ollama (a report) ────────────────────────────────────────────────
+#
+# Without it hobson still speaks, from templates. The wizard installs it and
+# pulls a model when asked; here it is only reported on.
 
-        # Start daemon if not already running
-        _daemon_running=false
-        if [[ -f "$DAEMON_PID_FILE" ]] && kill -0 "$(cat "$DAEMON_PID_FILE" 2>/dev/null)" 2>/dev/null; then
-            _daemon_running=true
-        elif [[ -f "$DAEMON_VENV" ]]; then
-            "$DAEMON_VENV" "$DAEMON_SCRIPT" &
-            disown
-        fi
-
-        # Wait for daemon to be healthy (up to 5s)
-        for _ in $(seq 1 20); do
-            if curl -s --max-time 1 "http://127.0.0.1:$DAEMON_PORT/health" >/dev/null 2>&1; then
-                _daemon_running=true
-                break
-            fi
-            sleep 0.25
-        done
-
-        if [[ "$_daemon_running" == true ]]; then
-            KOKORO_VOICE=$("$PYTHON" -c "import json,sys; print(json.load(open(sys.argv[1])).get('kokoro', {}).get('voice', 'am_puck'))" \
-                "$CONFIG_FILE" 2>/dev/null || echo "am_puck")
-            # A directory, not mktemp …XXXXXX.wav: BSD mktemp does not fill in
-            # the X's when a suffix follows, so that name was a fixed literal.
-            HELLO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/hobson-hello.XXXXXX")
-            HELLO_WAV="$HELLO_DIR/hello.wav"
-            if curl -s --max-time 10 -X POST "http://127.0.0.1:$DAEMON_PORT/generate" \
-                -H "Content-Type: application/json" \
-                -d "{\"text\": \"$HELLO_PHRASE\", \"voice\": \"$KOKORO_VOICE\", \"speed\": 0.8}" \
-                -o "$HELLO_WAV" 2>/dev/null && [[ -s "$HELLO_WAV" ]]; then
-                afplay "$HELLO_WAV" 2>/dev/null && _hello_spoken=true
-            fi
-            rm -rf "$HELLO_DIR"
-        fi
+OLLAMA_MODEL="$("$PYTHON" - "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null || echo llama3.2:3b
+import sys
+sys.path.insert(0, sys.argv[1])
+import home
+print(home.load_config()["ollama"]["model"])
+PY
+)"
+OLLAMA_STATUS=""
+if command -v ollama &>/dev/null; then
+    if ! curl -s --max-time 2 http://localhost:11434/api/tags >/dev/null 2>&1; then
+        OLLAMA_STATUS="installed but not running — start the Ollama app, or: ollama serve"
+    # Not `ollama list | grep -q`: under pipefail, grep's early exit SIGPIPEs
+    # ollama and the check reports the model missing when it is there.
+    elif grep -qF "$OLLAMA_MODEL" <<<"$(ollama list 2>/dev/null || true)"; then
+        OLLAMA_STATUS="ready ($OLLAMA_MODEL)"
+    else
+        OLLAMA_STATUS="model missing — hobson setup, or: ollama pull $OLLAMA_MODEL"
     fi
-
-    # Fallback to macOS say; a voice this Mac lacks must not fail the install.
-    if [[ "$_hello_spoken" == false ]]; then
-        say -v "$SAY_VOICE" "$HELLO_PHRASE" 2>/dev/null || say "$HELLO_PHRASE" 2>/dev/null || true
-    fi
+else
+    OLLAMA_STATUS="not installed — optional; hobson setup installs it"
 fi
 
 # ── Done ─────────────────────────────────────────────────────────────
+
+ENGINE=$(_config_value engine say)
+PERSONALITY=$(_config_value personality hobson)
+EVENTS=$(_config_value events "stop permission notification")
 
 echo ""
 if [[ "$INSTALL_OK" == true ]]; then
@@ -763,6 +377,10 @@ echo -e "  Personality: ${GREEN}$PERSONALITY${NC}"
 echo -e "  Events:      ${GREEN}$EVENTS${NC}"
 [[ -n "$OLLAMA_STATUS" ]] && echo -e "  Ollama:      ${DIM}$OLLAMA_STATUS${NC}"
 echo ""
+if [[ -n "$UNSEEN" && "$WIZARD" != true ]]; then
+    echo -e "  ${YELLOW}New in setup: $UNSEEN.${NC} Run ${GREEN}hobson setup${NC} at the Mac to see them."
+    echo ""
+fi
 if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     case "${SHELL:-}" in
         */zsh)  rc="$HOME/.zshrc" ;;
@@ -774,6 +392,6 @@ if [[ ":$PATH:" != *":$BIN_DIR:"* ]]; then
     echo ""
 fi
 echo -e "  ${DIM}Start a new Claude Code session to hear it (running sessions keep their old hooks).${NC}"
-echo -e "  ${DIM}hobson status · hobson doctor · hobson update · hobson uninstall${NC}"
+echo -e "  ${DIM}hobson setup · hobson status · hobson doctor · hobson update · hobson uninstall${NC}"
 echo ""
 [[ "$INSTALL_OK" == true ]]

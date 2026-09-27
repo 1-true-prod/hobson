@@ -206,6 +206,20 @@ def audience_of(record, now):
     return state if state in STATES else "unknown"
 
 
+def helper_alive(record, now):
+    """A sensor wrote this record just now: sensing, or paused from the
+    menu bar (state "off", which is no audience at all). Pure."""
+    try:
+        return bool(record) and abs(now - float(record.get("ts") or 0)) <= STALE_SECONDS
+    except (TypeError, ValueError, AttributeError):
+        return False
+
+
+def paused(record, now):
+    """Paused from the menu bar: the sensor is up, and senses nothing. Pure."""
+    return helper_alive(record, now) and bool(record.get("paused"))
+
+
 def needs_look(record, cfg, now):
     """True when a look would change what is known: auto mode, a camera the
     helper may use, and a "present" that rests on nothing -- you have been
@@ -637,6 +651,8 @@ def _helper_argv(cfg):
         argv += ["--phone", str(cfg["phone"]), "--adb", find_adb(cfg) or "adb"]
     if cfg.get("preview"):
         argv.append("--preview")
+    if cfg.get("paused"):
+        argv.append("--paused")
     return argv
 
 
@@ -677,10 +693,11 @@ def ensure_running(config, now=None):
         return False
     now = time.time() if now is None else now
     record = read_state()
-    if audience_of(record, now) != "unknown":
+    if helper_alive(record, now):
         if (record.get("mode") == cfg.get("mode")
                 and (record.get("phone_setting") or None) == (cfg.get("phone") or None)
-                and bool(record.get("preview")) == bool(cfg.get("preview"))):
+                and bool(record.get("preview")) == bool(cfg.get("preview"))
+                and bool(record.get("paused")) == bool(cfg.get("paused"))):
             return False
         stop_helper(record)  # restarted with the new settings by the next hook
         return False
@@ -749,6 +766,7 @@ def status(config=None, now=None):
     return {
         "enabled": bool(cfg.get("enabled")), "mode": cfg.get("mode"),
         "built": helper_built(), "state": audience_of(record, now) if cfg.get("enabled") else "off",
+        "paused": paused(record, now),
         "source": record.get("source"), "since": record.get("since"),
         "camera": record.get("camera"), "call_app": record.get("call_app"),
         "idle": record.get("idle"), "people": record.get("people"),
@@ -781,6 +799,9 @@ def status_lines(config=None, now=None):
     now = time.time() if now is None else now
     if not s["enabled"]:
         return ["Presence:    off (hobson presence on)"]
+    if s["paused"]:
+        return ["Presence:    paused from the menu bar (hobson presence on to resume)",
+                f"Mode:        {s['mode']}"]
     lines = [f"Presence:    {s['state']}" + (f" ({s['source']})" if s["source"] and s["state"] != "unknown" else ""),
              f"Mode:        {s['mode']}"]
     if s["state"] == "unknown":
@@ -813,6 +834,9 @@ def doctor_lines(config=None):
     out.append(("ok", f"Presence sensor built ({cfg.get('mode')} mode)"))
     record = read_state()
     state = audience_of(record, time.time())
+    if paused(record, time.time()):
+        out.append(("info", "Presence paused from the menu bar (hobson presence on to resume)"))
+        return out
     if state == "unknown":
         out.append(("info", "Presence sensor not running (starts with the next hook)"))
     else:
@@ -857,6 +881,15 @@ def set_setting(key, value):
     os.replace(tmp, path)
 
 
+def _restart():
+    """Now, not at the next hook: whoever changed a setting is watching."""
+    if stop_helper():
+        time.sleep(1.0)
+    with contextlib.suppress(OSError):
+        os.remove(_spawn_marker())
+    ensure_running(home.load_config())
+
+
 def main(argv=None):
     parser = argparse.ArgumentParser(description=__doc__.splitlines()[0])
     parser.add_argument("--transition", nargs=2, metavar=("FROM", "TO"))
@@ -873,6 +906,8 @@ def main(argv=None):
     parser.add_argument("--doctor", action="store_true")
     parser.add_argument("--phone-check", action="store_true")
     parser.add_argument("--set", nargs=2, metavar=("KEY", "VALUE"))
+    # From the sensor's own menu: it has already changed itself.
+    parser.add_argument("--keep-running", action="store_true")
     parser.add_argument("--camera-status", action="store_true")
     args = parser.parse_args(argv)
 
@@ -892,16 +927,17 @@ def main(argv=None):
     elif args.set:
         key, value = args.set
         parsed = {"true": True, "false": False, "none": None, "off": None}.get(value.lower(), value)
+        was_paused = settings(home.load_config()).get("paused")
         set_setting(key, parsed)
-        if key == "enabled" and parsed is False:
+        if key == "enabled" and parsed is True and was_paused:
+            set_setting("paused", False)  # `hobson presence on` resumes a pause too
+            _restart()
+        elif args.keep_running:
+            pass
+        elif key == "enabled" and parsed is False:
             stop_helper()  # nothing else would: a disabled presence starts nothing
-        elif key in ("mode", "phone", "preview"):
-            # Now, not at the next hook: whoever changed it is watching.
-            if stop_helper():
-                time.sleep(1.0)
-            with contextlib.suppress(OSError):
-                os.remove(_spawn_marker())
-            ensure_running(home.load_config())
+        elif key in ("mode", "phone", "preview", "paused"):
+            _restart()
     elif args.transition:
         home.migrate_legacy_state()
         on_transition(args.transition[0], args.transition[1], args.source, args.away_for)

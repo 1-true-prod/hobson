@@ -77,6 +77,8 @@ if pkill -f "$SCRIPT_DIR/build/HobsonPresence.app/Contents/MacOS" 2>/dev/null; t
     ok "Stopped the presence sensor"
 fi
 tccutil reset Camera local.hobson.presence >/dev/null 2>&1 || true
+# A setup wizard window left open (its server exits with it).
+pkill -f "$SCRIPT_DIR/build/HobsonSetup.app/Contents/MacOS" 2>/dev/null || true
 
 # ── Remove hooks from settings.json ──────────────────────────────────
 
@@ -102,6 +104,7 @@ state=(
     "$CLAUDE_DIR/hobson-presence-lines.json"
     "$CLAUDE_DIR/hobson-held.json"
     "$CLAUDE_DIR/hobson-held.lock"
+    "$CLAUDE_DIR/hobson-setup.json"
     "$CLAUDE_DIR/kokoro-daemon.log"
     "$CLAUDE_DIR/pocket-tts-daemon.log"
     "$CLAUDE_DIR/kokoro-playback.wav"
