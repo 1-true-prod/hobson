@@ -341,47 +341,8 @@ def test_remerge_repairs_a_stale_partial_install(settings_merge):
     assert sm.check_hooks() is True
 
 
-# ── Hooks installed before the rename ─────────────────────────────────────
-#
-# claudio's hooks run .../scripts/claudio.py. They are Hobson's -- an update
-# must replace them, not add a second set -- and they are out of date.
-
-def _claudio_install(sm):
-    old = '"/usr/bin/python3" "/Users/x/.local/share/claudio/scripts/claudio.py"'
-    sm.merge_hooks("/d")
-    settings = _read(sm)
-    for entries in settings["hooks"].values():
-        for e in entries:
-            for h in e["hooks"]:
-                h["command"] = old
-    sm.save_settings(settings)
-
-
-def test_claudio_era_hooks_are_ours_and_replaced(settings_merge):
+def test_a_command_merely_named_hobson_is_not_ours(settings_merge):
+    """Hobson is a surname: another tool's command, or a home, may carry it."""
     sm = settings_merge
-    _claudio_install(sm)
-    sm.merge_hooks("/new", python="/usr/bin/python3")
-    stop = _read(sm)["hooks"]["Stop"]
-    assert len(stop) == 1
-    assert stop[0]["hooks"][0]["command"] == '"/usr/bin/python3" "/new/scripts/hobson.py"'
-
-
-def test_check_reports_claudio_era_hooks_as_out_of_date(settings_merge, capsys):
-    sm = settings_merge
-    _claudio_install(sm)
-    assert sm.check_hooks() is False
-    assert "out of date" in capsys.readouterr().out
-
-
-def test_uninstall_removes_claudio_era_hooks(settings_merge):
-    sm = settings_merge
-    _claudio_install(sm)
-    sm.remove_hooks()
-    assert "hooks" not in _read(sm) or not _read(sm)["hooks"]
-
-
-def test_another_tools_claudio_command_is_not_ours(settings_merge):
-    """A different project also ships a `claudio` command; its hooks stay."""
-    sm = settings_merge
-    assert sm._is_our_hook({"hooks": [{"command": "claudio hook PreToolUse"}]}) is False
-    assert sm._is_our_hook({"hooks": [{"command": "/usr/local/bin/claudio play"}]}) is False
+    assert sm._is_our_hook({"hooks": [{"command": "hobson hook PreToolUse"}]}) is False
+    assert sm._is_our_hook({"hooks": [{"command": "/Users/hobson/bin/play.py"}]}) is False

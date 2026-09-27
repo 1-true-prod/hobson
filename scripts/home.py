@@ -76,19 +76,14 @@ def project_file(kind, project, suffix=""):
     return path(f"hobson-{kind}-{project_key(project)}{suffix}")
 
 
-# ── Migration from claudio / claude-bark ───────────────────────────────────
+# ── Migration from claude-bark ─────────────────────────────────────────────
 
-# Hobson was called claudio until 0.3.0, and claude-bark before that. State
-# kept under an old name, oldest name last, is moved to the new one the
-# first time it is needed. Only a missing target is ever written: nothing is
-# overwritten, and the config, the API key, months of log and session
-# history all come across.
+# Hobson was claude-bark once. A config kept under that name is moved to the
+# new one the first time it is needed. Only a missing target is ever
+# written: nothing is overwritten.
 _LEGACY_NAMES = (
     # (new name, old names to take it from, newest first)
-    ("hobson.json", ("claudio.json", "claude-bark.json")),
-    ("hobson.log", ("claudio.log",)),
-    ("hobson.env", ("claudio.env",)),
-    ("hobson-sessions", ("claudio-sessions",)),
+    ("hobson.json", ("claude-bark.json",)),
 )
 
 # The default personality was "alfred" until it became Hobson himself.
@@ -96,7 +91,7 @@ _PERSONALITY_ALIASES = {"alfred": "hobson"}
 
 
 def migrate_legacy_state():
-    """Move claudio / claude-bark state to Hobson's names. Returns what moved."""
+    """Move claude-bark state to Hobson's names. Returns what moved."""
     moved = []
     for new, olds in _LEGACY_NAMES:
         target = path(new)
@@ -107,7 +102,7 @@ def migrate_legacy_state():
             if not os.path.lexists(source):
                 continue
             try:
-                os.rename(source, target)  # atomic; keeps claudio.env at 600
+                os.rename(source, target)  # atomic, and keeps the file's mode
             except OSError:
                 break  # another hook got there first, or the disk refused
             moved.append(f"{old} -> {new}")

@@ -37,16 +37,6 @@ main() {
     git --version &>/dev/null \
         || die "git is required. Install the Xcode Command Line Tools: xcode-select --install"
 
-    # Hobson was claudio until 0.3.0, kept in ~/.local/share/claudio. Move a
-    # checkout of ours from there (another tool also calls itself claudio,
-    # hence the check) and point it at the renamed repo.
-    local legacy="$HOME/.local/share/claudio"
-    if [[ -z "${HOBSON_DIR:-}" && ! -e "$dir" && -d "$legacy/.git" && -f "$legacy/scripts/settings-merge.py" ]]; then
-        echo -e "${dim}Moving $legacy to $dir (claudio is now Hobson)...${nc}"
-        mv "$legacy" "$dir"
-        git -C "$dir" remote set-url origin "$repo"
-    fi
-
     # Updating fetches, switches branch and runs whatever install.sh is there,
     # so it must be hobson's checkout and not some other repo HOBSON_DIR
     # happens to name.

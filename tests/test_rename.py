@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""The renames (claude-bark → claudio → Hobson) broke nothing, and lost nothing.
+"""Hobson's names, and the move from claude-bark, broke nothing and lost nothing.
 
 Run: python3 -m pytest tests/ -v
   or: python3 tests/test_rename.py
@@ -38,46 +38,26 @@ class TestConfigPaths(unittest.TestCase):
         self.assertTrue(home.log_file().endswith("/hobson.log"))
 
 
-# ── Migration from claudio (and claude-bark) ─────────────────────────
+# ── Migration from claude-bark ───────────────────────────────────────
 #
-# Hobson was claudio until 0.3.0. Everything a user had under the old name
-# must come across the first time it is needed, and nothing under the new
-# name may ever be overwritten.
+# A config under the old name must come across the first time it is needed,
+# and nothing under the new name may ever be overwritten.
 
 def _write(path, data):
     with open(path, "w", encoding="utf-8") as f:
         json.dump(data, f)
 
 
-def test_migration_moves_config_key_log_and_sessions(claude_home):
-    _write(claude_home / "claudio.json", {"engine": "kokoro-realtime", "volume": 7})
-    (claude_home / "claudio.env").write_text("OPENROUTER_API_KEY=sk-test\n")
-    os.chmod(claude_home / "claudio.env", 0o600)
-    (claude_home / "claudio.log").write_text("[2026-09-26 10:00:00] [x] spoke\n")
-    (claude_home / "claudio-sessions").mkdir()
-    (claude_home / "claudio-sessions" / "abc.json").write_text("{}")
-
-    moved = home.migrate_legacy_state()
-
-    assert len(moved) == 4
-    assert json.load(open(claude_home / "hobson.json"))["volume"] == 7
-    assert (claude_home / "hobson.env").read_text() == "OPENROUTER_API_KEY=sk-test\n"
-    assert os.stat(claude_home / "hobson.env").st_mode & 0o777 == 0o600
-    assert "spoke" in (claude_home / "hobson.log").read_text()
-    assert (claude_home / "hobson-sessions" / "abc.json").exists()
-    assert not any(p.name.startswith("claudio") for p in claude_home.iterdir())
-
-
 def test_migration_never_overwrites_hobson_state(claude_home):
     _write(claude_home / "hobson.json", {"engine": "say"})
-    _write(claude_home / "claudio.json", {"engine": "chatterbox"})
+    _write(claude_home / "claude-bark.json", {"engine": "chatterbox"})
     assert home.migrate_legacy_state() == []
     assert json.load(open(claude_home / "hobson.json"))["engine"] == "say"
-    assert (claude_home / "claudio.json").exists()  # left for the user
+    assert (claude_home / "claude-bark.json").exists()  # left for the user
 
 
 def test_migration_is_idempotent(claude_home):
-    _write(claude_home / "claudio.json", {"engine": "say"})
+    _write(claude_home / "claude-bark.json", {"engine": "say"})
     assert home.migrate_legacy_state()
     assert home.migrate_legacy_state() == []
 
@@ -90,16 +70,9 @@ def test_claude_bark_config_still_migrates(claude_home):
     assert (claude_home / "hobson.json").exists()
 
 
-def test_claudio_config_wins_over_claude_bark(claude_home):
-    _write(claude_home / "claudio.json", {"engine": "say"})
-    _write(claude_home / "claude-bark.json", {"engine": "chatterbox"})
-    home.migrate_legacy_state()
-    assert json.load(open(claude_home / "hobson.json"))["engine"] == "say"
-
-
 def test_the_alfred_personality_becomes_hobson(claude_home):
     """Alfred was the default persona; the migrated config names Hobson."""
-    _write(claude_home / "claudio.json", {"personality": "alfred", "volume": 4})
+    _write(claude_home / "claude-bark.json", {"personality": "alfred", "volume": 4})
     home.migrate_legacy_state()
     on_disk = json.load(open(claude_home / "hobson.json"))
     assert on_disk == {"personality": "hobson", "volume": 4}
@@ -121,17 +94,6 @@ def test_defaults_when_there_is_no_config_at_all(claude_home):
     config = home.load_config()
     assert config["engine"] == "say"
     assert config["personality"] == "hobson"
-
-
-def test_old_entrypoint_runs_hobson(claude_home, monkeypatch):
-    """Hooks installed as claudio run scripts/claudio.py until rewritten."""
-    import io
-    import runpy
-    event = {"hook_event_name": "UserPromptSubmit", "cwd": str(claude_home)}
-    monkeypatch.setattr(sys, "stdin", io.StringIO(json.dumps(event)))
-    runpy.run_path(os.path.join(REPO_ROOT, "scripts", "claudio.py"), run_name="__main__")
-    # The prompt path writes the activity token -- proof hobson.py ran.
-    assert any(p.name.startswith("hobson-activity-") for p in claude_home.iterdir())
 
 
 # ── bark_hash consistency ─────────────────────────────────────────────

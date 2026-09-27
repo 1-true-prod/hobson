@@ -44,7 +44,7 @@ def _load_personality_templates(personality_name=None):
 
 def _get_personality_name():
     """The configured personality, as load_config() resolves it: after the
-    claudio migration and the "alfred" alias. 'hobson' when unset."""
+    legacy migration and the "alfred" alias. 'hobson' when unset."""
     from home import load_config
     return load_config().get("personality") or "hobson"
 

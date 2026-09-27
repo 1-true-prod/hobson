@@ -7,8 +7,6 @@
 A well-mannered butler for [Claude Code](https://docs.anthropic.com/en/docs/claude-code). Hobson tells you, out loud, when Claude has
 finished, needs your permission, or is waiting on you — and otherwise knows to keep quiet.
 
-> Formerly **claudio**. An existing install updates itself: `claudio update`, or re-run the one-liner.
-
 <!-- TODO: Add demo video here (with audio!) -->
 <!-- https://github.com/user-attachments/assets/XXXX -->
 

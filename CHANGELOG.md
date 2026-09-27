@@ -61,22 +61,20 @@
 - Internally, every path, the config, the project label and the quiet controls live in `home.py`,
   resolved from `$HOME` when asked for, and every log line is written and read by `log_record.py`
 
+### Removed
+
+- The takeover of installs from before 0.3.0: their old entrypoint, command, checkout path and
+  state names are no longer recognised. If you installed before 0.3.0, re-run the one-liner
+
 ## 0.3.0 — 2026-09-26
 
-### claudio is now Hobson
+### Hobson
 
-A well-mannered butler, and a name of its own. "claudio" was already taken by another
-hook-driven audio tool for Claude Code, with its own `claudio` command, and it leaned on
-Anthropic's "Claude".
+A well-mannered butler, and a name of its own.
 
 - The command is `hobson`, the checkout lives in `~/.local/share/hobson`, and state is
   `~/.claude/hobson*`. Environment variables are `HOBSON_REF`, `HOBSON_DIR`, `HOBSON_REPO`,
   `HOBSON_YES`, `HOBSON_PYTHON`
-- **Nothing to do by hand.** `claudio update` or the one-liner moves your config, API key, log and
-  session history across, rewrites the hooks, and replaces the `claudio` command with `hobson`.
-  Nothing under the new names is ever overwritten, and another tool's `claudio` is left alone
-- Hooks still pointing at `scripts/claudio.py` keep working (it hands every event to
-  `scripts/hobson.py`); `hobson doctor` reports them as out of date until the installer runs
 - The default personality is **hobson** (it was **alfred**, billed as Batman's butler); a config
   naming `alfred` reads as `hobson`, and chatterbox still finds `models/alfred-reference.*`
 
@@ -97,7 +95,7 @@ First release for public testing.
 - `--yes` for an unattended install (`curl … | bash -s -- --yes`): the macOS voice, nothing heavy
   downloaded. Ollama, uv and models are only installed after an explicit yes
 - **Re-running is updating.** An existing config is kept and only the hooks are refreshed, which
-  leaves an unchanged `settings.json` alone. New: `claudio update`, and `CLAUDIO_REF` to pin a
+  leaves an unchanged `settings.json` alone. New: `hobson update`, and `HOBSON_REF` to pin a
   branch or tag
 - The installer writes only the choices you made; every other setting comes from the defaults at
   load time, so improved defaults reach existing installs (it used to freeze
@@ -109,19 +107,19 @@ First release for public testing.
 - `settings.json`: follows `CLAUDE_CONFIG_DIR`, writes through a symlink instead of replacing it,
   keeps its file mode, survives `null` sections, and no longer carries a `Bash(say:*)` permission
   (hooks never needed it, and `say -o` writes files; an update removes the old grant)
-- claudio's hooks are recognised by their entrypoint, not by the word "claudio" in a command,
-  which claimed (and on uninstall deleted) the hooks of anyone whose home is `/Users/claudio`
+- Hobson's hooks are recognised by their entrypoint, not by a word in a command, which claimed
+  (and on uninstall deleted) the hooks of anyone whose home directory had that name
 - A pyenv / asdf / mise shim is resolved to the Python behind it before it is pinned; `doctor`
   reports a pinned interpreter that has since been uninstalled
-- `claudio uninstall [--yes]` stops both daemons and any pending nudge, removes all state files
+- `hobson uninstall [--yes]` stops both daemons and any pending nudge, removes all state files
   (not just five of them), and can delete the installer-managed checkout
 - Fixed under Homebrew's bash 5: the installer's menus exited on the first down-arrow and
-  `claudio doctor` stopped at its first finding (`((x++))` from 0 fails under `set -e` there).
+  `hobson doctor` stopped at its first finding (`((x++))` from 0 fails under `set -e` there).
   Also: menus under `TERM=dumb`, `doctor` for chatterbox users with no cache yet, and
-  `claudio daemon start` for pocket-tts on bash 3.2, which all exited early
-- Updating refuses a `CLAUDIO_DIR` that is not a claudio checkout, and a checkout with commits
+  `hobson daemon start` for pocket-tts on bash 3.2, which all exited early
+- Updating refuses a `HOBSON_DIR` that is not a Hobson checkout, and a checkout with commits
   that were never pushed, instead of resetting them away
-- `claudio doctor` names the model claudio actually uses (it suggested pulling `qwen3.5:4b`), shows
+- `hobson doctor` names the model Hobson actually uses (it suggested pulling `qwen3.5:4b`), shows
   why hooks are out of date, and exits non-zero on errors
 - The installer's Ollama model check no longer reports a present model missing (`grep -q` under
   `pipefail`)
@@ -137,7 +135,7 @@ First release for public testing.
   phrases the near-duplicate guard rejected, aimed at the tense transition it can't see ("I fixed
   the invoice sync" after "I'm fixing the invoice sync"), and on commentary that rewords something just
   said, which it can hold back. It never silences a Stop, permission or notification; it sends
-  only the phrase and up to six recent ones; the key lives in `~/.claude/claudio.env`
+  only the phrase and up to six recent ones; the key lives in `~/.claude/hobson.env`
 - Commentary names the symbol an edit touched in more languages (Kotlin modifiers and extension
   functions, Go, Rust, shell), and no longer invents one from prose in Markdown files
 - `tts_normalize` applied to LLM-generated phrases, with four gaps closed against real logged output
@@ -152,13 +150,13 @@ First release for public testing.
   every call. A finished turn discards anything still queued
 - **`anomaly` verbosity** — ignores the count and timer gates and speaks only what is surprising
 - **Jev decides which batches are worth hearing** — with the decider on, each batch of commentary
-  is scored before Ollama is asked, and one dial, `commentary.chattiness` (`claudio commentary
+  is scored before Ollama is asked, and one dial, `commentary.chattiness` (`hobson commentary
   chattiness`), sets the bar in place of `terse`/`normal`. On 140 real batches the default caught
   every one worth hearing while speaking about a third as often. The batch summary is sent redacted
-- `claudio stats` no longer counts a flush that ended in SKIP, a guard rejection or an unusable
+- `hobson stats` no longer counts a flush that ended in SKIP, a guard rejection or an unusable
   reply as spoken
 - Background subagents no longer narrate their tool calls
-- **Timed mute and quiet hours** — `claudio off 30m`, plus a recurring `quiet_hours` window
+- **Timed mute and quiet hours** — `hobson off 30m`, plus a recurring `quiet_hours` window
 
 ### Speaking up
 
@@ -178,9 +176,9 @@ First release for public testing.
 
 ### New commands
 
-- `claudio recap [minutes]` — pull a spoken summary of recent activity
-- `claudio stats` — what was spoken, queued, and suppressed, including nudge/watchdog activity
-- `claudio commentary verbosity`, `claudio volume`, `claudio off [duration]`
+- `hobson recap [minutes]` — pull a spoken summary of recent activity
+- `hobson stats` — what was spoken, queued, and suppressed, including nudge/watchdog activity
+- `hobson commentary verbosity`, `hobson volume`, `hobson off [duration]`
 
 ### Engines and models
 
@@ -195,7 +193,7 @@ First release for public testing.
 
 ### Project
 
-- Renamed from `claude-bark` to `claudio`; launch infrastructure, community files, remote installer
+- Renamed from `claude-bark`; launch infrastructure, community files, remote installer
 - pytest suite (now 689 tests, offline and silent — no writes to the developer's real `~/.claude`)
 - `settings-merge.py --check` fails on a hook that is out of date, not only one that is missing
 
@@ -213,5 +211,5 @@ Initial public release.
 - Configuration presets for one-command setup
 - Interactive CLI with arrow-key menus
 - Audio caching for instant playback
-- `claudio doctor` diagnostics command
+- `hobson doctor` diagnostics command
 - File-based locking and cooldown to prevent audio overlap

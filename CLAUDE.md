@@ -5,8 +5,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ## What this is
 
 Hobson is a well-mannered butler for Claude Code: he says, out loud, when Claude has finished, needs
-permission, or is waiting on you, and otherwise keeps quiet. It was called **claudio** until 0.3.0
-(and claude-bark before that); see *The rename* under constraints. It hooks into five events (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), classifies the output via a local Ollama model, selects or generates a personality-driven phrase, and plays it via one of four TTS engines.
+permission, or is waiting on you, and otherwise keeps quiet. It hooks into five events (PermissionRequest, Stop, Notification, PreToolUse, UserPromptSubmit), classifies the output via a local Ollama model, selects or generates a personality-driven phrase, and plays it via one of four TTS engines.
 
 ## Architecture
 
@@ -550,7 +549,7 @@ python3 -m venv venvs/dev && ./venvs/dev/bin/pip install -r requirements-dev.txt
 Coverage is report-only (no failing threshold). The kokoro / pocket-tts daemon and
 `_speak_live` native paths are intentionally uncovered — they need a live daemon and ML
 models. So is the presence helper (`presence/main.swift`): it needs a camera and a desk, and is
-checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run. The suite is **848 tests** and runs in well under a second; if it takes longer,
+checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run. The suite is **842 tests** and runs in well under a second; if it takes longer,
 something is reaching the network.
 
 Do not read a pass from a pipeline: `pytest | tail` masks pytest's exit code, so an `&&`
@@ -590,11 +589,8 @@ python3 scripts/settings-merge.py --check
 
 - macOS only (depends on `afplay` and `say` commands, and `fcntl` for file locking)
 - `bark_hash()` must produce identical output in all files -- changing the hash function breaks all caches
-- `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/hobson.py` in the command (or the pre-0.3.0 `…/scripts/claudio.py`, plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word: matching "claudio" claimed the hooks of anyone whose home is `/Users/claudio`, and uninstall deleted them -- and Hobson is a surname too. Another, unrelated tool also ships a `claudio` command; its hooks and its `~/.local/bin/claudio` must never be touched, which is why every legacy cleanup checks for our `scripts/settings-merge.py` first
-- **The rename (claudio → Hobson, 0.3.0) must stay invisible to anyone who had claudio.** Do not remove, without a deliberate migration plan:
-  - `scripts/claudio.py`, a shim that runs `hobson.py`. Running sessions keep their hooks until restarted, and settings.json is rewritten only when the installer runs; `--check` (so `doctor`) reports hooks still on it as out of date
-  - `migrate_legacy_state()` in `home.py`: moves `claudio.json` (else `claude-bark.json`), `claudio.env`, `claudio.log` and `claudio-sessions/` to Hobson's names, only when the target is missing, and turns `personality: alfred` into `hobson`. The installer, the CLI and every hook but UserPromptSubmit call it; it is four `lstat`s once done
-  - `install-remote.sh` moves a checkout from `~/.local/share/claudio`; `uninstall.sh` treats that path as managed and cleans the old state names; the chatterbox lookup still finds `models/alfred-reference.*`
+- `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/hobson.py` in the command (plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word: a bare name claims the hooks of anyone whose home is named after it, and uninstall deletes them -- and Hobson is a surname. Every cleanup of an old link checks for our `scripts/settings-merge.py` first, so another tool's command is never touched
+- Legacy names: `migrate_legacy_state()` in `home.py` moves a `claude-bark.json` to `hobson.json`, only when the target is missing, and turns `personality: alfred` into `hobson`; the installer, the CLI and every hook but UserPromptSubmit call it, one `lstat` once done. The chatterbox lookup still finds `models/alfred-reference.*`
 - The `${CLAUDE_PLUGIN_ROOT}` variable in `hooks/hooks.json` is for future plugin mode; standalone install uses absolute paths via `settings-merge.py --install-dir`
 - Hook commands are `"<python>" "<install_dir>/scripts/hobson.py"`, the interpreter pinned by absolute path at install time: Claude Code runs hooks with its own `PATH`, which from the desktop app or an IDE can resolve `python3` to the Command Line Tools stub. The code must keep running on the stock macOS **Python 3.9** (CI runs the suite on it)
 - `settings-merge.py` writes to `$CLAUDE_CONFIG_DIR/settings.json` when that is set, writes *through* a symlinked settings file, and keeps its mode. It grants no permissions: the `Bash(say:*)` entry old installs added is only removed (on uninstall)

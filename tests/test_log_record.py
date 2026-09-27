@@ -12,23 +12,23 @@ import log_record
 
 _REAL_POPEN = subprocess.Popen  # the autouse no_audio fixture replaces it
 
-PLAYBACK = "[2026-09-22 16:23:14] [claudio] [pocket-tts] barked (daemon-live) -> \"I'm hitting a problem with logging analysis.\""
+PLAYBACK = "[2026-09-22 16:23:14] [webapp] [pocket-tts] barked (daemon-live) -> \"I'm hitting a problem with logging analysis.\""
 UNTAGGED = "[14:26:16] [kokoro-rt] barked (daemon-live) -> \"Oh look, it works. Don't touch it again.\""
 BARE = "[11:36:37] classify (qwen3.5:4b) -> no match (raw: 'done<end_of_turn')"
 NUDGE = "[2026-09-24 14:25:15] [web client app] [nudge] skipped — a nudge is already running for 'web client app'"
-TRACE = ("[2026-09-22 16:27:22] [claudio] gen[PreToolUse] 0.40s attempt=1/1 model=llama3.2:3b "
+TRACE = ("[2026-09-22 16:27:22] [webapp] gen[PreToolUse] 0.40s attempt=1/1 model=llama3.2:3b "
          "detail='Bash: git status --short -- scripts/ tests/ &&' raw=\"done | I'm running short "
          "scripts and tests.\" -> done  spoken=\"I'm running short scripts and tests.\"")
 FLUSH = ("[2026-09-25 17:22:47] [web client app] [pocket-tts] [PreToolUse] batch of 1 "
          "(llama3.2:3b, normal, worth=0.52) -> done -> \"I'm writing the stuck webcam capture issue report.\"")
-STOP = "[2026-09-22 16:29:09] [claudio] [pocket-tts] [Stop] (llama3.2:3b) -> done -> \"I've nailed down the Jev API shape.\""
+STOP = "[2026-09-22 16:29:09] [webapp] [pocket-tts] [Stop] (llama3.2:3b) -> done -> \"I've nailed down the Jev API shape.\""
 
 
 # ── The envelope ───────────────────────────────────────────────────────────
 
 def test_a_dated_engine_line():
     r = log_record.parse(PLAYBACK)
-    assert (r.date, r.time, r.project, r.engine) == ("2026-09-22", "16:23:14", "claudio", "pocket-tts")
+    assert (r.date, r.time, r.project, r.engine) == ("2026-09-22", "16:23:14", "webapp", "pocket-tts")
     assert r.body.startswith("barked (daemon-live)")
     assert r.stamp == "[2026-09-22 16:23:14]"
 
@@ -102,9 +102,9 @@ def test_a_message_with_line_breaks_is_one_record(claude_home):
 
 
 def test_lines_written_before_folding_are_folded_back_on_reading():
-    lines = ["[16:11:11] [claudio] [pocket-tts] [PreToolUse] queued (3 pending) Bash: set -e\n",
+    lines = ["[16:11:11] [webapp] [pocket-tts] [PreToolUse] queued (3 pending) Bash: set -e\n",
              "TMPHOME=$(mktemp -d)\n",
-             "[16:11:12] [claudio] silenced (muted)\n"]
+             "[16:11:12] [webapp] silenced (muted)\n"]
     records = list(log_record.records(lines))
     assert [r.body for r in records] == [
         "[PreToolUse] queued (3 pending) Bash: set -e TMPHOME=$(mktemp -d)", "silenced (muted)"]

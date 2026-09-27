@@ -18,15 +18,15 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
 CONFIG_FILE="$HOME/.claude/hobson.json"
 
-# Hobson was claudio until 0.3.0 (claude-bark before that): take over the
-# old config, key, log and sessions the first time the CLI runs without one.
-if [[ ! -f "$CONFIG_FILE" && ( -e "$HOME/.claude/claudio.json" || -e "$HOME/.claude/claude-bark.json" ) ]]; then
+# Hobson was claude-bark once: take over its config the first time the CLI
+# runs without one.
+if [[ ! -f "$CONFIG_FILE" && -e "$HOME/.claude/claude-bark.json" ]]; then
     python3 - "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null || true
 import sys
 sys.path.insert(0, sys.argv[1])
 from home import migrate_legacy_state
 for moved in migrate_legacy_state():
-    print(f"Moved ~/.claude/{moved} (claudio is now Hobson)")
+    print(f"Moved ~/.claude/{moved}")
 PY
 fi
 DAEMON_PID_FILE="$HOME/.claude/kokoro-daemon.pid"

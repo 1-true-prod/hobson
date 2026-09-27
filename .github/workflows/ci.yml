@@ -76,19 +76,12 @@ jobs:
           mkdir -p "$HOME/.claude"
           echo '{"hooks":{"Stop":[{"hooks":[{"type":"command","command":"echo other-tool"}]}]}}' \
             > "$HOME/.claude/settings.json"
-          # Someone who had claudio: its config and key, and another tool's
-          # `claudio` command, which must survive.
-          echo '{"personality": "alfred", "volume": 7}' > "$HOME/.claude/claudio.json"
-          echo 'OPENROUTER_API_KEY=sk-test' > "$HOME/.claude/claudio.env"
-          mkdir -p "$HOME/.local/bin"
-          printf '#!/bin/sh\necho other-claudio\n' > "$HOME/.local/bin/claudio"
-          chmod +x "$HOME/.local/bin/claudio"
+          # Someone who had claude-bark: its config comes across.
+          echo '{"personality": "alfred", "volume": 7}' > "$HOME/.claude/claude-bark.json"
           export HOBSON_REPO="file://$GITHUB_WORKSPACE" HOBSON_REF=ci-under-test
           bash < install-remote.sh
           python3 -c "import json,os; c=json.load(open(os.path.expanduser('~/.claude/hobson.json'))); assert c == {'personality': 'hobson', 'volume': 7}, c"
-          test ! -e "$HOME/.claude/claudio.json"
-          grep -q sk-test "$HOME/.claude/hobson.env"
-          test "$("$HOME/.local/bin/claudio")" = other-claudio
+          test ! -e "$HOME/.claude/claude-bark.json"
           python3 "$HOME/.local/share/hobson/scripts/settings-merge.py" --check
           grep -q other-tool "$HOME/.claude/settings.json"
           # A re-run is an update: settings kept, hooks already current.

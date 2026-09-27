@@ -16,8 +16,6 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_DIR="$HOME/.claude"
 CLI_SYMLINK="$HOME/.local/bin/hobson"
 MANAGED_DIR="${HOBSON_DIR:-$HOME/.local/share/hobson}"
-# A checkout `claudio update` kept updating in place still lives at the old path.
-[[ -z "${HOBSON_DIR:-}" && "$SCRIPT_DIR" == "$HOME/.local/share/claudio" ]] && MANAGED_DIR="$SCRIPT_DIR"
 
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
@@ -108,15 +106,6 @@ state=(
     "$CLAUDE_DIR/pocket-tts-daemon.log"
     "$CLAUDE_DIR/kokoro-playback.wav"
     "$CLAUDE_DIR/pocket-tts-playback.wav"
-    # Names from before 0.3.0, when Hobson was claudio
-    "$CLAUDE_DIR/claudio.json"
-    "$CLAUDE_DIR/claudio.muted"
-    "$CLAUDE_DIR/claudio.lock"
-    "$CLAUDE_DIR/claudio-commentary.lock"
-    "$CLAUDE_DIR"/claudio-nudge-*.lock
-    "$CLAUDE_DIR"/claudio-watchdog-*.lock
-    "$CLAUDE_DIR"/claudio-activity-*
-    "$CLAUDE_DIR"/claudio-alive-*
     # Legacy names from claude-bark installs
     "$CLAUDE_DIR/claude-bark.json"
     "$CLAUDE_DIR/voice-bark.muted"
@@ -131,12 +120,10 @@ for f in "${state[@]}"; do
         removed=$((removed + 1))
     fi
 done
-for dir in "$CLAUDE_DIR/hobson-sessions" "$CLAUDE_DIR/claudio-sessions"; do
-    if [[ -d "$dir" ]]; then
-        rm -rf "$dir"
-        removed=$((removed + 1))
-    fi
-done
+if [[ -d "$CLAUDE_DIR/hobson-sessions" ]]; then
+    rm -rf "$CLAUDE_DIR/hobson-sessions"
+    removed=$((removed + 1))
+fi
 ok "Removed config and state ($removed items)"
 
 # ── Optional: caches, venvs, log, key ────────────────────────────────
@@ -174,8 +161,8 @@ fi
 
 # ── CLI symlinks ─────────────────────────────────────────────────────
 
-for link in "$CLI_SYMLINK" "$HOME/.local/bin/claudio" "$HOME/.local/bin/claude-bark"; do
-    # Only links into a checkout of ours: another tool ships a `claudio` too.
+for link in "$CLI_SYMLINK" "$HOME/.local/bin/claude-bark"; do
+    # Only links into a checkout of ours, never another tool's command.
     if [[ -L "$link" && -f "$(dirname "$(readlink "$link")")/scripts/settings-merge.py" ]]; then
         rm -f "$link"
         ok "Removed $link"

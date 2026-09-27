@@ -86,8 +86,8 @@ def main():
     if hook_input.get("hook_event_name") in ("PreToolUse", "PermissionRequest"):
         _record_alive(hook_input)
 
-    # Four lstat calls once everything has moved; before that, the one time
-    # claudio's config, key, log and sessions are taken over as Hobson's.
+    # One lstat once everything has moved; before that, the one time a config
+    # under the old name is taken over as Hobson's.
     home.migrate_legacy_state()
     config = home.load_config()
     reason = home.silence_reason(config)

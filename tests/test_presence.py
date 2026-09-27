@@ -130,11 +130,11 @@ def test_decision_matrix(state, kind, expected):
 def test_route_holds_while_away_and_speaks_while_present(claude_home):
     cfg = _config(enabled=True)
     _state(claude_home, state="away", source="lock")
-    assert presence.route(cfg, "done", "I fixed the build.", project="claudio") is None
+    assert presence.route(cfg, "done", "I fixed the build.", project="webapp") is None
     _state(claude_home, state="present")
-    assert presence.route(cfg, "done", "I fixed the tests.", project="claudio") == "I fixed the tests."
+    assert presence.route(cfg, "done", "I fixed the tests.", project="webapp") == "I fixed the tests."
     assert [(i["project"], i["kind"], i["phrase"]) for i in presence.held()] == [
-        ("claudio", "done", "I fixed the build.")]
+        ("webapp", "done", "I fixed the build.")]
 
 
 def test_company_hears_a_wait_without_its_details(claude_home):
@@ -172,7 +172,7 @@ def test_the_salver_keeps_the_newest_and_forgets_the_old(claude_home):
 
 # ── The briefing ───────────────────────────────────────────────────────────
 
-def _item(kind, phrase, project="claudio", ts=None):
+def _item(kind, phrase, project="webapp", ts=None):
     return {"kind": kind, "phrase": phrase, "project": project, "ts": ts or time.time()}
 
 
@@ -186,26 +186,26 @@ def test_the_briefing_leads_with_what_waits_on_you():
         _item("waiting", "Careful — this one deletes files. It needs your approval.", "bank app", ts=2),
     ], [], "away")
     assert text == ("Welcome back. On bank app: Careful — this one deletes files. It needs your "
-                    "approval. On claudio: I finished the migration.")
+                    "approval. On webapp: I finished the migration.")
 
 
 def test_two_told_in_full_and_the_rest_counted():
     items = [_item("done", f"I finished part {n}.", ts=n + 1) for n in range(4)]
     text = presence.compose_briefing(items, [], "away")
-    assert text == ("Welcome back. On claudio: I finished part 0. I finished part 1. "
+    assert text == ("Welcome back. On webapp: I finished part 0. I finished part 1. "
                     "Plus 2 more updates.")
 
 
 def test_a_sessions_repeated_waits_collapse_to_the_latest():
     text = presence.compose_briefing([_item("waiting", "Claude needs you.", ts=1),
                                       _item("waiting", "Your call, sir.", ts=2)], [], "away")
-    assert text == "Welcome back. On claudio: Your call, sir."
+    assert text == "Welcome back. On webapp: Your call, sir."
 
 
 def test_a_session_still_waiting_is_named_once():
-    text = presence.compose_briefing([_item("waiting", "Your call.", "claudio")],
-                                     [("claudio", "answer"), ("site", "approval")], "away")
-    assert text == "Welcome back. On claudio: Your call. site is still waiting on your approval."
+    text = presence.compose_briefing([_item("waiting", "Your call.", "webapp")],
+                                     [("webapp", "answer"), ("site", "approval")], "away")
+    assert text == "Welcome back. On webapp: Your call. site is still waiting on your approval."
 
 
 @pytest.mark.parametrize("came_from,greeting", [
@@ -218,8 +218,8 @@ def test_the_greeting_fits_what_ended(came_from, greeting):
 
 def test_before_you_go_only_when_something_waits():
     assert presence.compose_departure([]) is None
-    assert presence.compose_departure([("claudio", "approval")]) == (
-        "Before you go — claudio is waiting on your approval.")
+    assert presence.compose_departure([("webapp", "approval")]) == (
+        "Before you go — webapp is waiting on your approval.")
     assert presence.compose_departure([("a", "you"), ("b", "answer")]) == (
         "Before you go — 2 sessions are waiting on you.")
 
@@ -233,28 +233,28 @@ def _session(project, **fields):
 
 
 def test_an_unanswered_question_waits(claude_home):
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
-    assert presence.waiting_on_you() == [("claudio", "answer")]
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
+    assert presence.waiting_on_you() == [("webapp", "answer")]
 
 
 def test_an_answered_question_does_not(claude_home):
     import nudge
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
-    with open(nudge.activity_path("claudio"), "w") as f:
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
+    with open(nudge.activity_path("webapp"), "w") as f:
         f.write(str(time.time()))
     assert presence.waiting_on_you() == []
 
 
 def test_a_fresh_permission_request_waits_and_an_old_one_does_not(claude_home):
     import nudge
-    _session("claudio", last_stop_time=time.time() - 900)
-    nudge.record_alive("claudio", {"hook_event_name": "PermissionRequest", "tool_name": "Bash"})
-    assert presence.waiting_on_you() == [("claudio", "approval")]
+    _session("webapp", last_stop_time=time.time() - 900)
+    nudge.record_alive("webapp", {"hook_event_name": "PermissionRequest", "tool_name": "Bash"})
+    assert presence.waiting_on_you() == [("webapp", "approval")]
     assert presence.waiting_on_you(now=time.time() + presence.PERMISSION_WAIT_SECONDS + 5) == []
 
 
 def test_a_finished_turn_is_not_waiting(claude_home):
-    _session("claudio", last_stop_category="done", last_stop_time=time.time() - 30)
+    _session("webapp", last_stop_category="done", last_stop_time=time.time() - 30)
     assert presence.waiting_on_you() == []
 
 
@@ -268,9 +268,9 @@ def spoken(monkeypatch):
 
 
 def test_coming_back_brings_one_briefing_and_empties_the_salver(claude_home, spoken):
-    presence.hold("claudio", "done", "I shipped the release.")
+    presence.hold("webapp", "done", "I shipped the release.")
     text = presence.on_transition("away", "present", "input", away_for=600, config=_config(enabled=True))
-    assert spoken == [text] == ["Welcome back. On claudio: I shipped the release."]
+    assert spoken == [text] == ["Welcome back. On webapp: I shipped the release."]
     assert presence.held() == []
 
 
@@ -314,9 +314,9 @@ def test_leaving_gets_a_farewell_at_most_every_few_minutes(claude_home, spoken):
 
 
 def test_what_waits_beats_a_farewell(claude_home, spoken):
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
     presence.on_transition("present", "away", "lock", config=_config(enabled=True))
-    assert spoken == ["Before you go — claudio is waiting on an answer from you."]
+    assert spoken == ["Before you go — webapp is waiting on an answer from you."]
 
 
 def test_without_greetings_leaving_says_nothing(claude_home, spoken):
@@ -333,29 +333,29 @@ def test_durations_are_said_as_people_say_them(seconds, said):
 
 
 def test_a_short_absence_does_not_repeat_what_still_waits(claude_home, spoken):
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
     presence.on_transition("away", "present", "input", away_for=10, config=_config(enabled=True))
     assert spoken == []
     presence.on_transition("away", "present", "input", away_for=600, config=_config(enabled=True))
-    assert spoken == ["Welcome back. claudio is still waiting on an answer from you."]
+    assert spoken == ["Welcome back. webapp is still waiting on an answer from you."]
 
 
 def test_muted_keeps_the_salver_for_later(claude_home, spoken):
-    presence.hold("claudio", "done", "I shipped it.")
+    presence.hold("webapp", "done", "I shipped it.")
     presence.on_transition("away", "present", "input", away_for=600,
                            config={**_config(enabled=True), "muted": True})
     assert spoken == [] and len(presence.held()) == 1
 
 
 def test_locking_the_screen_mentions_what_waits(claude_home, spoken):
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
     presence.on_transition("present", "away", "lock", config=_config(enabled=True))
-    assert spoken == ["Before you go — claudio is waiting on an answer from you."]
+    assert spoken == ["Before you go — webapp is waiting on an answer from you."]
 
 
 def test_leaving_seen_late_by_a_look_says_nothing(claude_home, spoken):
     """In auto mode a look notices you gone minutes after you left."""
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
     presence.on_transition("present", "away", "camera", config=_config(enabled=True, mode="auto"))
     assert spoken == []
     presence.on_transition("present", "away", "camera", config=_config(enabled=True, mode="continuous"))
@@ -514,21 +514,21 @@ def test_a_paused_nudge_resumes_when_you_are_back(claude_home, fast_nudge, monke
     states = iter(["away", "away", None])
     monkeypatch.setattr(fast_nudge, "_paused_for", lambda config: next(states))
     started = time.time()
-    assert fast_nudge._wait_for_return("claudio", started, started + 60) == "back"
+    assert fast_nudge._wait_for_return("webapp", started, started + 60) == "back"
 
 
 def test_typing_ends_a_paused_nudge(claude_home, fast_nudge, monkeypatch):
     monkeypatch.setattr(fast_nudge, "_paused_for", lambda config: "away")
     started = time.time() - 5
-    with open(fast_nudge.activity_path("claudio"), "w") as f:
+    with open(fast_nudge.activity_path("webapp"), "w") as f:
         f.write(str(time.time()))
-    assert fast_nudge._wait_for_return("claudio", started, started + 60) == "cancelled"
+    assert fast_nudge._wait_for_return("webapp", started, started + 60) == "cancelled"
 
 
 def test_a_paused_nudge_gives_up_at_its_ceiling(claude_home, fast_nudge, monkeypatch):
     monkeypatch.setattr(fast_nudge, "_paused_for", lambda config: "call")
     started = time.time()
-    assert fast_nudge._wait_for_return("claudio", started, started - 1) == "expired"
+    assert fast_nudge._wait_for_return("webapp", started, started - 1) == "expired"
 
 
 def test_a_held_watchdog_line_is_reported_as_held(claude_home, no_audio):
@@ -564,15 +564,15 @@ def test_a_wave_is_answered_with_a_hello_when_nothing_is_on(claude_home, spoken)
 
 
 def test_a_wave_brings_what_was_held(claude_home, spoken):
-    presence.hold("claudio", "done", "I shipped the release.")
-    assert presence.on_wave(config=_config(enabled=True)) == "Hello. On claudio: I shipped the release."
+    presence.hold("webapp", "done", "I shipped the release.")
+    assert presence.on_wave(config=_config(enabled=True)) == "Hello. On webapp: I shipped the release."
     assert presence.held() == []
 
 
 def test_a_wave_names_who_is_waiting(claude_home, spoken):
-    _session("claudio", last_stop_category="question", last_stop_time=time.time() - 30)
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
     assert presence.on_wave(config=_config(enabled=True)) == (
-        "Hello. claudio is still waiting on an answer from you.")
+        "Hello. webapp is still waiting on an answer from you.")
 
 
 def test_waving_on_gets_one_answer_every_few_seconds(claude_home, spoken):

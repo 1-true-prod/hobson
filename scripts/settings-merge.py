@@ -153,13 +153,10 @@ def backup_settings():
 
 
 # What marks a hook as Hobson's: its entrypoint, not the word. Matching any
-# command containing "claudio" (the old name) claimed the hooks of anyone
-# whose home is /Users/claudio -- install replaced them, uninstall deleted
-# them -- and Hobson is a surname too.
-# claudio.py is the entrypoint's name before 0.3.0: a hook still running it
-# is Hobson's (install replaces it, uninstall removes it), just out of date.
-_OUR_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\](?:hobson|claudio)\.py\b")
-_OLD_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\]claudio\.py\b")
+# command containing a bare name claims the hooks of anyone whose home is
+# named after it -- install replaces them, uninstall deletes them -- and
+# Hobson is a surname.
+_OUR_ENTRYPOINT = re.compile(r"[/\\]scripts[/\\]hobson\.py\b")
 _LEGACY_MARKERS = ("claude-bark", "voice-bark")  # names from before the rename
 
 
@@ -182,7 +179,7 @@ def merge_hooks(install_dir, python=DEFAULT_PYTHON):
     before = json.dumps(settings, sort_keys=True)
 
     if _drop_say_permission(settings):
-        print(f"  Removed permission {PERMISSION_ENTRY} (added by older claudio installs)")
+        print(f"  Removed permission {PERMISSION_ENTRY} (added by older installs)")
 
     # Merge hooks
     hooks = _hooks_of(settings)
@@ -299,9 +296,7 @@ def check_hooks():
             missing.append(event)
             continue
         found.append(event)
-        if [_shape(e) for e in ours] != [_shape(e) for e in expected_entries] \
-                or any(_OLD_ENTRYPOINT.search(h.get("command") or "")
-                       for e in ours for h in e.get("hooks") or [] if isinstance(h, dict)):
+        if [_shape(e) for e in ours] != [_shape(e) for e in expected_entries]:
             stale.append(event)
         for e in ours:
             for h in e.get("hooks") or []:

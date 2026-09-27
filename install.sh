@@ -278,14 +278,14 @@ echo ""
 # Re-running the installer is how hobson updates, so an existing config is
 # kept by default and only the hooks are refreshed.
 
-# Hobson was claudio until 0.3.0: take over its config, API key, log and
-# session history before looking for an existing install.
-"$PYTHON" - "$SCRIPT_DIR/scripts" <<'PY' || warn "Could not move claudio's settings over; see ~/.claude"
+# Hobson was claude-bark once: take over its config before looking for an
+# existing install.
+"$PYTHON" - "$SCRIPT_DIR/scripts" <<'PY' || warn "Could not move the old settings over; see ~/.claude"
 import sys
 sys.path.insert(0, sys.argv[1])
 from home import migrate_legacy_state
 for moved in migrate_legacy_state():
-    print(f"  Moved ~/.claude/{moved} (claudio is now Hobson)")
+    print(f"  Moved ~/.claude/{moved}")
 PY
 
 KEEP_CONFIG=false
@@ -615,12 +615,6 @@ else
 fi
 # Clean up old symlink from previous installs
 [[ -L "$BIN_DIR/claude-bark" ]] && rm -f "$BIN_DIR/claude-bark"
-# The command was `claudio` until 0.3.0. Remove that link only when it points
-# into a checkout of ours: another tool also ships a `claudio` command.
-if [[ -L "$BIN_DIR/claudio" && -f "$(dirname "$(readlink "$BIN_DIR/claudio")")/scripts/settings-merge.py" ]]; then
-    rm -f "$BIN_DIR/claudio"
-    ok "The command is now 'hobson' (removed the old 'claudio' link)"
-fi
 
 # ── Presence sensor ──────────────────────────────────────────────────
 #
