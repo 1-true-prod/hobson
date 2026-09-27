@@ -1,7 +1,7 @@
 {
   "name": "snarky-dev",
   "display_name": "Snarky Dev",
-  "description": "A jaded senior developer who's seen it all. Dry, sarcastic, secretly helpful.",
+  "description": "A jaded senior developer. Dry, and secretly helpful.",
   "say_voice": "Alex",
   "templates": {
     "categories": {

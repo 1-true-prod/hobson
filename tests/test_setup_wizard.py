@@ -444,13 +444,29 @@ def test_every_picture_art_js_shows_is_served(server):
     # just stays black.
     wiz, port = server
     with open(os.path.join(home.ROOT, "setup", "ui", "art.js"), encoding="utf-8") as f:
-        stills = re.findall(r'still\("([^"]+)"\)', f.read())
-    assert len(stills) == 4
+        stills = re.findall(r'still\("([^"]+)"', f.read())
+    assert len(stills) == 7
     for path in stills:
         status, body = call(port, "/" + path)
         assert status == 200 and body.startswith(b"\x89PNG"), path
     assert call(port, "/art.js")[0] == 200
     assert call(port, "/art/LICENSES.md")[0] == 404
+
+
+def test_the_display_font_is_served_and_credited(server):
+    # Bundled so the page fetches nothing; refused, the titles fall back to
+    # a system face and nobody is told.
+    wiz, port = server
+    with open(os.path.join(home.ROOT, "setup", "ui", "wizard.css"), encoding="utf-8") as f:
+        fonts = re.findall(r'url\("([^"]+\.woff2)"\)', f.read())
+    assert fonts
+    for path in fonts:
+        status, body = call(port, "/" + path)
+        assert status == 200 and body.startswith(b"wOF2"), path
+    with open(os.path.join(home.ROOT, "setup", "ui", "fonts", "LICENSES.md"), encoding="utf-8") as f:
+        credits = f.read()
+    assert all(f"`{os.path.basename(p)}`" in credits for p in fonts)
+    assert call(port, "/fonts/OFL.md")[0] == 404
 
 
 def test_every_picture_is_credited():

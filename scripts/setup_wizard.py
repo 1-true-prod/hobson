@@ -74,13 +74,13 @@ PRESENCE_MODES = ("signals", "auto", "continuous", "off")
 # typed in (MODEL_NAME). Disk sizes are what `ollama list` reports.
 MODELS = (
     {"id": "llama3.2:3b", "disk_gb": 2.0, "default": True,
-     "note": "What Hobson is tuned on: reads a turn well and speaks naturally as himself. Light enough for any recent Mac."},
+     "note": "The model Hobson is tuned on. Reads a turn well and runs on any recent Mac."},
     {"id": "gemma4:e4b", "disk_gb": 9.6,
-     "note": "The best at telling done from broken from a question, but a 9.6 GB download and heavier to run."},
+     "note": "Best at telling a finish from a failure. A 9.6 GB download, heavier to run."},
     {"id": "qwen3.5:4b", "disk_gb": 3.4,
-     "note": "Apache-2.0 licensed, but more likely to miss a question for you, and often narrates instead of speaking as Hobson."},
+     "note": "Apache-2.0 licensed. Misses more questions, and often narrates."},
     {"id": "llama3.2:1b", "disk_gb": 1.3, "untested": True,
-     "note": "The smallest and quickest, for a Mac short on memory. Not measured with Hobson: expect more misreads."},
+     "note": "Smallest and quickest, for a Mac short on memory. Expect more misreads."},
 )
 DEFAULT_MODEL = home.DEFAULT_CONFIG["ollama"]["model"]
 
@@ -120,7 +120,8 @@ HELLO = "Good day. Hobson, at your service."
 IDLE_EXIT_SECONDS = 1800
 MAX_BODY = 64 * 1024
 STATIC = {"index.html", "wizard.css", "wizard.js", "city.js", "art.js", "lines.json", "voice/manifest.json",
-          "art/voice.png", "art/brain.png", "art/jev.png", "art/phone.png"}
+          "art/broca.png", "art/reflex.png", "art/cortex.png", "art/striatum.png", "art/vision.png",
+          "art/cerebellum.png", "art/hippocampus.png", "fonts/league-gothic.woff2"}
 CLIP = re.compile(r"^voice/[0-9a-f]{16}\.m4a$")
 # Any name Ollama accepts: library (mistral:7b), namespaced (user/model) or
 # Hugging Face (hf.co/user/repo:Q4_K_M). It only ever goes to Ollama's API,
@@ -168,43 +169,43 @@ def recommend(facts):
     if ollama["installed"] or facts["brew"]:
         model = recommend_model(ram, disk, ollama["models"])
     if model is None:
-        why["model"] = ("no Ollama, and no Homebrew to install it" if not (ollama["installed"] or facts["brew"])
-                        else f"{disk:g} GB free: too little for a model")
+        why["model"] = ("No Ollama, and no Homebrew to install it." if not (ollama["installed"] or facts["brew"])
+                        else f"Only {disk:g} GB free, too little for a model.")
     elif installed(model, ollama["models"]):
-        why["model"] = "already on this Mac"
+        why["model"] = "Already on this Mac."
     elif not ollama["installed"]:
-        why["model"] = f"installs Ollama with Homebrew, then pulls {model}"
+        why["model"] = f"Installs Ollama with Homebrew, then pulls {model}."
     elif model == DEFAULT_MODEL:
-        why["model"] = f"the tested default; fits {ram:g} GB with room to spare"
+        why["model"] = f"The tested default. Fits {ram:g} GB easily."
     else:
-        why["model"] = f"{ram:g} GB of memory: the smallest model"
+        why["model"] = "The smallest model, to fit this Mac."
 
     # Never pocket-tts: it is the heavier, experimental engine (about 1 GB
     # with PyTorch, a slow first load), a choice for Custom to make.
     if facts["uv"] and model and disk >= 1.0:
         engine = "kokoro-realtime"
-        why["engine"] = "uv is here, so about 340 MB buys a natural voice"
+        why["engine"] = "A natural voice for about 340 MB."
     else:
         engine = "say"
-        why["engine"] = ("the built-in voice: Kokoro needs uv, which Custom can install" if not facts["uv"]
-                         else "the built-in voice: Kokoro's phrases need a brain")
+        why["engine"] = ("The built-in voice. Kokoro needs uv, which Custom can install." if not facts["uv"]
+                         else "The built-in voice. Kokoro needs a brain.")
 
     camera = facts["presence"]["camera"]
     sensor = facts["presence"]["built"] or facts["presence"]["swiftc"]
     if not sensor:
-        mode, why["presence"] = "signals", "no sensor without the Command Line Tools"
+        mode, why["presence"] = "signals", "Signals only. The sensor needs the Command Line Tools."
     elif camera in ("denied", "restricted"):
-        mode, why["presence"] = "signals", "the camera is denied: keyboard, lock and calls"
+        mode, why["presence"] = "signals", "Signals only. The camera is denied."
     elif camera == "authorized":
-        mode, why["presence"] = "auto", "the camera is already allowed; one glance, only before speaking"
+        mode, why["presence"] = "auto", "One look before speaking. The camera is already allowed."
     else:
-        mode, why["presence"] = "auto", "one glance, only before speaking; macOS asks for the camera at the last step"
+        mode, why["presence"] = "auto", "One look before speaking. macOS asks for the camera at the end."
 
     devices = facts["phone"]["devices"]
-    why["phone"] = ("a phone is connected: set it up in Custom (it needs a flip test)" if devices
-                    else "no Android phone seen over adb")
-    why["personality"] = "courteous, precise, faintly synthetic"
-    why["events"] = "finishes, approvals and waits; no running commentary"
+    why["phone"] = ("A phone is connected. Set it up in Custom." if devices
+                    else "No Android phone found.")
+    why["personality"] = "The butler, as designed."
+    why["events"] = "Finishes, approvals and waits. No commentary."
 
     return {
         "engine": engine,
@@ -384,30 +385,30 @@ def tasks_for(answers, facts, key_pending):
     ready = {e["id"]: e["ready"] for e in facts["engines"]}
     if engine == "kokoro-realtime" and not ready.get(engine):
         if not facts["uv"]:
-            tasks.append({"id": "uv", "label": "Install uv", "detail": "astral.sh's installer, into ~/.local/bin"})
-        tasks.append({"id": "kokoro", "label": "Install Kokoro", "detail": "a venv with kokoro-onnx, then 120 MB of model and voices: about 340 MB"})
+            tasks.append({"id": "uv", "label": "Install uv", "detail": "From astral.sh, into ~/.local/bin"})
+        tasks.append({"id": "kokoro", "label": "Install Kokoro", "detail": "About 340 MB, with the model and voices"})
     if engine == "pocket-tts" and not ready.get(engine):
         if not facts["uv"]:
-            tasks.append({"id": "uv", "label": "Install uv", "detail": "astral.sh's installer, into ~/.local/bin"})
+            tasks.append({"id": "uv", "label": "Install uv", "detail": "From astral.sh, into ~/.local/bin"})
         tasks.append({"id": "pocket", "label": "Install Pocket TTS",
-                      "detail": "a venv with PyTorch, then 240 MB of weights: about 1 GB"})
+                      "detail": "About 1 GB, with PyTorch and the weights"})
     if engine == "chatterbox" and not ready.get(engine):
         tasks.append({"id": "chatterbox", "label": "Chatterbox: finish by hand",
-                      "detail": "hobson setup chatterbox: a voice sample, then about two hours of phrases"})
+                      "detail": "Run hobson setup chatterbox later, with a voice sample"})
     model = answers.get("model")
     if model and model != "none":
         if not facts["ollama"]["installed"]:
             tasks.append({"id": "ollama", "label": "Install Ollama",
                           "detail": "brew install ollama, then start it" if facts["brew"]
-                          else "no Homebrew: get it from ollama.com"})
+                          else "No Homebrew. Get it from ollama.com"})
         if not installed(model, facts["ollama"]["models"]):
             size = next((m["disk_gb"] for m in MODELS if m["id"] == model), None)
             source = "Hugging Face" if model.startswith("hf.co/") else "ollama.com"
             tasks.append({"id": "pull", "label": f"Pull {model}",
-                          "detail": f"{size:g} GB from {source}" if size else f"from {source}; its size shows once it starts"})
+                          "detail": f"{size:g} GB from {source}" if size else f"From {source}. Its size shows once it starts"})
     mode = answers.get("presence")
     if mode and mode != "off" and not facts["presence"]["built"] and facts["presence"]["swiftc"]:
-        tasks.append({"id": "sensor", "label": "Build the presence sensor", "detail": "swiftc, a few seconds"})
+        tasks.append({"id": "sensor", "label": "Build the presence sensor", "detail": "A few seconds"})
     if mode in ("auto", "continuous") and facts["presence"]["camera"] in ("not-determined", ""):
         tasks.append({"id": "camera", "label": "Ask macOS for the camera", "detail": "a dialog from Hobson Presence"})
     if key_pending:
@@ -761,9 +762,9 @@ class Wizard:
         desired = desired_settings(answers, self.jev_verified, devices)
         new_config, changes = apply_settings(read_user_config(), desired)
         writes = [{"key": c["key"], "value": c["value"]} if c["op"] == "set"
-                  else {"key": c["key"], "value": "back to its default", "note": True} for c in changes]
+                  else {"key": c["key"], "value": "reset to default", "note": True} for c in changes]
         if answers.get("decider") == "jev" and not self.jev_verified:
-            writes.append({"key": "decider.backend", "value": "stays local: no key passed", "note": True})
+            writes.append({"key": "decider.backend", "value": "stays local, no verified key", "note": True})
         return {"writes": writes, "defaults_kept": defaults_kept(new_config),
                 "secrets": ["OPENROUTER_API_KEY → ~/.claude/hobson.env"] if self.key_pending(answers) else [],
                 "tasks": tasks_for(answers, facts, self.key_pending(answers))}
@@ -983,7 +984,9 @@ def make_handler(wizard):
                     data = f.read()
             except OSError:
                 return self.send_json(404, {"error": "not found"})
-            ctype = "audio/mp4" if name.endswith(".m4a") else mimetypes.guess_type(name)[0] or "application/octet-stream"
+            # Named here: neither is in every Python's own table.
+            ctype = ("audio/mp4" if name.endswith(".m4a") else "font/woff2" if name.endswith(".woff2")
+                     else mimetypes.guess_type(name)[0] or "application/octet-stream")
             if ctype.startswith("text/") or ctype.endswith("javascript"):
                 ctype += "; charset=utf-8"
             self.send_body(200, data, ctype)

@@ -3,9 +3,14 @@
 // own perspective projection, 30 frames a second, paused when hidden.
 //
 //   City.mode("warp" | "cruise" | "idle")   how fast the flight goes
-//   City.tint("#19e6ff")                    the colour that leads the palette
+//   City.tint("#19e6ff")                    one colour and its dim tone, at once
+//   City.tint(null, { full: true })         every colour: the hero and the finale
 //   City.burst()                            a moment of colour cycling
+//
+// TINTS is the one list of module colours; art.js and wizard.js read it.
 "use strict";
+
+window.TINTS = { voice: "#19e6ff", events: "#39ff88", brain: "#8c6bff", jev: "#ffc640", presence: "#ff2bd6", phone: "#19e6ff", commit: "#39ff88", loadout: "#19e6ff" };
 
 (function () {
   const canvas = document.getElementById("city");
@@ -17,6 +22,15 @@
   let W = 0, H = 0, DPR = 1, F = 0, HORIZON = 0;
   let speed = 420, target = 420;
   let lead = "#19e6ff";
+  let full = true;
+  const rgb = (c) => [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)).join(",");
+  // One screen, one light: the lead colour, or its dim tone.
+  const hue = () => (full ? (Math.random() < 0.4 ? lead : PALETTE[(Math.random() * PALETTE.length) | 0]) : Math.random() < 0.6 ? lead : dim);
+  let dim = lead;
+  function dimOf(c) {
+    const v = [1, 3, 5].map((i) => Math.round(parseInt(c.slice(i, i + 2), 16) * 0.55));
+    return "#" + v.map((x) => x.toString(16).padStart(2, "0")).join("");
+  }
   let towers = [];
   let packets = [];
   let t = 0;
@@ -32,15 +46,14 @@
     const x = side * (STREET + rand(0, 620)) + (side < 0 ? -w : 0);
     const tall = Math.random() < 0.18;
     const h = tall ? rand(520, 1100) : rand(90, 460);
-    const c = Math.random() < 0.4 ? lead : PALETTE[(Math.random() * PALETTE.length) | 0];
-    return { x, z, w, d, h, c, glyphs: Math.random() < 0.38, seed: Math.random() * 1000, floor: rand(22, 34) };
+    return { x, z, w, d, h, c: hue(), glyphs: Math.random() < 0.38, seed: Math.random() * 1000, floor: rand(22, 34) };
   }
 
   function reset() {
     towers = [];
     for (let i = 0; i < 64; i++) towers.push(spawn(rand(40, FAR)));
     packets = [];
-    for (let i = 0; i < 26; i++) packets.push({ x: (Math.random() < 0.5 ? -1 : 1) * rand(0, STREET - 10), z: rand(0, FAR), c: PALETTE[i % 3] });
+    for (let i = 0; i < 26; i++) packets.push({ x: (Math.random() < 0.5 ? -1 : 1) * rand(0, STREET - 10), z: rand(0, FAR), c: full ? PALETTE[i % 3] : lead });
   }
 
   function resize() {
@@ -72,7 +85,7 @@
       const x = i * 70;
       const a = 0.16 - Math.abs(i) * 0.008;
       if (a <= 0) continue;
-      ctx.strokeStyle = `rgba(25,230,255,${a})`;
+      ctx.strokeStyle = `rgba(${full ? "25,230,255" : rgb(lead)},${a})`;
       ctx.beginPath();
       ctx.moveTo(px(x, 30), py(0, 30));
       ctx.lineTo(px(x, FAR), py(0, FAR));
@@ -84,7 +97,7 @@
     for (let z = step - off; z < FAR; z += step) {
       if (z < 30) continue;
       const a = 0.14 * alphaFor(z);
-      ctx.strokeStyle = `rgba(255,43,214,${a})`;
+      ctx.strokeStyle = `rgba(${full ? "255,43,214" : rgb(dim)},${a})`;
       ctx.beginPath();
       ctx.moveTo(px(-900, z), py(0, z));
       ctx.lineTo(px(900, z), py(0, z));
@@ -224,7 +237,7 @@
     // Sky: a faint glow at the horizon.
     const g = ctx.createLinearGradient(0, HORIZON - H * 0.3, 0, HORIZON + 30);
     g.addColorStop(0, "rgba(0,0,0,0)");
-    g.addColorStop(1, "rgba(140,107,255,0.10)");
+    g.addColorStop(1, `rgba(${full ? "140,107,255" : rgb(lead)},0.10)`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, W, HORIZON + 30);
 
@@ -235,7 +248,15 @@
 
   window.City = {
     mode(m) { target = m === "warp" ? 1500 : m === "idle" ? 90 : 300; },
-    tint(c) { lead = c; },
+    // Recoloured on the spot: waiting for towers to respawn left the old
+    // colours on screen for most of a module.
+    tint(c, opts) {
+      full = !!(opts && opts.full);
+      if (c) lead = c;
+      dim = dimOf(lead);
+      for (const b of towers) b.c = hue();
+      packets.forEach((p, i) => { p.c = full ? PALETTE[i % 3] : lead; });
+    },
     burst() {
       document.body.classList.remove("hack");
       void document.body.offsetWidth;

@@ -91,42 +91,44 @@ const Sfx = {
 
 // ── Copy ────────────────────────────────────────────────────────────────
 
+// Each module is the part of the brain that does its job, and its picture
+// is that part (art.js).
 const MODULES = [
-  { id: "voice", n: "01", title: "VOICE" },
-  { id: "events", n: "02", title: "EVENTS" },
-  { id: "brain", n: "03", title: "BRAIN" },
-  { id: "jev", n: "04", title: "DECIDER" },
-  { id: "presence", n: "05", title: "PRESENCE" },
-  { id: "phone", n: "06", title: "PHONE" },
-  { id: "commit", n: "07", title: "COMMIT" },
+  { id: "voice", n: "01", title: "VOICE", region: "Broca's area" },
+  { id: "events", n: "02", title: "EVENTS", region: "reflex arc" },
+  { id: "brain", n: "03", title: "BRAIN", region: "cortex" },
+  { id: "jev", n: "04", title: "DECIDER", region: "striatum" },
+  { id: "presence", n: "05", title: "PRESENCE", region: "visual pathway" },
+  { id: "phone", n: "06", title: "PHONE", region: "cerebellum" },
+  { id: "commit", n: "07", title: "COMMIT", region: "hippocampus" },
 ];
 
 const ENGINES = {
-  "say": { name: "SAY", desc: "The voice built into macOS. Instant, nothing to download, a little robotic.", q: 2, size: "0 MB", how: "instant, built into macOS" },
-  "kokoro-realtime": { name: "KOKORO", desc: "A small neural voice running on this Mac. Each phrase is written live by the brain, so it fits what just happened.", q: 4, size: "~340 MB", how: "live, written by the brain" },
-  "pocket-tts": { name: "POCKET", desc: "Kyutai's Pocket TTS on this Mac: a warmer neural voice, written live by the brain. Heavier, and slow to wake after a quiet spell.", q: 5, size: "~1 GB", how: "live, warmer, slow to wake" },
-  "chatterbox": { name: "CHATTERBOX", desc: "Clones any voice from a 10-second sample. Speaks a pre-generated set of fixed phrases. Heavy; a GPU helps.", q: 5, size: "~2 GB", how: "fixed phrases, cloned voice" },
+  "say": { name: "SAY", desc: "Built into macOS. Instant, nothing to download, a bit robotic.", q: 2, size: "0 MB", how: "instant, built into macOS" },
+  "kokoro-realtime": { name: "KOKORO", desc: "A neural voice on this Mac. Each phrase is written live for what just happened.", q: 4, size: "~340 MB", how: "live, written by the brain" },
+  "pocket-tts": { name: "POCKET", desc: "Kyutai's Pocket TTS. Warmer than Kokoro, heavier, and slow to wake after a pause.", q: 5, size: "~1 GB", how: "live, warmer, slow to wake" },
+  "chatterbox": { name: "CHATTERBOX", desc: "Clones a voice from a 10-second sample, and speaks a fixed set of phrases.", q: 5, size: "~2 GB", how: "fixed phrases, cloned voice" },
 };
 
 const EVENTS = [
-  ["stop", "FINISHED", "When Claude ends a turn: done, broken, or asking you something."],
-  ["permission", "PERMISSION", "When Claude needs your approval. A destructive command gets a warning."],
-  ["notification", "WAITING", "When Claude is waiting on you, with a few gentle reminders if you don't come back."],
-  ["commentary", "COMMENTARY", "A running word on what Claude is doing, batched so it isn't every tool call."],
+  ["stop", "FINISHED", "When Claude finishes a turn, fails, or asks you something."],
+  ["permission", "PERMISSION", "When Claude needs your approval."],
+  ["notification", "WAITING", "When Claude is waiting on you, with a few reminders."],
+  ["commentary", "COMMENTARY", "A word now and then on what Claude is doing."],
 ];
 
 const VERBOSITY = {
-  terse: "only the notable moments",
-  normal: "meaningful actions; skips pure noise",
-  chatty: "a fixed line per tool call; no brain needed",
-  anomaly: "only the surprising: repeats and first-time touches",
+  terse: "Only the notable moments.",
+  normal: "Meaningful actions only.",
+  chatty: "A fixed line per tool call.",
+  anomaly: "Only the surprises, like repeats and first touches.",
 };
 
 const PRESENCE = {
-  signals: { name: "SIGNALS", desc: "Keyboard, screen lock, display sleep and calls. Never the camera.", eye: "shut" },
-  auto: { name: "AUTO", desc: "Signals, plus one 2-second look through the camera, only before speaking to an idle desk.", eye: "auto" },
-  continuous: { name: "CONTINUOUS", desc: "A frame a second: notices you leave within seconds, sees company, answers a wave.", eye: "cont" },
-  off: { name: "OFF", desc: "No sensing at all. Hobson speaks whether or not anyone is there.", eye: "shut" },
+  signals: { name: "SIGNALS", desc: "Keyboard, screen lock, display sleep and calls. No camera." },
+  auto: { name: "AUTO", desc: "A two-second camera look before speaking." },
+  continuous: { name: "CONTINUOUS", desc: "A frame a second. Notices when you leave and when you return. Try waving!" },
+  off: { name: "OFF", desc: "No sensing. Hobson speaks whether anyone is there or not." },
 };
 
 const LOGO = (() => {
@@ -196,20 +198,17 @@ const MODEL_NAME = /^[A-Za-z0-9][A-Za-z0-9._:\/@+-]{0,199}$/;
 const inCatalogue = (id) => S.probe.models.some((m) => m.id === id || m.id + ":latest" === id);
 const fmtGB = (g) => (g >= 1 ? `${g.toFixed(1)} GB` : `${Math.round(g * 1024)} MB`);
 
-function eye(kind) {
-  return `<div class="eye ${kind}"><svg viewBox="0 0 54 30">
-    <path class="lid" d="M2 15 Q27 -6 52 15 Q27 36 2 15 Z"/>
-    ${kind === "shut" ? '<path class="lid" d="M2 15 Q27 26 52 15"/>' : '<circle class="pupil" cx="27" cy="15" r="6"/>'}
-    ${kind === "cont" ? '<line class="sweep" x1="27" y1="15" x2="27" y2="-6"/>' : ""}
-  </svg></div>`;
-}
+function log(msg) { console.debug(`[setup] ${msg}`); }
 
-let tickerLines = [];
-function log(msg) {
-  tickerLines.push(msg);
-  tickerLines = tickerLines.slice(-5);
-  const t = $("#ticker");
-  if (t) t.textContent = tickerLines.join("  ·  ");
+// One light per screen: the module's colour leads the page and the city.
+// The hero and the finale have no module, so they get every colour.
+function tint(screen) {
+  const c = TINTS[screen] || (screen === "final" ? TINTS.commit : TINTS.voice);
+  const root = document.documentElement.style;
+  root.setProperty("--tint", c);
+  root.setProperty("--tint-rgb", [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)).join(", "));
+  if (TINTS[screen]) City.tint(c);
+  else City.tint(null, { full: true });
 }
 
 function toast(text) {
@@ -274,21 +273,27 @@ const Voice = {
 // ── Top bar, rail ───────────────────────────────────────────────────────
 
 function paintTop() {
-  const p = S.probe;
-  if (p) $("#t-node").textContent = p.host;
   $("#t-sfx").textContent = Sfx.on ? "[M] BLIPS ON" : "[M] BLIPS OFF";
   $("#t-voice").textContent = Voice.on ? "[V] VOICE ON" : "[V] VOICE OFF";
 }
 
+// Three states: current (inverse video), done (■), still to come (dim).
+// Express has settled every module but the Decider; Update keeps the rest.
 function moduleState(id) {
-  if (S.screen === id) return ["on", ">>"];
-  if (S.flow === "express" && id !== "commit") {
-    if (id === "jev") return S.a.decider ? ["done", "SET"] : ["", "ASK"];
-    return ["done", "AUTO"];
-  }
-  if (S.flow === "update" && !S.route.includes(id)) return ["skip", "KEPT"];
-  if (S.visited.has(id)) return ["done", "[OK]"];
-  return ["", "--"];
+  if (S.screen === id) return ["on", ""];
+  const settled = S.flow === "express" ? id !== "commit" && (id !== "jev" || S.a.decider)
+    : S.flow === "update" ? !S.route.includes(id) : false;
+  return settled || S.visited.has(id) ? ["done", "■"] : ["", ""];
+}
+
+// Only the keys that do something on this screen.
+function paintKeys() {
+  const k = (key, what) => `<span><kbd>${key}</kbd>${what}</span>`;
+  const keys = [k("↑↓←→", "MOVE"), k("⏎", "SELECT")];
+  if (S.screen === "events") keys.push(k("SPACE", "TOGGLE"));
+  if (S.screen !== "boot" && S.screen !== "final") keys.push(k("ESC", "BACK"));
+  if (S.screen === "voice") keys.push(k("P", "PREVIEW"));
+  $("#keys").innerHTML = keys.join("");
 }
 
 function paintRail() {
@@ -298,14 +303,9 @@ function paintRail() {
     const locked = S.run && !S.run.done ? " locked" : "";
     return `<div class="mod ${cls}${locked}" data-rail="${m.id}"><span class="n">${m.n}</span><span>${m.title}</span><span class="st">${st}</span></div>`;
   }).join("");
-  const p = S.probe;
   rail.innerHTML = `<div class="rail-h">MODULES</div>${items}
-    <div class="mon-slot"></div>
-    <div class="rail-foot">
-      <div>${S.flow ? S.flow.toUpperCase() + " MODE" : ""}${p ? ` · ${p.disk_free_gb} GB free` : ""}</div>
-      <div>nothing is written or installed until the last step, COMMIT</div>
-    </div>`;
-  Art.mount($(".mon-slot", rail), S.screen);
+    <div class="rail-foot">Nothing is written until COMMIT.</div>`;
+  paintKeys();
 }
 
 // ── Screens ─────────────────────────────────────────────────────────────
@@ -338,33 +338,33 @@ SCREENS.voice = () => {
     const sel = S.a.personality === p.id ? " sel" : "";
     return `<button class="opt chip fx${sel}" data-act="personality" data-arg="${p.id}" data-group="personality">
       <div class="name">${esc(p.name.toUpperCase())}</div>
-      <div class="desc">${esc(p.desc)}</div>
+      <div class="desc">“${esc(p.sample)}”</div>
       <div class="play">▶ P to preview</div>
     </button>`;
   }).join("");
   const kokoroNote = (S.a.engine === "kokoro-realtime" || S.a.engine === "pocket-tts") && !S.probe.uv
-    ? `<div class="readout warn">${ENGINES[S.a.engine].name} needs uv, a Python package manager. The last step installs it from astral.sh.</div>` : "";
+    ? `<div class="readout warn">${ENGINES[S.a.engine].name} needs uv, a Python package manager</div>` : "";
   const voices = (S.probe.voices || {})[S.a.engine] || [];
   const ex = S.probe.existing;
   const yours = ex && ex.voice_custom && ex.engine === S.a.engine
     ? `<button class="opt chip fx${!S.a.voice ? " sel" : ""}" data-act="voice" data-arg="" data-group="voice">
-        <div class="name">YOURS</div><div class="desc">${esc(ex.voice_custom)}: the voice you set up yourself. Kept as it is.</div>
+        <div class="name">YOURS</div><div class="desc">${esc(ex.voice_custom)}. Your own voice, kept as it is.</div>
         <div class="play">${tag("CURRENT", "cy")}</div></button>` : "";
-  const voicePicker = voices.length ? `<h2 class="sec">VOICE <span class="hint">each one plays a recording: nothing downloads until the last step</span></h2>
+  const voicePicker = voices.length ? `<h2 class="sec">VOICE <span class="hint">click to hear a sample</span></h2>
     <div class="chips">${yours}${voices.map((v, i) => {
       const sel = S.a.voice === v.id || (!S.a.voice && !yours && i === 0) ? " sel" : "";
       return `<button class="opt chip fx${sel}" data-act="voice" data-arg="${v.id}" data-group="voice">
         <div class="name">${esc(v.name.toUpperCase())}</div>
         <div class="desc">${esc(v.accent)} ${esc(v.sex)}${i === 0 ? ", the default" : ""}</div>
-        <div class="play">▶ plays a recording</div></button>`;
+        <div class="play">▶ sample</div></button>`;
     }).join("")}</div>` : "";
   const cbNote = S.a.engine === "chatterbox"
-    ? `<div class="readout warn">Chatterbox needs a 10–30 second voice sample to clone, and about two hours on Apple silicon to make its phrases. Setup saves the choice; <b>hobson setup chatterbox</b> does the rest when you're ready. Until then I use the built-in voice.</div>` : "";
+    ? `<div class="readout warn">Chatterbox needs a 10–30 second voice sample. Run <b>hobson setup chatterbox</b> when you are ready. The built-in voice speaks until then.</div>` : "";
   return {
     path: "01 :: VOICE",
     say: L("screen.voice"),
-    body: `<h2 class="sec">ENGINE <span class="hint">picking one downloads nothing: the last step installs it</span></h2>${cards}${kokoroNote}${cbNote}${voicePicker}
-      <h2 class="sec">PERSONALITY <span class="hint">what I say, whichever voice says it</span></h2><div class="chips">${chips}</div>`,
+    body: `<h2 class="sec">ENGINE</h2>${cards}${kokoroNote}${cbNote}${voicePicker}
+      <h2 class="sec">PERSONALITY</h2><div class="chips">${chips}</div>`,
     foot: footNav(),
   };
 };
@@ -390,7 +390,7 @@ SCREENS.events = () => {
     path: "02 :: EVENTS",
     say: L("screen.events"),
     body: `<h2 class="sec">SPEAK WHEN <span class="hint">space to toggle</span></h2>${rows}${verb}`,
-    foot: footNav({ disabled: !S.a.events.length, note: S.a.events.length ? "" : "pick at least one" }),
+    foot: footNav({ disabled: !S.a.events.length, note: S.a.events.length ? "" : "Pick at least one." }),
   };
 };
 
@@ -399,12 +399,12 @@ SCREENS.brain = () => {
   let status;
   if (!o.installed) {
     status = S.probe.brew
-      ? `<div class="readout warn">OLLAMA NOT INSTALLED · the last step installs it with Homebrew and starts it.</div>`
-      : `<div class="readout bad">OLLAMA NOT INSTALLED · and no Homebrew to install it with. Get it from ollama.com, then run <b>hobson setup</b> again.</div>`;
+      ? `<div class="readout warn">Ollama is not installed. Homebrew installs and starts it at the end.</div>`
+      : `<div class="readout bad">Ollama is not installed, and there is no Homebrew to install it. Get it from ollama.com, then run <b>hobson setup</b> again.</div>`;
   } else if (!o.running) {
-    status = `<div class="readout warn">OLLAMA INSTALLED BUT NOT RUNNING · open the Ollama app, or run <b>ollama serve</b>. The model can still be chosen now.</div>`;
+    status = `<div class="readout warn">Ollama is installed but not running. Open the Ollama app, or run <b>ollama serve</b>.</div>`;
   } else {
-    status = `<div class="readout ok">OLLAMA ONLINE · v${esc(o.version)} · ${o.models.length} model${o.models.length === 1 ? "" : "s"} on this Mac</div>`;
+    status = `<div class="readout ok">Ollama ${esc(o.version)} is running, with ${o.models.length} model${o.models.length === 1 ? "" : "s"} on this Mac.</div>`;
   }
   const free = S.probe.disk_free_gb;
   const rows = S.probe.models.map((m) => {
@@ -430,7 +430,7 @@ SCREENS.brain = () => {
   const local = o.models.filter((n) => !inCatalogue(n));
   const localRows = local.map((n) => `<button class="opt row fx${S.a.model === n ? " sel" : ""}" data-act="model" data-arg="${esc(n)}" data-group="model">
       <span class="box">${S.a.model === n ? "(●)" : "( )"}</span>
-      <span><div class="t">${esc(n.toUpperCase())}</div><div class="d">Already on this Mac. Hobson's prompts were tuned on llama3.2:3b; this one may read a turn differently.</div></span>
+      <span><div class="t">${esc(n.toUpperCase())}</div><div class="d">Untested.</div></span>
       <span class="r">${tag("INSTALLED", "ok")} ${tag("UNTESTED", "warn")}</span>
     </button>`).join("");
   const custom = S.a.model && S.a.model !== "none" && !inCatalogue(S.a.model) && !local.includes(S.a.model) ? S.a.model : "";
@@ -440,19 +440,19 @@ SCREENS.brain = () => {
         <div class="field" style="margin-top:8px"><span class="p">PULL&gt;</span>
           <input class="fx" id="custommodel" type="text" autocomplete="off" spellcheck="false" value="${esc(custom)}" placeholder="mistral:7b · qwen3:8b · hf.co/user/repo:Q4_K_M" data-enter="custommodel">
           <button class="btn fx" data-act="custommodel">USE</button></div>
-        <div class="d" style="margin-top:6px">${S.modelMsg ? S.modelMsg : "Pulled at the last step, with its size shown once Ollama starts. Untested with Hobson's prompts."}</div></span>
+        <div class="d" style="margin-top:6px">${S.modelMsg ? S.modelMsg : "Pulled at the end. Untested."}</div></span>
       <span class="r">${custom ? tag("UNTESTED", "warn") : ""}</span>
     </div>`;
   const none = o.installed && S.a.model !== "none" ? "" : `<button class="opt row fx${S.a.model === "none" ? " sel" : ""}" data-act="model" data-arg="none" data-group="model">
       <span class="box">${S.a.model === "none" ? "(●)" : "( )"}</span>
-      <span><div class="t">NO BRAIN</div><div class="d">Don't install one. Fixed phrases from the personality; a finish isn't told apart from a failure or a question.</div></span>
+      <span><div class="t">NO BRAIN</div><div class="d">Fixed phrases only.</div></span>
       <span class="r">${tag("0 MB")}</span>
     </button>`;
   return {
     path: "03 :: BRAIN",
     say: L("screen.brain"),
     body: `${status}<h2 class="sec" style="margin-top:20px">MODEL <span class="hint">${free} GB free on disk · ${S.probe.ram_gb} GB memory</span></h2>${rows}${localRows}${other}${none}
-      <p class="lede faint" style="margin-top:14px">The model reads how each turn ended (done, broken, or waiting on you) and writes what I say about it. It runs on this Mac; nothing leaves it.</p>`,
+      <p class="lede faint" style="margin-top:14px">The model reads how each turn ended and writes what Hobson says. It runs on this Mac, and nothing leaves it.</p>`,
     foot: footNav(),
   };
 };
@@ -461,24 +461,23 @@ function jevBlock() {
   const a = S.a;
   const j = S.probe.jev;
   const opt = (id, name, desc, stats) =>
-    `<button class="opt card fx${a.decider === id ? " sel" : ""}" data-act="decider" data-arg="${id}" data-group="decider">
-      <span class="mark">[■]</span>
-      <div class="top"><span class="name">${name}</span></div>
-      <div class="desc">${desc}</div>
-      <div class="stats">${stats}</div>
+    `<button class="opt row fx${a.decider === id ? " sel" : ""}" data-act="decider" data-arg="${id}" data-group="decider">
+      <span class="box">${a.decider === id ? "(●)" : "( )"}</span>
+      <span><div class="t">${name}</div><div class="d">${desc}</div></span>
+      <span class="r">${stats}</span>
     </button>`;
-  let body = `<div class="grid g2">
-    ${opt("local", "LOCAL", "Everything stays on this Mac. The brain and a set of local rules make every call.", "<span>NETWORK <b>NONE</b></span><span>COST <b>$0</b></span>")}
-    ${opt("jev", "JEV", `A small remote decider (${esc(j.model)}, through OpenRouter) scores what's worth saying, catches repeats, and gives a second opinion on risky commands.`, `<span>COST <b>~$${j.cost_per_call.toFixed(6)} / call</b></span><span>NEEDS <b>OPENROUTER KEY</b></span>`)}
+  let body = `<div class="rows">
+    ${opt("local", "LOCAL", "Everything stays on this Mac. The brain and local rules decide.", "<span>NETWORK <b>NONE</b></span><span>COST <b>$0</b></span>")}
+    ${opt("jev", "JEV", `A small remote model on OpenRouter. It filters chatter, repeats and risky commands.`, `<span>COST <b>~$${j.cost_per_call.toFixed(6)} / call</b></span><span>NEEDS <b>OPENROUTER KEY</b></span>`)}
   </div>`;
   if (a.decider === "jev") {
     body += `<div class="box-note" style="margin-top:14px"><b>WHAT LEAVES THIS MAC</b>
       <ul>
-        <li>the phrase I am about to say, and up to six I said recently</li>
-        <li>a 220-character summary of a batch of tool calls, redacted</li>
-        <li>a shell command the local rules can't place, redacted: no paths, hosts, secrets or quoted text</li>
+        <li>The phrase about to be spoken.</li>
+        <li>A short, redacted summary of recent tool calls.</li>
+        <li>Shell commands the local rules can't place, without paths, hosts, secrets or quoted text.</li>
       </ul>
-      Never code, file contents or your conversation. The key goes in ~/.claude/hobson.env (mode 600), never in hobson.json.</div>`;
+      Never code, file contents or your conversation. The key is saved in ~/.claude/hobson.env, mode 600.</div>`;
     const readout = S.jev.state === "idle" ? "" :
       `<div class="readout ${S.jev.state === "ok" ? "ok" : S.jev.state === "bad" ? "bad" : "busy"}">${S.jev.msg}</div>`;
     if (j.key && !S.jev.other) {
@@ -489,14 +488,14 @@ function jevBlock() {
         <button class="btn fx" data-act="jevtest">TEST KEY</button></div>${readout}${j.key.source === "env" ? `
         <button class="opt row fx${a.save_env_key !== false ? " sel" : ""}" data-act="saveenv" style="margin-top:10px">
           <span class="box">${a.save_env_key !== false ? "[x]" : "[ ]"}</span>
-          <span><div class="t">ALSO SAVE IT TO ~/.claude/hobson.env</div><div class="d">Claude Code started from the desktop app or an IDE does not see your shell's environment, so without this I may not find the key.</div></span><span class="r"></span>
+          <span><div class="t">ALSO SAVE IT TO ~/.claude/hobson.env</div><div class="d">Claude Code started from the desktop app or an IDE can't see your shell's environment.</div></span><span class="r"></span>
         </button>` : ""}`;
     } else {
       body += `<h2 class="sec" style="margin-top:18px">KEY <span class="hint">openrouter.ai/keys</span></h2>
         <div class="field"><span class="p">KEY&gt;</span>
         <input class="fx" id="jevkey" type="password" autocomplete="off" spellcheck="false" placeholder="sk-or-v1-…  paste, then ⏎" data-enter="jevtest">
         <button class="btn fx" data-act="jevtest">TEST KEY</button></div>${readout}
-        <p class="lede faint" style="margin-top:10px">No key? Carry on: I will stay local, and <b>hobson setup</b> can add one later.</p>`;
+        <p class="lede faint" style="margin-top:10px">No key? Carry on and Hobson stays local. <b>hobson setup</b> can add one later.</p>`;
     }
   }
   return body;
@@ -505,14 +504,14 @@ function jevBlock() {
 SCREENS.jev = () => ({
   path: "04 :: DECIDER",
   say: L("screen.jev"),
-  body: `<p class="lede">I can make three narrow calls with a little outside help: is this worth saying, did I just say it, could this command be hard to undo. Or I can make them all here.</p>${jevBlock()}`,
-  foot: footNav({ disabled: !S.a.decider, note: S.a.decider ? jevNote() : "pick one to continue" }),
+  body: `<p class="lede">Three calls can get outside help. Is this worth saying, was it just said, is this command risky. Or they can all be made on this Mac.</p>${jevBlock()}`,
+  foot: footNav({ disabled: !S.a.decider, note: S.a.decider ? jevNote() : "Pick one to continue." }),
 });
 
 function jevNote() {
   if (S.a.decider !== "jev") return "";
   if (S.a.jev_verified) return '<span class="ok">key verified</span>';
-  return '<span class="warn">no verified key: I\'ll stay local</span>';
+  return '<span class="warn">no verified key · staying local</span>';
 }
 
 SCREENS.presence = () => {
@@ -522,11 +521,11 @@ SCREENS.presence = () => {
     const needsCam = id === "auto" || id === "continuous";
     const noSensor = id !== "off" && !pr.built && !pr.swiftc;
     const dis = noSensor ? " off" : "";
-    return `<button class="opt card fx${S.a.presence === id ? " sel" : ""}${dis}" data-act="presence" data-arg="${id}" data-group="presence"${noSensor ? " disabled" : ""}>
-      <span class="mark">[■]</span>${eye(m.eye)}
-      <div class="top"><span class="name">${m.name}</span></div>
-      <div class="desc">${m.desc}</div>
-      <div class="stats">${needsCam ? "<span>CAMERA <b>YES</b></span>" : "<span>CAMERA <b>NO</b></span>"}${id === "auto" ? tag("DEFAULT") : ""}</div>
+    const on = S.a.presence === id;
+    return `<button class="opt row fx${on ? " sel" : ""}${dis}" data-act="presence" data-arg="${id}" data-group="presence"${noSensor ? " disabled" : ""}>
+      <span class="box">${on ? "(●)" : "( )"}</span>
+      <span><div class="t">${m.name}</div><div class="d">${m.desc}</div></span>
+      <span class="r">${id === "auto" ? tag("DEFAULT") : ""}<span>CAMERA <b>${needsCam ? "YES" : "NO"}</b></span></span>
     </button>`;
   }).join("");
   let cam = "";
@@ -542,19 +541,19 @@ SCREENS.presence = () => {
     cam = `<h2 class="sec">CAMERA</h2>
       <div class="field"><span class="p">CAM&gt;</span><span class="${cls}">${label}</span><span style="flex:1"></span>${buttons}</div>
       ${S.camera.msg ? `<div class="readout ${S.camera.cls || "busy"}">${S.camera.msg}</div>` : ""}
-      <p class="lede faint" style="margin-top:10px">Frames stay in memory on this Mac: never saved, never sent. Only a face counts as a person.</p>`;
+      <p class="lede faint" style="margin-top:10px">Camera frames never leave this Mac.</p>`;
   }
   const greet = S.a.presence === "off" ? "" : `<h2 class="sec">MANNERS</h2>
     <button class="opt row fx${S.a.greetings ? " sel" : ""}" data-act="greetings">
       <span class="box">${S.a.greetings ? "[x]" : "[ ]"}</span>
-      <span><div class="t">GREETINGS</div><div class="d">A word when you leave and a welcome when you're back, even with nothing to tell.</div></span><span class="r"></span>
+      <span><div class="t">GREETINGS</div><div class="d">A word when you leave, and a welcome when you return.</div></span><span class="r"></span>
     </button>`;
   const noSensor = !pr.built && !pr.swiftc
-    ? `<div class="readout warn">The presence sensor needs the Xcode Command Line Tools (xcode-select --install). Without them it's signals only.</div>` : "";
+    ? `<div class="readout warn">The presence sensor needs the Xcode Command Line Tools (xcode-select --install). Signals only until then.</div>` : "";
   return {
     path: "05 :: PRESENCE",
     say: L("screen.presence"),
-    body: `${noSensor}<h2 class="sec">HOW I KNOW YOU'RE THERE</h2><div class="grid g4">${cards}</div>${cam}${greet}`,
+    body: `${noSensor}<h2 class="sec">MODE</h2><div class="rows">${cards}</div>${cam}${greet}`,
     foot: footNav(),
   };
 };
@@ -564,24 +563,24 @@ SCREENS.phone = () => {
   const pres = S.a.presence;
   if (pres !== "auto" && pres !== "continuous") {
     return {
-      path: "06 :: PHONE",
+      path: "06 :: PHONE (EXPERIMENTAL)",
       say: L("screen.phone.nocamera"),
-      body: `<div class="readout">PRESENCE IS ${pres.toUpperCase()} · no camera, so no switch. Pick AUTO or CONTINUOUS under PRESENCE to use one.</div>`,
+      body: `<div class="readout">Presence is ${esc(PRESENCE[pres].name.toLowerCase())}, so there is no camera to switch. Pick Auto or Continuous under Presence to use one.</div>`,
       foot: footNav(),
     };
   }
   const notes = `<div class="box-note" style="margin-top:16px"><b>HOW IT WORKS</b>
     <ul>
-      <li>Android only, over adb: Developer options, then USB or Wireless debugging</li>
-      <li>face up, the camera may look; face down, it's off and stays off</li>
-      <li>a phone I cannot read counts as face down: it is a privacy switch, so it fails closed</li>
-      <li>Wireless debugging: start adb from a terminal (it needs Local Network access) or you'll see "No route to host"</li>
+      <li>Android only, over adb. Turn on USB or Wireless debugging in Developer options.</li>
+      <li>Face up, the camera may look. Face down, it stays off.</li>
+      <li>If the phone can't be read, the camera stays off.</li>
+      <li>For Wireless debugging, start adb from a terminal first, or you'll see "No route to host".</li>
     </ul></div>`;
   if (!ph.adb) {
     return {
-      path: "06 :: PHONE",
+      path: "06 :: PHONE (EXPERIMENTAL)",
       say: L("screen.phone"),
-      body: `<div class="readout warn">ADB NOT FOUND · brew install android-platform-tools, then rescan.</div>${notes}`,
+      body: `<div class="readout warn">adb not found. Run brew install android-platform-tools, then rescan.</div>${notes}`,
       foot: `<button class="btn ghost fx" data-act="back"><span class="k">ESC</span> BACK</button><button class="btn fx" data-act="rescan">RESCAN</button><span class="sp"></span><button class="btn go fx primary" data-act="next">SKIP <span class="k">⏎</span></button>`,
     };
   }
@@ -595,33 +594,31 @@ SCREENS.phone = () => {
       <span class="box">${!S.a.phone ? "(●)" : "( )"}</span>
       <span><div class="t">NO SWITCH</div><div class="d">The camera follows the presence mode alone.</div></span><span class="r"></span>
     </button>`;
-  const none = !ph.devices.length ? `<div class="readout warn">NO DEVICE · adb sees no phone. Plug it in (or pair Wireless debugging), accept the prompt on the phone, then rescan.</div>` : "";
+  const none = !ph.devices.length ? `<div class="readout warn">No phone found. Plug it in or pair Wireless debugging, accept the prompt on the phone, then rescan.</div>` : "";
   let stage = "";
   if (S.a.phone) {
     const t = S.phone.test;
     const pos = S.phone.pos;
-    const cls = pos === "down" ? " down" : pos === "up" ? "" : " unknown";
     const step = (i, text, line) => {
       const st = !t ? "" : t.done[i] ? "ok" : t.step === i ? (t.timeout ? "" : "now") : "";
       const s = !t ? "" : t.done[i] ? `<span class="s ok">"${line}"</span>` : t.step === i ? (t.timeout ? '<span class="s bad">TIMED OUT</span>' : '<span class="s cy">WAITING…</span>') : "";
       return `<div class="step ${st}"><span class="i">${t && t.done[i] ? "✓" : i + 1}</span><span>${text}</span>${s}</div>`;
     };
     const passed = t && t.done[0] && t.done[1];
-    stage = `<h2 class="sec">FLIP TEST <span class="hint">proves the switch works end to end</span></h2>
+    stage = `<h2 class="sec">FLIP TEST</h2>
       <div class="phone-stage">
-        <div class="phone3d"><div class="phone-shadow"></div><div class="phone${cls}"><div class="face"></div><div class="back"></div></div></div>
         <div class="steps">
           ${step(0, "Lay the phone face down", "Camera off.")}
           ${step(1, "Now turn it face up", "Camera on.")}
           <div style="display:flex;gap:10px;margin-top:6px">
             <button class="btn ${passed ? "ghost" : "go"} fx" data-act="fliptest"${t && !t.finished ? " disabled" : ""}>${passed ? "RUN AGAIN" : t && t.finished ? "TRY AGAIN" : t ? "TESTING…" : "START FLIP TEST"}</button>
-            <span class="faint" style="align-self:center">READING <span class="${pos === "up" ? "ok" : pos === "down" ? "mg" : "bad"}">${esc(pos.toUpperCase())}</span></span>
+            <span class="faint" style="align-self:center">READING <span class="${pos === "up" || pos === "down" ? "ok" : "warn"}">${esc(pos.toUpperCase())}</span></span>
           </div>
         </div>
       </div>`;
   }
   return {
-    path: "06 :: PHONE",
+    path: "06 :: PHONE (EXPERIMENTAL)",
     say: L("screen.phone"),
     body: `${none}<h2 class="sec">SWITCH</h2>${devs}${off}${stage}${notes}`,
     foot: `<button class="btn ghost fx" data-act="back"><span class="k">ESC</span> BACK</button><button class="btn ghost fx" data-act="rescan">RESCAN</button><span class="sp"></span><button class="btn go fx primary" data-act="next">NEXT <span class="k">⏎</span></button>`,
@@ -646,8 +643,8 @@ SCREENS.loadout = () => {
   return {
     path: "EXPRESS :: LOADOUT",
     say: L("screen.loadout"),
-    body: `<div class="loadout">${rows}</div><h2 class="sec" style="margin-top:26px">DECIDER <span class="hint">asked, never assumed</span></h2>${jevBlock()}`,
-    foot: `<button class="btn ghost fx" data-act="back"><span class="k">ESC</span> BACK</button><button class="btn ghost fx" data-act="customize">CUSTOMIZE</button><span class="sp"></span><span class="note">${a.decider ? jevNote() : "pick LOCAL or JEV to continue"}</span><button class="btn go fx primary" data-act="next"${a.decider ? "" : " disabled"}>REVIEW <span class="k">⏎</span></button>`,
+    body: `<div class="loadout">${rows}</div><h2 class="sec" style="margin-top:26px">DECIDER</h2>${jevBlock()}`,
+    foot: `<button class="btn ghost fx" data-act="back"><span class="k">ESC</span> BACK</button><button class="btn ghost fx" data-act="customize">CUSTOMIZE</button><span class="sp"></span><span class="note">${a.decider ? jevNote() : "Pick Local or Jev to continue."}</span><button class="btn go fx primary" data-act="next"${a.decider ? "" : " disabled"}>REVIEW <span class="k">⏎</span></button>`,
   };
 };
 
@@ -669,20 +666,20 @@ function taskRow(t) {
 
 SCREENS.commit = () => {
   const p = S.plan;
-  if (!p) return { path: "07 :: COMMIT", say: L("screen.commit.loading"), body: `<div class="readout busy">COMPUTING THE CHANGES…</div>`, foot: "" };
+  if (!p) return { path: "07 :: COMMIT", say: L("screen.commit.loading"), body: `<div class="readout busy">Working out the changes…</div>`, foot: "" };
   const writes = p.writes.length
     ? p.writes.map((w) => (w.note ? `<div class="n"><span class="kk">${esc(w.key)}</span>${esc(w.value)}</div>` : `<div class="a"><span class="kk">${esc(w.key)}</span>${fmtValue(w.value)}</div>`)).join("")
-    : `<div class="n">nothing to write: every choice is already the default</div>`;
+    : `<div class="n">nothing to write, every choice is the default</div>`;
   const secrets = (p.secrets || []).map((s) => `<div class="s">${esc(s)}</div>`).join("");
   const running = S.run && !S.run.done;
   const failed = S.run && S.run.done && !S.run.ok;
   return {
     path: "07 :: COMMIT",
     say: L(running ? "screen.commit.running" : "screen.commit"),
-    body: `<h2 class="sec">WRITES <span class="hint">~/.claude/hobson.json · only what differs from the defaults</span></h2>
-      <div class="diff">${writes}${secrets}<div class="n">${p.defaults_kept} settings stay at their defaults, so later improvements still reach you</div></div>
+    body: `<h2 class="sec">WRITES <span class="hint">~/.claude/hobson.json</span></h2>
+      <div class="diff">${writes}${secrets}<div class="n">${p.defaults_kept} settings unchanged</div></div>
       <h2 class="sec">TASKS</h2><div class="tasks">${p.tasks.map(taskRow).join("")}</div>
-      ${failed ? `<div class="readout bad">A task failed. What worked is kept; <b>hobson doctor</b> shows the rest, and <b>hobson setup</b> can pick up where this left off.</div>` : ""}`,
+      ${failed ? `<div class="readout bad">A task failed. Run <b>hobson doctor</b> to troubleshoot, or <b>hobson setup</b> to try again.</div>` : ""}`,
     foot: running
       ? `<span class="sp"></span><span class="note">please wait</span><button class="btn go primary" disabled>INSTALLING…</button>`
       : S.run && S.run.done
@@ -710,15 +707,30 @@ function findByKey(key) {
   return focusables().find((el) => focusKey(el) === key) || null;
 }
 
+// The keyboard's cursor. Nothing has it until a key is pressed, and the
+// pointer never moves it: hover only brightens (.hover), and moving the
+// mouse puts the cursor away.
 function setFocus(el, sound) {
   if (focused) focused.classList.remove("focus");
   focused = el;
   if (!el) return;
+  setHover(null);
+  anchor = pointer.slice();
   el.classList.add("focus");
   if (el.tagName === "INPUT") el.focus();
   else if (document.activeElement && document.activeElement.tagName === "INPUT") document.activeElement.blur();
   el.scrollIntoView({ block: "nearest" });
   if (sound) Sfx.move();
+}
+
+let hovered = null;
+// Where the pointer was when the keyboard last moved the cursor: a nudge of
+// the mouse on the desk is not a decision to use it.
+let pointer = [0, 0], anchor = [0, 0];
+function setHover(el) {
+  if (hovered) hovered.classList.remove("hover");
+  hovered = el;
+  if (el) el.classList.add("hover");
 }
 
 function spatial(dir) {
@@ -776,17 +788,22 @@ function paint(full) {
   const scr = SCREENS[S.screen]();
   const main = $("#main");
   const key = focusKey(focused);
+  const hoverKey = focusKey(hovered);
+  hovered = null;
   if (full || !$(".pane", main)) {
     // "03 :: BRAIN" reads as BRAIN, 3 of 7; "EXPRESS :: LOADOUT" as LOADOUT, express.
     const [where, name] = scr.path.split(" :: ");
-    const of = /^\d+$/.test(where) ? `${+where} of ${MODULES.length}` : where.toLowerCase();
+    const mod = MODULES.find((m) => m.id === S.screen);
+    const of = /^\d+$/.test(where) ? `${+where} of ${MODULES.length}${mod ? " · " + mod.region : ""}` : where.toLowerCase();
+    // The band: the module's picture, with its title set over it.
     main.innerHTML = `<section class="pane glitch-in">
-      <div class="pane-h"><span class="path">${name}</span><span class="sp"></span><span class="of">${of}</span></div>
+      <header class="pane-h${Art.has(S.screen) ? " band" : ""}"><div class="band-slot"></div><div class="of">${of}</div><h1 class="title">${name}</h1></header>
       <div class="pane-b"><div class="say"><span class="who">HOBSON&gt;</span><span class="txt"></span><span class="cur"></span></div><div class="body"></div></div>
       <div class="pane-f"></div></section>`;
     typeInto($(".say .txt", main), scr.say);
     Voice.say(scr.say);
     focused = null;
+    Art.mount($(".band-slot", main), S.screen);
   }
   const scroll = $(".pane-b", main).scrollTop;
   $(".body", main).innerHTML = scr.body;
@@ -794,7 +811,7 @@ function paint(full) {
   $(".pane-b", main).scrollTop = scroll;
   const again = full ? null : findByKey(key);
   if (again) setFocus(again, false);
-  else if (full) setFocus(focusables()[0] || null, false);
+  else if (!full) setHover(findByKey(hoverKey));
   paintRail();
 }
 
@@ -813,12 +830,12 @@ async function go(screen) {
     await sleep(120);
   }
   if (first && Art.has(screen)) {
-    const m = MODULES.find((x) => x.id === screen);
-    await Art.cutscene(screen, +m.n, m.title);
+    await Art.cutscene(screen, MODULES.find((x) => x.id === screen).title);
   }
   S.screen = screen;
   if (MODULES.some((m) => m.id === screen)) S.visited.add(screen);
-  City.tint({ voice: "#19e6ff", events: "#39ff88", brain: "#8c6bff", jev: "#ffc640", presence: "#ff2bd6", phone: "#19e6ff", commit: "#39ff88", loadout: "#19e6ff" }[screen] || "#19e6ff");
+  tint(screen);
+  if (screen === "phone") { showPhone(); if (S.a.phone) pollPhoneOnce(); }
   if (screen === "commit") {
     S.plan = null;
     S.run = null;
@@ -830,9 +847,9 @@ async function go(screen) {
       S.plan = { writes: [], defaults_kept: 0, tasks: [], secrets: [] };
       log(`plan failed: ${e.message}`);
     }
+    Art.tasks = S.plan.tasks.length;
     paint(false);
     resay();
-    setFocus($("#main .primary:not([disabled])"), false);
     return;
   }
   paint(true);
@@ -917,7 +934,7 @@ const ACT = {
     const name = input ? input.value.trim() : "";
     if (!MODEL_NAME.test(name)) {
       Sfx.err();
-      S.modelMsg = '<span class="bad">That is not an Ollama model name: try something like mistral:7b.</span>';
+      S.modelMsg = '<span class="bad">Not an Ollama model name. Try something like mistral:7b.</span>';
       paint(false);
       return;
     }
@@ -948,8 +965,8 @@ const ACT = {
   async jevtest() {
     const input = $("#jevkey");
     const typed = input ? input.value.trim() : "";
-    if (input && !typed) { Sfx.err(); S.jev = { ...S.jev, state: "bad", msg: "PASTE A KEY FIRST · or pick LOCAL" }; paint(false); return; }
-    S.jev = { ...S.jev, state: "busy", msg: "TESTING THE KEY · one call to " + esc(S.probe.jev.model) + "…" };
+    if (input && !typed) { Sfx.err(); S.jev = { ...S.jev, state: "bad", msg: "Paste a key first, or pick Local." }; paint(false); return; }
+    S.jev = { ...S.jev, state: "busy", msg: "Testing the key with one call to " + esc(S.probe.jev.model) + "…" };
     paint(false);
     let r;
     try { r = await api.post("jev/test", typed ? { key: typed } : {}); } catch (e) { r = { ok: false, reason: e.message }; }
@@ -958,12 +975,12 @@ const ACT = {
       Sfx.ok();
       S.a.jev_verified = true;
       S.a.key_typed = !!typed;
-      S.jev = { ...S.jev, state: "ok", msg: `KEY WORKS · ${r.ms} ms · $${Number(r.cost).toFixed(6)} for that call · Jev will decide` };
+      S.jev = { ...S.jev, state: "ok", msg: `Key works. ${r.ms} ms, $${Number(r.cost).toFixed(6)} for that call.` };
       log("jev key works");
     } else {
       Sfx.err();
       S.a.jev_verified = false;
-      S.jev = { ...S.jev, state: "bad", msg: `KEY REFUSED · ${esc(r.reason)} · I will stay local unless another key works` };
+      S.jev = { ...S.jev, state: "bad", msg: `Key refused (${esc(r.reason)}). Hobson stays local unless another key works.` };
       log("jev key refused");
     }
     paint(false);
@@ -973,7 +990,7 @@ const ACT = {
   presence(arg) { S.a.presence = arg; S.camera.msg = ""; Sfx.pick(); log(`presence ${arg}`); paint(false); return "presence"; },
   greetings() { S.a.greetings = !S.a.greetings; Sfx.pick(); paint(false); },
   async camera() {
-    S.camera = { busy: true, msg: "ASKING macOS · answer the dialog, it's from Hobson Presence", cls: "busy" };
+    S.camera = { busy: true, msg: "Answer the macOS dialog from Hobson Presence.", cls: "busy" };
     paint(false);
     const r = await api.post("presence/look", { request_permission: true }).catch(() => ({}));
     S.probe.presence.camera = r.camera || S.probe.presence.camera;
@@ -982,13 +999,13 @@ const ACT = {
       S.camera = { msg: lookMsg(r), cls: r.people ? "ok" : "warn" };
     } else {
       Sfx.err();
-      S.camera = { msg: "NO CAMERA · I will use signals: keyboard, lock and calls", cls: "bad" };
+      S.camera = { msg: "No camera access.", cls: "bad" };
       S.a.presence = "signals";
     }
     paint(false);
   },
   async look() {
-    S.camera = { busy: true, msg: "LOOKING ▒▒▒ two seconds", cls: "busy" };
+    S.camera = { busy: true, msg: "Looking for two seconds…", cls: "busy" };
     paint(false);
     const r = await api.post("presence/look", {}).catch(() => ({}));
     const cls = r.people ? "ok" : "warn";
@@ -999,6 +1016,7 @@ const ACT = {
   phone(arg) {
     S.a.phone = arg || null;
     S.phone.test = null;
+    showPhone();
     Sfx.pick();
     paint(false);
     if (arg) pollPhoneOnce();
@@ -1104,31 +1122,33 @@ function voiceName() {
 }
 
 function lookMsg(r) {
-  if (!r || r.camera !== "authorized") return "NO ANSWER FROM THE CAMERA";
-  if (r.people == null) return "THE CAMERA SAW NOTHING · a dark room or a covered lens";
-  if (r.people === 0) return "NOBODY IN FRAME · sit where the camera can see your face";
-  return `${r.people} FACE${r.people > 1 ? "S" : ""}${r.confident ? " · CONFIDENT" : ""} · I can see you`;
+  if (!r || r.camera !== "authorized") return "The camera didn't answer.";
+  if (r.people == null) return "The camera saw nothing. The room is dark or the lens is covered.";
+  if (r.people === 0) return "Nobody in frame. Sit where the camera can see your face.";
+  return `${r.people} face${r.people > 1 ? "s" : ""} in frame.`;
+}
+
+// The band on PHONE shows the phone as the switch reads it, once one is picked.
+function showPhone() {
+  Art.flip = S.a.phone ? (S.phone.pos === "up" || S.phone.pos === "down" ? S.phone.pos : "unknown") : null;
 }
 
 async function pollPhoneOnce() {
+  const before = S.phone.pos;
   try {
     const r = await api.get("phone?serial=" + encodeURIComponent(S.a.phone || ""));
     S.phone.pos = r.phone || "unknown";
   } catch (_) {
     S.phone.pos = "unreachable";
   }
-  if (S.screen === "phone") {
-    const el = $("#main .phone");
-    if (el) {
-      el.classList.toggle("down", S.phone.pos === "down");
-      el.classList.toggle("unknown", S.phone.pos !== "up" && S.phone.pos !== "down");
-    }
-  }
+  showPhone();
+  if (S.screen === "phone" && S.phone.pos !== before) paint(false);
 }
 
 function repaintTasks() {
   if (!S.plan) return;
   const n = S.plan.tasks.length || 1;
+  Art.tasks = S.plan.tasks.length;
   Art.progress = S.plan.tasks.filter((t) => ["ok", "fail", "skip"].includes(((S.run && S.run.tasks[t.id]) || {}).state)).length / n;
   for (const t of S.plan.tasks) {
     const el = document.getElementById(`task-${t.id}`);
@@ -1141,6 +1161,7 @@ function repaintTasks() {
 function bootLines(p) {
   const L = [];
   const add = (k, v, cls) => L.push([k, v, cls]);
+  add("HOST", String(p.host || "").toUpperCase(), "ok");
   add("MEMORY", `${p.ram_gb} GB`, "ok");
   add("CPU", `${p.arch.toUpperCase()} · macOS ${p.macos}`, "ok");
   add("DISK FREE", `${p.disk_free_gb} GB`, p.disk_free_gb < 12 ? "warn" : "ok");
@@ -1158,7 +1179,6 @@ function bootLines(p) {
 }
 
 async function bootLine(k, v, cls) {
-  const WIDTH = 46;
   const el = document.createElement("div");
   el.className = "l";
   $("#bootlog").appendChild(el);
@@ -1167,8 +1187,8 @@ async function bootLine(k, v, cls) {
     if (i % 2) Sfx.tick();
     await sleep(9);
   }
-  const dots = ".".repeat(Math.max(2, WIDTH - k.length - v.length - 2));
-  el.innerHTML = `<span class="k">${esc(k)}</span> <span class="faint">${dots}</span> <span class="${cls}">${esc(v)}</span>`;
+  // More dots than any row needs: the row is a flex line, and the leader is cut to fit.
+  el.innerHTML = `<span class="k">${esc(k)}</span><span class="faint">${".".repeat(80)}</span><span class="${cls}">${esc(v)}</span>`;
 }
 
 function partOfDay() {
@@ -1201,6 +1221,8 @@ async function boot() {
 
 function bootHero(returning) {
   S.screen = "boot";
+  Art.mount(null, "boot");
+  tint("boot");
   document.body.classList.add("booting");
   if (returning) {
     $("#main").innerHTML = `<div class="boot"><div class="bootlog"><div class="head">SURVEYING THIS MAC</div><div id="bootlog"></div></div><div class="hero" id="hero"></div></div>`;
@@ -1213,13 +1235,13 @@ function bootHero(returning) {
   const unseen = MODULES.filter((m) => m.id !== "commit" && !p.seen.includes(m.id));
   const update = p.existing && unseen.length && unseen.length < MODULES.length - 1;
   const modes = update
-    ? `<button class="opt fx" data-act="mode" data-arg="update"><div class="name">UPDATE</div><div class="desc">${unseen.length} new module${unseen.length === 1 ? "" : "s"} since you last ran setup: ${unseen.map((m) => m.title).join(", ")}. Everything else stays as it is.</div></button>
-       <button class="opt fx" data-act="mode" data-arg="custom"><div class="name">RECONFIGURE</div><div class="desc">Walk all six modules again, starting from your current settings.</div></button>`
-    : `<button class="opt fx" data-act="mode" data-arg="express"><div class="name">EXPRESS</div><div class="desc">I pick what suits this Mac and ask you one question. About a minute.</div></button>
-       <button class="opt fx" data-act="mode" data-arg="custom"><div class="name">CUSTOM</div><div class="desc">Walk all six modules: voice, events, brain, decider, presence, phone.</div></button>`;
+    ? `<button class="opt fx primary" data-act="mode" data-arg="update"><div class="name">UPDATE</div><div class="desc">New since your last setup, ${unseen.map((m) => m.title).join(", ")}. Everything else is kept.</div></button>
+       <button class="opt fx" data-act="mode" data-arg="custom"><div class="name">RECONFIGURE</div><div class="desc">Go through all six modules again, from your current settings.</div></button>`
+    : `<button class="opt fx primary" data-act="mode" data-arg="express"><div class="name">EXPRESS</div><div class="desc">Hobson picks what suits this Mac</div></button>
+       <button class="opt fx" data-act="mode" data-arg="custom"><div class="name">CUSTOM</div><div class="desc">You pick what is best for Hobson</div></button>`;
   $("#hero").innerHTML = `
     <div class="logo"><pre class="c">${LOGO}</pre><pre class="m">${LOGO}</pre><pre class="main">${LOGO}</pre></div>
-    <div class="tagline">A synthetic butler for <b>Claude Code</b>. I speak when you are needed, and otherwise keep a discreet silence.</div>
+    <div class="tagline">A synthetic butler for <b>Claude Code</b>. I speak when needed, and otherwise keep a discreet silence.</div>
     <div class="say" style="margin:0"><span class="who">HOBSON&gt;</span><span class="txt"></span><span class="cur"></span></div>
     <div class="modes">${modes}</div>`;
   requestAnimationFrame(() => $("#hero").classList.add("in"));
@@ -1227,11 +1249,12 @@ function bootHero(returning) {
   typeInto($("#hero .say .txt"), line);
   if (!returning) Voice.say(line);
   paintRail();
-  setFocus($("#hero .opt"), false);
 }
 
 async function finale() {
   S.screen = "final";
+  tint("final");
+  Art.mount(null, "final");
   const a = S.a;
   const failed = S.run && !S.run.ok;
   document.body.classList.add("booting");
@@ -1240,7 +1263,7 @@ async function finale() {
   const decider = a.decider === "jev" && a.jev_verified ? "JEV" : "LOCAL";
   $("#main").innerHTML = `<div class="final"><div>
     <div class="big">${failed ? "ONLINE*" : "ONLINE"}</div>
-    <div class="sub">${failed ? "Installed, with a task that failed: hobson doctor shows which." : "Hobson is installed. Start a new Claude Code session to hear him."}</div>
+    <div class="sub">${failed ? "Installed, but a task failed. Run hobson doctor to see which." : "Hobson is installed. Start a new Claude Code session to hear him."}</div>
     <div class="sum">
       ${row("VOICE", `${ENGINES[a.engine].name}${voiceName() ? " · " + voiceName() : ""} · ${persona(a.personality).name}`)}
       ${row("EVENTS", a.events.join(" · "))}
@@ -1253,7 +1276,6 @@ async function finale() {
     <div class="faint" style="margin-top:18px;font-size:11px;letter-spacing:.12em">hobson status · hobson doctor · hobson setup</div>
   </div></div>`;
   paintRail();
-  setFocus($("#main .primary"), false);
 }
 
 // ── Input ───────────────────────────────────────────────────────────────
@@ -1289,11 +1311,15 @@ document.addEventListener("click", (e) => {
 });
 
 // mousemove, not mouseover: a new screen appearing under a resting pointer
-// must not take the focus from the keyboard.
+// is not a hover.
 document.addEventListener("mousemove", (e) => {
+  pointer = [e.clientX, e.clientY];
   const el = e.target.closest("#main .fx");
-  if (el && el !== focused && !el.disabled) setFocus(el, false);
+  if (focused && Math.hypot(pointer[0] - anchor[0], pointer[1] - anchor[1]) < 8) return;
+  if (focused && focused.tagName !== "INPUT") setFocus(null);
+  setHover(el && !el.disabled && el.tagName !== "INPUT" ? el : null);
 });
+document.addEventListener("mouseleave", () => setHover(null));
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
@@ -1310,7 +1336,9 @@ document.addEventListener("keydown", (e) => {
   if (k === "Enter") {
     e.preventDefault();
     if (inInput) { const act = document.activeElement.dataset.enter; if (act && ACT[act]) ACT[act](); return; }
-    if (focused && !focused.disabled) focused.click();
+    // Nothing under the cursor yet: Enter means the screen's main button.
+    const target = focused && !focused.disabled ? focused : $("#main .primary:not([disabled])");
+    if (target) target.click();
     return;
   }
   if (k === "Escape") {
@@ -1331,7 +1359,6 @@ document.addEventListener("keydown", (e) => {
 
 $("#t-sfx").addEventListener("click", () => Sfx.toggle());
 $("#t-voice").addEventListener("click", () => Voice.toggle());
-setInterval(() => { $("#t-clock").textContent = new Date().toTimeString().slice(0, 8); }, 1000);
 
 // ── Start ───────────────────────────────────────────────────────────────
 
@@ -1339,7 +1366,6 @@ setInterval(() => { $("#t-clock").textContent = new Date().toTimeString().slice(
   Sfx.init();
   Voice.init();
   paintTop();
-  $("#t-clock").textContent = new Date().toTimeString().slice(0, 8);
   const go = async () => {
     api = Q.has("mock") ? window.MockApi(Q.get("mock")) : realApi(Q.get("t") || "");
     try { LINES = await (await fetch("lines.json", { cache: "no-store" })).json(); } catch (_) { /* typed blank, spoken never */ }

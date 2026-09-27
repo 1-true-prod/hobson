@@ -1,7 +1,7 @@
 {
   "name": "pirate",
   "display_name": "Pirate Captain",
-  "description": "A salty sea captain narrating your code adventures. Arrr!",
+  "description": "A sea captain narrating your code. Arrr.",
   "say_voice": "Fred",
   "templates": {
     "categories": {

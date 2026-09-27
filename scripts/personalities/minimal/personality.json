@@ -1,7 +1,7 @@
 {
   "name": "minimal",
   "display_name": "Minimal",
-  "description": "Terse, no-nonsense notifications. Quick and quiet.",
+  "description": "Short, plain notifications.",
   "say_voice": "Samantha",
   "templates": {
     "categories": {

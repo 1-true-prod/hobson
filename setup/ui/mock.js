@@ -29,10 +29,10 @@ window.MockApi = function (kind) {
       { id: "chatterbox", ready: false },
     ],
     personalities: [
-      { id: "hobson", name: "Hobson", desc: "A courteous machine intelligence with a butler's manners. Precise, unflappable, faintly uncanny.", sample: "All sorted, sir. Tidied up nicely." },
-      { id: "minimal", name: "Minimal", desc: "Terse, no-nonsense notifications. Quick and quiet.", sample: "Done. Ready for you." },
-      { id: "pirate", name: "Pirate Captain", desc: "A salty sea captain narrating your code adventures. Arrr!", sample: "Land ho! Smooth sailin' that was." },
-      { id: "snarky-dev", name: "Snarky Dev", desc: "A jaded senior developer who's seen it all. Dry, sarcastic, secretly helpful.", sample: "Oh look, it works. Ship it before someone notices." },
+      { id: "hobson", name: "Hobson", desc: "A courteous machine with a butler's manners.", sample: "All sorted, sir. Tidied up nicely." },
+      { id: "minimal", name: "Minimal", desc: "Short, plain notifications.", sample: "Done. Ready for you." },
+      { id: "pirate", name: "Pirate Captain", desc: "A sea captain narrating your code. Arrr.", sample: "Land ho! Smooth sailin' that was." },
+      { id: "snarky-dev", name: "Snarky Dev", desc: "A jaded senior developer. Dry, and secretly helpful.", sample: "Oh look, it works. Ship it before someone notices." },
     ],
     ollama: bare
       ? { installed: false, running: false, version: null, models: [] }
@@ -57,10 +57,10 @@ window.MockApi = function (kind) {
       ],
     },
     models: [
-      { id: "llama3.2:3b", disk_gb: 2.0, note: "What Hobson is tuned on: reads a turn well and speaks naturally as himself. Light enough for any recent Mac.", default: true },
-      { id: "gemma4:e4b", disk_gb: 9.6, note: "The best at telling done from broken from a question, but a 9.6 GB download and heavier to run." },
-      { id: "qwen3.5:4b", disk_gb: 3.4, note: "Apache-2.0 licensed, but more likely to miss a question for you, and often narrates instead of speaking as Hobson." },
-      { id: "llama3.2:1b", disk_gb: 1.3, note: "The smallest and quickest, for a Mac short on memory. Not measured with Hobson: expect more misreads.", untested: true },
+      { id: "llama3.2:3b", disk_gb: 2.0, note: "The model Hobson is tuned on. Reads a turn well and runs on any recent Mac.", default: true },
+      { id: "gemma4:e4b", disk_gb: 9.6, note: "Best at telling a finish from a failure. A 9.6 GB download, heavier to run." },
+      { id: "qwen3.5:4b", disk_gb: 3.4, note: "Apache-2.0 licensed. Misses more questions, and often narrates." },
+      { id: "llama3.2:1b", disk_gb: 1.3, note: "Smallest and quickest, for a Mac short on memory. Expect more misreads.", untested: true },
     ],
     jev: { key: bare ? null : { source: "env", tail: "a1f3" }, model: "typesafe/jev-1.13", cost_per_call: 0.000017 },
     presence: { built: !bare, swiftc: !bare, camera: bare ? "" : "authorized", mode: "auto", greetings: true },
@@ -78,12 +78,12 @@ window.MockApi = function (kind) {
       greetings: true,
       phone: null,
       why: {
-        engine: bare ? "no uv on this Mac: the built-in voice needs nothing" : "uv is here, so about 340 MB buys a natural voice",
-        personality: "courteous, precise, faintly synthetic",
-        events: "finishes, approvals and waits; no running commentary",
-        model: bare ? "11 GB free: the smallest model" : "the tested default; fits 48 GB with room to spare",
-        presence: bare ? "no sensor without the Command Line Tools" : "the camera is already allowed; one glance, only before speaking",
-        phone: bare ? "adb not found" : "a phone is connected: set it up in Custom",
+        engine: bare ? "The built-in voice. Kokoro needs uv, which Custom can install." : "A natural voice for about 340 MB.",
+        personality: "The butler, as designed.",
+        events: "Finishes, approvals and waits. No commentary.",
+        model: bare ? "The smallest model, to fit this Mac." : "The tested default. Fits 48 GB easily.",
+        presence: bare ? "Signals only. The sensor needs the Command Line Tools." : "One look before speaking. The camera is already allowed.",
+        phone: bare ? "No Android phone found." : "A phone is connected. Set it up in Custom.",
       },
     },
   };
@@ -106,10 +106,10 @@ window.MockApi = function (kind) {
     else kept++;
     if (a.phone) writes.push({ key: "presence.phone", value: a.phone });
     const tasks = [];
-    if (a.engine === "kokoro-realtime" && !probe.engines[1].ready) tasks.push({ id: "kokoro", label: "Install Kokoro", detail: "a venv with kokoro-onnx, then 120 MB of model and voices: about 340 MB" });
-    if (a.model !== "none" && !probe.ollama.installed) tasks.push({ id: "ollama", label: "Install Ollama", detail: "brew install ollama · brew services start ollama" });
+    if (a.engine === "kokoro-realtime" && !probe.engines[1].ready) tasks.push({ id: "kokoro", label: "Install Kokoro", detail: "About 340 MB, with the model and voices" });
+    if (a.model !== "none" && !probe.ollama.installed) tasks.push({ id: "ollama", label: "Install Ollama", detail: "brew install ollama, then start it" });
     if (a.model !== "none" && !probe.ollama.models.includes(a.model)) tasks.push({ id: "pull", label: `Pull ${a.model}`, detail: `${probe.models.find((m) => m.id === a.model).disk_gb} GB from ollama.com` });
-    if (a.key_typed && a.jev_verified) tasks.push({ id: "key", label: "Save the OpenRouter key", detail: "~/.claude/hobson.env · mode 600" });
+    if (a.key_typed && a.jev_verified) tasks.push({ id: "key", label: "Save the OpenRouter key", detail: "~/.claude/hobson.env, mode 600" });
     tasks.push({ id: "config", label: "Write settings", detail: "~/.claude/hobson.json" });
     tasks.push({ id: "hooks", label: "Refresh Claude Code hooks", detail: "~/.claude/settings.json" });
     tasks.push({ id: "hello", label: "Say hello", detail: "" });

@@ -1,7 +1,7 @@
 {
   "name": "hobson",
   "display_name": "Hobson",
-  "description": "A courteous machine intelligence with a butler's manners. Precise, unflappable, faintly uncanny.",
+  "description": "A courteous machine with a butler's manners.",
   "say_voice": "Daniel",
   "templates": {
     "categories": {

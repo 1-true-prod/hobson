@@ -521,21 +521,35 @@ written or installed before COMMIT; closing the window before it changes nothing
   or a voice without a clip, an orphan clip, or fewer than two female voices per engine. Only
   Kokoro (Apache-2.0) and Pocket TTS/VCTK (CC BY 4.0) voices, credited in `LICENSES.md`: a voice
   cloned from someone's recording is never shipped.
-- **Its pictures** (`setup/ui/art.js`): each module has one, shown full-screen for ~0.9s the first
-  time you arrive (the cutscene, instead of the glitch tear; any key skips it, and Back, revisits,
-  Update mode and reduced motion never play it), then in a small monitor in the rail. Every picture
-  goes through one treatment: a 280×185 greyscale frame, ordered-dithered to five tones of the
-  colour the city is tinted for that module. That treatment is why a 1930s photograph and a line
-  drawing read as one set. Four are public-domain photographs (`setup/ui/art/`, credited in
-  `art/LICENSES.md`); EVENTS, PRESENCE and COMMIT are drawn in code, and COMMIT's tower follows
-  the real task progress. Nothing from a film is shipped, however it is filtered: a dithered frame
-  is still a copy of that frame. A new still goes in `STATIC`, or the server refuses it and the
-  monitor just stays black; `test_every_picture_art_js_shows_is_served` catches that.
+- **Its pictures** (`setup/ui/art.js`): each module is the part of the brain that does its job, and
+  its picture is an old anatomical plate of that part: Broca's area (VOICE), the reflex arc
+  (EVENTS), the cortex (BRAIN), the striatum (DECIDER), the visual pathway (PRESENCE), the
+  cerebellum (PHONE), the hippocampus (COMMIT). All seven are public-domain engravings (Vesalius,
+  Descartes, Gray's *Anatomy*; `setup/ui/art/`, credited in `art/LICENSES.md`), prepared once at
+  560×370, inverted to white on black. The plate is the pane's header, with the title set over
+  it; the first time you arrive it plays full-screen for ~0.9s and shrinks into place (the
+  cutscene; any key skips it, and Back, revisits, Update mode and reduced motion never play it).
+  Every frame goes through one treatment: 280×185 greyscale, dithered to five tones of the
+  module's tint (plates through interleaved gradient noise, drawn scenes through a Bayer
+  matrix). The page draws a ring on the region, a leader and its name over the plate, at least
+  2px wide, or the dither breaks the dashes up. The band fades to nothing at every edge, so the
+  label points into the middle and a new plate needs its region inside it. COMMIT's ring fills
+  as the tasks finish; PHONE shows a phone drawn in code (face up, face down or unread) once one is picked.
+  Nothing from a film is shipped, however it is filtered: a dithered frame is still a copy of that
+  frame. A new still goes in `STATIC`, or the server refuses it and the band stays black;
+  `test_every_picture_art_js_shows_is_served` catches that.
 - **The look**: the neon city, the ANSI block logo with its RGB split, the rail and the typed
-  `HOBSON>` line are the identity. The rest is kept quiet on purpose: one glow on the pane
-  (Hobson's line), no frosted glass, corner brackets or window dots, tracking at 0.06–0.12em,
-  the current module in inverse video, plain words on buttons (TEST KEY, INSTALL). The earlier
-  version had every sci-fi-terminal trope switched on at once and read as generated.
+  `HOBSON>` line are the identity. The rest is kept quiet on purpose. One tint per screen, which
+  recolours the city too (the hero and the finale keep every colour); red means a failure and
+  nothing else. League Gothic (bundled, OFL) for the titles, the system mono at two sizes: 11px
+  for labels, tracked 0.06–0.12em, and 14px for everything read, untracked. Options are rows
+  between rules, not boxes: the choice is tint text with a bar on the left, the keyboard's cursor
+  is inverse video like the current module in the rail, and hovering only brightens a row. Four
+  glows (Hobson's line, the title, the finale's word, the logo), no frosted glass, corner
+  brackets or window dots, plain words on buttons (TEST KEY, INSTALL). Check it at 960×640 as
+  well as 1120×740: the logo shrinks with its column there, and the survey's dots give way
+  before its values. The earlier version had every sci-fi-terminal trope switched on at once and
+  read as generated.
 - **Developing it**: the page runs against a mock backend (`setup/ui/mock.js`) at
   `index.html?mock`, `?mock=update` or `?mock=bare`, in any browser. A real run writes
   `~/.claude` and `settings.json`, and the hooks it installs point at the checkout it ran from, so
