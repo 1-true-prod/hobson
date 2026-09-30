@@ -1,7 +1,7 @@
 # The wizard's display face
 
-The module titles, the cutscene title and ONLINE are set in League Gothic; everything else is the
-system monospace. It is bundled so the page fetches nothing.
+The module titles (and their outlines on the way in) and ONLINE are set in League Gothic;
+everything else is the system monospace. It is bundled so the page fetches nothing.
 
 | File | Font | Source | Licence |
 |---|---|---|---|

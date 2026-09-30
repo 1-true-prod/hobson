@@ -9,6 +9,7 @@ set -euo pipefail
 #   hobson mute                Mute voice notifications
 #   hobson unmute              Unmute voice notifications
 #   hobson test                Play a test bark
+#   hobson say [TEXT|-f FILE]  Read text aloud (or standard input), one voice at a time
 #   hobson recap [minutes]     Speak a summary of recent activity (default 10m)
 #   hobson cache-gen           Generate voice cache for current engine
 #   hobson cache-gen --force   Regenerate entire cache
@@ -270,6 +271,8 @@ except:
         echo "Volume:      $vol"
         presence_line=$(python3 "$SCRIPT_DIR/scripts/presence.py" --status-text 2>/dev/null | sed -n 1p || true)
         [[ -n "$presence_line" ]] && echo "$presence_line"
+        face_line=$(python3 "$SCRIPT_DIR/scripts/face.py" --status-text 2>/dev/null | sed -n 1p || true)
+        [[ -n "$face_line" ]] && echo "$face_line"
         echo "Config:      $CONFIG_FILE"
         echo "Log:         ~/.claude/hobson.log"
 
@@ -477,26 +480,10 @@ with open('$CONFIG_FILE', 'w') as f:
         test_msg="${1:-}"
         echo "Playing test bark..."
         if [[ -n "$test_msg" ]]; then
-            # Speak the literal text directly, bypassing Ollama phrase gen
-            python3 - "$test_msg" "$SCRIPT_DIR" <<'PYEOF'
-import sys, os
-sys.path.insert(0, os.path.join(sys.argv[2], "scripts"))
-from home import load_config
-import importlib, json
-config = load_config()
-engine_map = {
-    "say": ("engines.say", "SayEngine"),
-    "kokoro-realtime": ("engines.kokoro_realtime", "KokoroRealtimeEngine"),
-    "chatterbox": ("engines.chatterbox", "ChatterboxEngine"),
-    "pocket-tts": ("engines.pocket_tts_realtime", "PocketTTSRealtimeEngine"),
-}
-mod_path, cls_name = engine_map.get(config.get("engine", "say"), ("engines.say", "SayEngine"))
-engine = getattr(importlib.import_module(mod_path), cls_name)(config)
-if hasattr(engine, "_speak_live"):
-    engine._speak_live(sys.argv[1])
-else:
-    engine.try_bark(sys.argv[1])
-PYEOF
+            # Literal text is read as hobson say reads it: waited for, and
+            # one voice at a time. It returned as soon as afplay started, so
+            # a loop over paragraphs played them all on top of each other.
+            python3 "$SCRIPT_DIR/scripts/read_aloud.py" -- "$test_msg"
         else
             echo '{"hook_event_name":"Notification","message":"test"}' | \
                 python3 "$SCRIPT_DIR/scripts/hobson.py"
@@ -634,6 +621,38 @@ if not filter_arg:
                     printf "  %s  %b  ${RED}▼ %s${NC}\n" "$ts" "$_tag" "$_body"
                 elif [[ "$_body" == phone\ up* ]]; then
                     printf "  %s  %b  ${GREEN}▲ %s${NC}\n" "$ts" "$_tag" "$_body"
+                else
+                    printf "  %s  %b  ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
+                fi
+                continue
+            fi
+
+            # The face's window, and questions asked of Hobson. Red is a
+            # failure: a page that never ran, audio it could not read.
+            if [[ "$rest" == *"[face]"* ]]; then
+                _body="${rest#*\[face\] }"
+                _tag="${CYAN}face${NC}"
+                if [[ "$_body" == page\ * || "$_body" == audio\ unreadable* || "$_body" == could\ not* ]]; then
+                    printf "  %s  %b  ${RED}%s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == shown\ * && "$_body" == *"gone: cap" ]]; then
+                    # Up for its whole allowance: a hold nobody answered.
+                    printf "  %s  %b  ${YELLOW}%s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == shown\ * ]]; then
+                    printf "  %s  %b  %s\n" "$ts" "$_tag" "$_body"
+                else
+                    printf "  %s  %b  ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
+                fi
+                continue
+            fi
+            if [[ "$rest" == *"[ask]"* ]]; then
+                _body="${rest#*\[ask\] }"
+                _tag="${BOLD}ask${NC}"
+                # An answer can still be a failure: the recap's model calls
+                # all failed, or composing it raised.
+                if [[ "$_body" == failed* || "$_body" == *", recap failed:"* || "$_body" == *", failed ("* ]]; then
+                    printf "  %s  %b  ${RED}%s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == answer* ]]; then
+                    printf "  %s  %b  ${BOLD}%s${NC}\n" "$ts" "$_tag" "$_body"
                 else
                     printf "  %s  %b  ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
                 fi
@@ -1492,6 +1511,22 @@ print(presence.settings(home.load_config()).get('mode'))
                         ;;
                 esac
                 ;;
+            waves)
+                case "${2:-}" in
+                    on)
+                        python3 "$presence_py" --set waves true
+                        echo -e "${GREEN}Waves on${NC}: a wave at the camera, with your face in view, gets an answer (continuous mode)"
+                        ;;
+                    off)
+                        python3 "$presence_py" --set waves false
+                        echo -e "${YELLOW}Waves off${NC}: the sensor no longer looks for a raised hand"
+                        ;;
+                    *)
+                        echo "Usage: hobson presence waves on|off"
+                        exit 1
+                        ;;
+                esac
+                ;;
             look)
                 python3 "$presence_py" --look
                 ;;
@@ -1504,7 +1539,49 @@ print(presence.settings(home.load_config()).get('mode'))
                 python3 "$presence_py" --stop
                 ;;
             *)
-                echo "Usage: hobson presence [status|on|off|mode [signals|auto|continuous]|greetings on|off|preview on|off|phone [auto|off|SERIAL]|look|setup|stop]"
+                echo "Usage: hobson presence [status|on|off|mode [signals|auto|continuous]|greetings on|off|waves on|off|preview on|off|phone [auto|off|SERIAL]|look|setup|stop]"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    ask)
+        # What needs me? / What have you been doing? / What failed?, across
+        # every session, spoken and on the face (scripts/ask.py).
+        case "${1:-status}" in
+            status|recap|failed)
+                python3 "$SCRIPT_DIR/scripts/ask.py" "${1:-status}" --source cli
+                ;;
+            *)
+                echo "Usage: hobson ask [status|recap|failed]"
+                echo "  status   What needs me? (default)"
+                echo "  recap    What have you been doing? (the last 30 minutes, every project)"
+                echo "  failed   What failed?"
+                exit 1
+                ;;
+        esac
+        ;;
+
+    face)
+        face_py="$SCRIPT_DIR/scripts/face.py"
+        presence_py="$SCRIPT_DIR/scripts/presence.py"
+        case "${1:-status}" in
+            status)
+                python3 "$face_py" --status-text
+                ;;
+            on)
+                python3 "$presence_py" --set face.enabled true
+                echo -e "${GREEN}Face on${NC}: a window shows Hobson saying each line"
+                ;;
+            off)
+                python3 "$presence_py" --set face.enabled false
+                echo -e "${YELLOW}Face off${NC}: voice only"
+                ;;
+            test)
+                python3 "$face_py" --test "${2:-At your service. This is how I look when I speak.}" --kind "${3:-done}"
+                ;;
+            *)
+                echo "Usage: hobson face [status|on|off|test [LINE] [KIND]]"
                 exit 1
                 ;;
         esac
@@ -1695,6 +1772,13 @@ PY
                 *) echo -e "  ${DIM:-}·${NC} $text" ;;
             esac
         done < <(python3 "$SCRIPT_DIR/scripts/presence.py" --doctor 2>/dev/null || true)
+        while IFS=$'\t' read -r level text; do
+            case "$level" in
+                ok) echo -e "  ${GREEN}✓${NC} $text" ;;
+                warn) echo -e "  ${YELLOW}!${NC} $text"; warnings=$((warnings + 1)) ;;
+                *) echo -e "  ${DIM:-}·${NC} $text" ;;
+            esac
+        done < <(python3 "$SCRIPT_DIR/scripts/face.py" --doctor 2>/dev/null || true)
 
         # 8. Decider backend (Jev, via decider.py — see scripts/decider.py)
         echo ""
@@ -1996,6 +2080,12 @@ with open(config_file, 'w') as f:
         python3 "$SCRIPT_DIR/scripts/recap.py" "$@"
         ;;
 
+    say)
+        # Read text aloud on demand: arguments, -f FILE, or standard input.
+        # Returns when the last passage has played (scripts/read_aloud.py).
+        python3 "$SCRIPT_DIR/scripts/read_aloud.py" "$@"
+        ;;
+
     update|upgrade)
         # A checkout on a branch fast-forwards; one pinned to a tag (detached
         # HEAD) stays put. Either way the installer then refreshes the hooks
@@ -2049,8 +2139,11 @@ with open(config_file, 'w') as f:
         echo "  hobson volume [0-10]       Get or set playback volume"
         echo "  hobson voice [name]        Switch Kokoro voice"
         echo "  hobson test                Play a test bark"
+        echo "  hobson say [TEXT|-f FILE]  Read text aloud (or piped in), a passage at a time"
         echo "  hobson recap [minutes]     Speak a summary of recent activity (default 10m)"
-        echo "  hobson presence [status|on|off|mode|greetings|phone|look|setup]  Whether anyone is listening"
+        echo "  hobson presence [status|on|off|mode|greetings|waves|phone|look|setup]  Whether anyone is listening"
+        echo "  hobson face [status|on|off|test]  The window where Hobson says each line"
+        echo "  hobson ask [status|recap|failed]  What needs me, what have you been doing, what failed"
         echo "  hobson lines [category]    Show voice lines"
         echo "  hobson monitor             Watch bark activity in real time"
         echo "  hobson stats               Show what was spoken, queued, and suppressed"

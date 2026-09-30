@@ -6,6 +6,7 @@ label live in home.py; reading a Stop in stop_outcome.py. Engine subclasses
 only need to implement cached_audio() and backfill().
 """
 
+import contextlib
 import json
 import sys
 import os
@@ -24,6 +25,9 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import home  # noqa: E402
 import log_record  # noqa: E402
 
+
+# How long macOS `say` may take to render a phrase before it is given up.
+SAY_RENDER_TIMEOUT = 15
 
 # Chatty commentary templates — used when commentary.verbosity == "chatty".
 # Keyed by lowercased tool name. {ctx} is filled from extract_context().
@@ -443,9 +447,39 @@ class BaseEngine(ABC):
                 args += ["-r", str(rate), "-q", "1"]
         return args + [path]
 
-    def _afplay(self, path):
-        """Play a clip, detached — it must survive the hook process exiting."""
-        subprocess.Popen(self._afplay_args(path))
+    def _play(self, path, phrase, kind=None, cleanup=False):
+        """Play one clip, detached (it must survive the hook process exiting),
+        then show it on the face. Every spoken phrase leaves through here,
+        after _for_audience, so a held or dropped phrase is never shown. The
+        voice goes first, and the face cannot stop it. `cleanup` removes the
+        clip once played (say's temp AIFF, a daemon's WAV).
+
+        It plays after whatever is playing now, from any session: the player
+        is handed the voice lock and holds it until it exits (voice.py), so
+        two clips never play at once. Returns the player."""
+        import voice
+        turn = voice.take_turn()
+        if turn is None:
+            self._log("no turn on the voice, playing anyway")
+        keep = () if turn is None else (turn,)
+        args = self._afplay_args(path)
+        try:
+            if cleanup:
+                import shlex
+                played = " ".join(shlex.quote(a) for a in args)
+                player = subprocess.Popen(["sh", "-c", f"{played}; rm -f {shlex.quote(path)}"],
+                                          pass_fds=keep)
+            else:
+                player = subprocess.Popen(args, pass_fds=keep)
+        finally:
+            if turn is not None:
+                os.close(turn)
+        try:
+            import face
+            face.show(self.config, phrase, kind or "info", path)
+        except Exception as e:
+            self._log(f"face failed ({e})")
+        return player
 
     # ── Nudge (Task 7) ──────────────────────────────────────────────────
 
@@ -677,28 +711,45 @@ class BaseEngine(ABC):
         fresh = [c for c in candidates if not is_near_duplicate(c, recent)]
         return random.choice(fresh or candidates)
 
-    def _say_with_volume(self, text):
+    def _say_with_volume(self, text, kind=None):
         """Speak via macOS `say` honoring self.volume.
 
         `say` has no volume flag, so render to a temp AIFF and play with
-        `afplay -v`. Temp file is cleaned up after playback. The text comes
-        after `--`: a phrase is model output, and one starting "-o<path>"
-        was taken as an option and wrote audio over that file.
+        `afplay -v`. The render is waited for (about half a second; the
+        hooks are async) so the face has the audio to move its mouth to;
+        the temp file is removed after playback. The text comes after `--`:
+        a phrase is model output, and one starting "-o<path>" was taken as
+        an option and wrote audio over that file.
         """
-        import shlex
+        path = self._render_say(text)
+        if path:
+            self._play(path, text, kind, cleanup=True)
+
+    def _render_say(self, text):
+        """`text` rendered by macOS `say` to a temp AIFF, or None."""
         import tempfile
         tmp = tempfile.NamedTemporaryFile(
             prefix="hobson-say-", suffix=".aiff", delete=False
         )
         tmp.close()
-        afplay_cmd = " ".join(shlex.quote(a) for a in self._afplay_args(tmp.name))
-        cmd = (
-            f"say -v {shlex.quote(self._say_voice)} "
-            f"-o {shlex.quote(tmp.name)} -- {shlex.quote(text)} && "
-            f"{afplay_cmd}; "
-            f"rm -f {shlex.quote(tmp.name)}"
-        )
-        subprocess.Popen(["sh", "-c", cmd])
+        say = subprocess.Popen(["say", "-v", self._say_voice, "-o", tmp.name, "--", text])
+        try:
+            rendered = say.wait(timeout=SAY_RENDER_TIMEOUT) == 0
+        except subprocess.TimeoutExpired:
+            say.kill()
+            rendered = False
+        if not rendered:
+            self._log(f"say could not render -> {text!r}")
+            with contextlib.suppress(OSError):
+                os.remove(tmp.name)
+            return None
+        return tmp.name
+
+    def render(self, text, timeout=None):
+        """A clip of `text` to play, or None: the static engines render
+        anything outside their templates with `say`. `timeout` is for the
+        daemon engines' request."""
+        return self._render_say(text)
 
     @property
     def templates(self):
@@ -797,14 +848,14 @@ class BaseEngine(ABC):
 
             audio = self.cached_audio(bark)
             if audio:
-                self._afplay(audio)
-                self._log(log_record.playback("template-cache", bark))
+                self._play(audio, bark, kind)
+                self._log(log_record.playback("template-cache", bark, kind or "info"))
             else:
-                self._say_with_volume(bark)
+                self._say_with_volume(bark, kind)
                 if self.cache_dir:
-                    self._log(log_record.playback("say-fallback: cache miss", bark))
+                    self._log(log_record.playback("say-fallback: cache miss", bark, kind or "info"))
                 else:
-                    self._log(log_record.playback("say", bark))
+                    self._log(log_record.playback("say", bark, kind or "info"))
                 if do_backfill:
                     self.backfill(bark)
 
@@ -844,6 +895,18 @@ class BaseEngine(ABC):
             self._log(f"presence check failed ({e}), speaking")
             return phrase
 
+    def _voice_busy_for(self, phrase, kind):
+        """Commentary is dropped while anything is playing (voice.busy): by
+        the time its turn came it would be about work already done. Every
+        other kind waits for its turn in _play."""
+        if kind != "commentary":
+            return False
+        import voice
+        if not voice.busy():
+            return False
+        self._log(f"skipped (voice busy) -> {phrase!r}")
+        return True
+
     def speak_dynamic(self, phrase, allow_cold_start=True, kind=None):
         """Speak a dynamic, non-cacheable phrase. False when presence held or
         dropped it instead (_for_audience).
@@ -855,6 +918,8 @@ class BaseEngine(ABC):
         phrase = self._for_audience(phrase, kind)
         if phrase is None:
             return False
+        if self._voice_busy_for(phrase, kind):
+            return True
         try:
             fd = open(home.bark_lock(), "a+", encoding="utf-8")
             try:
@@ -867,8 +932,8 @@ class BaseEngine(ABC):
             fd.write(str(time.time())); fd.flush(); fd.close()
         except OSError:
             pass
-        self._say_with_volume(phrase)
-        self._log(log_record.playback("say-dynamic", phrase))
+        self._say_with_volume(phrase, kind)
+        self._log(log_record.playback("say-dynamic", phrase, kind or "info"))
         return True
 
     # ── Commentary (PreToolUse) — shared across all engines ────────────

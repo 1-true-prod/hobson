@@ -84,9 +84,10 @@ HELD_MAX_AGE = 12 * 3600
 # Most urgent first: what the briefing leads with.
 URGENCY = {"waiting": 0, "broken": 1, "stalled": 2, "done": 3, "info": 4}
 
-# Never held: the briefing itself, and a nudge, which checks for itself and
-# pauses rather than piling up (nudge._run).
-NEVER_HELD = ("briefing", "nudge")
+# Never held: the briefing itself, a nudge, which checks for itself and
+# pauses rather than piling up (nudge._run), and an answer (ask.py): you
+# asked, at the menu, whatever the camera makes of it.
+NEVER_HELD = ("briefing", "nudge", "answer")
 
 COMPANY_LINE = "Something needs your attention when you have a moment."
 
@@ -177,6 +178,11 @@ def app_path():
 def settings(config):
     """The presence section, over its defaults."""
     return {**home.DEFAULT_CONFIG["presence"], **((config or {}).get("presence") or {})}
+
+
+def face_on(config):
+    """Hobson's face (face.py) is on: the helper draws it, presence or not."""
+    return bool({**home.DEFAULT_CONFIG["face"], **((config or {}).get("face") or {})}.get("enabled"))
 
 
 # ── Reading the sensor ─────────────────────────────────────────────────────
@@ -639,20 +645,53 @@ def helper_built():
     return os.path.isfile(os.path.join(app_path(), "Contents", "MacOS", "HobsonPresence"))
 
 
-def _helper_argv(cfg):
-    argv = ["--home", home.state_dir(), "--mode", str(cfg.get("mode") or "auto"),
+def face_page():
+    return os.path.join(home.ROOT, "presence", "face")
+
+
+def expected(config):
+    """What a helper should be running with -- the fields of its record that
+    ensure_running compares -- or None when none should run. With presence off
+    and the face on it runs face only: it senses nothing, like a pause, with
+    no preview, phone or pause of its own (and nothing to wave at). Pure."""
+    cfg = settings(config)
+    face = face_on(config)
+    if not cfg.get("enabled"):
+        if not face:
+            return None
+        return {"mode": cfg.get("mode") or "auto", "phone_setting": None, "preview": False,
+                "paused": False, "face": True, "face_only": True, "waves": True}
+    return {"mode": cfg.get("mode") or "auto", "phone_setting": cfg.get("phone") or None,
+            "preview": bool(cfg.get("preview")), "paused": bool(cfg.get("paused")),
+            "face": face, "face_only": False, "waves": bool(cfg.get("waves"))}
+
+
+def _matches(record, want):
+    """A running helper's record agrees with what it should be running."""
+    return (record.get("mode") == want["mode"]
+            and (record.get("phone_setting") or None) == want["phone_setting"]
+            and all(bool(record.get(k)) == want[k] for k in ("preview", "paused", "face", "face_only", "waves")))
+
+
+def _helper_argv(cfg, want):
+    argv = ["--home", home.state_dir(), "--mode", str(want["mode"]),
             "--idle-seconds", str(cfg.get("idle_seconds")),
             "--away-after", str(cfg.get("away_after")),
             "--exit-after", str(cfg.get("exit_after")),
-            "--python", sys.executable, "--script", os.path.abspath(__file__)]
+            "--python", sys.executable, "--script", os.path.abspath(__file__),
+            # Always: the menu's Show Hobson can turn the face on later.
+            "--face-page", face_page()]
     for app in cfg.get("call_apps") or []:
         argv += ["--call-app", str(app)]
-    if cfg.get("phone"):
-        argv += ["--phone", str(cfg["phone"]), "--adb", find_adb(cfg) or "adb"]
-    if cfg.get("preview"):
-        argv.append("--preview")
-    if cfg.get("paused"):
-        argv.append("--paused")
+    if want["phone_setting"]:
+        argv += ["--phone", str(want["phone_setting"]), "--adb", find_adb(cfg) or "adb"]
+    for flag in ("preview", "paused", "face"):
+        if want[flag]:
+            argv.append(f"--{flag}")
+    if want["face_only"]:
+        argv.append("--face-only")
+    if not want["waves"]:  # on is the default, so it is the off that is a flag
+        argv.append("--no-waves")
     return argv
 
 
@@ -684,20 +723,19 @@ def stop_helper(record=None):
 
 
 def ensure_running(config, now=None):
-    """Start the helper if presence is on, it is built, and none is running
-    in the configured mode. Cheap when one is: a stat and a read. Launched
-    through `open`, so the camera permission is the bundle's own, not the
-    terminal's that ran the hook."""
+    """Start the helper if presence or the face is on, it is built, and none
+    is running with these settings (expected). Cheap when one is: a stat and a
+    read. A helper built before the face writes no "face", so it is restarted
+    as this one. Launched through `open`, so the camera permission is the
+    bundle's own, not the terminal's that ran the hook."""
     cfg = settings(config)
-    if not cfg.get("enabled") or not helper_built():
+    want = expected(config)
+    if want is None or not helper_built():
         return False
     now = time.time() if now is None else now
     record = read_state()
     if helper_alive(record, now):
-        if (record.get("mode") == cfg.get("mode")
-                and (record.get("phone_setting") or None) == (cfg.get("phone") or None)
-                and bool(record.get("preview")) == bool(cfg.get("preview"))
-                and bool(record.get("paused")) == bool(cfg.get("paused"))):
+        if _matches(record, want):
             return False
         stop_helper(record)  # restarted with the new settings by the next hook
         return False
@@ -710,10 +748,10 @@ def ensure_running(config, now=None):
         f.write(str(now))
     # -g: never take focus. -j (start hidden) only without the preview
     # window, which a hidden app cannot show.
-    flags = ["-g"] if cfg.get("preview") else ["-g", "-j"]
-    subprocess.Popen(["open"] + flags + [app_path(), "--args"] + _helper_argv(cfg),
+    flags = ["-g"] if want["preview"] else ["-g", "-j"]
+    subprocess.Popen(["open"] + flags + [app_path(), "--args"] + _helper_argv(cfg, want),
                      stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    log_record.write(f"[presence] sensor started ({cfg.get('mode')})")
+    log_record.write(f"[presence] sensor started ({'face only' if want['face_only'] else want['mode']})")
     return True
 
 
@@ -862,18 +900,18 @@ def doctor_lines(config=None):
     return out
 
 
-def set_setting(key, value):
-    """Write presence.<key> to the config file. The running helper is
-    restarted with it by the next hook (ensure_running)."""
+def set_setting(key, value, section_name="presence"):
+    """Write <section>.<key> (presence, or face) to the config file. The
+    running helper is restarted with it by the next hook (ensure_running)."""
     path = home.config_file()
     try:
         with open(path, encoding="utf-8") as f:
             config = json.load(f)
     except (OSError, ValueError):
         config = {}
-    section = config.get("presence") if isinstance(config.get("presence"), dict) else {}
+    section = config.get(section_name) if isinstance(config.get(section_name), dict) else {}
     section[key] = value
-    config["presence"] = section
+    config[section_name] = section
     tmp = f"{path}.tmp-{os.getpid()}"
     with open(tmp, "w", encoding="utf-8") as f:
         json.dump(config, f, indent=2)
@@ -909,9 +947,24 @@ def main(argv=None):
     # From the sensor's own menu: it has already changed itself.
     parser.add_argument("--keep-running", action="store_true")
     parser.add_argument("--camera-status", action="store_true")
+    # From the helper, about the face's window: EVENT PHRASE PROJECT DETAIL.
+    parser.add_argument("--face-event", nargs=4, metavar=("EVENT", "PHRASE", "PROJECT", "DETAIL"))
+    # From the menu's Ask Hobson: status, failed or recap (ask.py).
+    parser.add_argument("--ask", metavar="QUESTION")
+    # From the helper, as it exits: why (it writes no log of its own).
+    parser.add_argument("--sensor-exit", metavar="REASON")
     args = parser.parse_args(argv)
 
-    if args.wave:
+    if args.face_event:
+        import face
+        face.log_event(*args.face_event)
+    elif args.ask:
+        import ask
+        home.migrate_legacy_state()
+        ask.answer(args.ask, source="menu")
+    elif args.sensor_exit:
+        log_record.write(f"[presence] sensor exited ({args.sensor_exit})")
+    elif args.wave:
         on_wave()
     elif args.switch:
         on_switch(args.switch)
@@ -924,6 +977,15 @@ def main(argv=None):
         print(camera_status())
     elif args.phone_check:
         print(json.dumps(read_phone(), indent=2))
+    elif args.set and args.set[0].startswith("face."):
+        # face.<key>, from `hobson face` or the menu's Show Hobson.
+        key, value = args.set[0][len("face."):], args.set[1]
+        parsed = {"true": True, "false": False}.get(value.lower(), value)
+        if key == "width":
+            parsed = int(value)
+        set_setting(key, parsed, "face")
+        if key == "enabled" and not args.keep_running:
+            _restart()  # started with the face, without it, or not at all
     elif args.set:
         key, value = args.set
         parsed = {"true": True, "false": False, "none": None, "off": None}.get(value.lower(), value)
@@ -935,8 +997,10 @@ def main(argv=None):
         elif args.keep_running:
             pass
         elif key == "enabled" and parsed is False:
-            stop_helper()  # nothing else would: a disabled presence starts nothing
-        elif key in ("mode", "phone", "preview", "paused"):
+            # Nothing else would: a disabled presence starts nothing. With the
+            # face on, it comes back as face only.
+            _restart() if face_on(home.load_config()) else stop_helper()
+        elif key in ("mode", "phone", "preview", "paused", "waves"):
             _restart()
     elif args.transition:
         home.migrate_legacy_state()

@@ -1,6 +1,6 @@
-// Hobson setup — the pictures. Each module has one, shown twice: full-screen
-// for a moment when you first arrive (the cutscene), then as the band behind
-// the screen's title for as long as you stay.
+// Hobson setup — the pictures. Each module has one: the band behind the
+// screen's title, for as long as you stay. It comes in when you do, locking
+// in through the tube from coarse blocks to the full frame.
 //
 // Every picture goes through the same tube: a 280×185 greyscale frame,
 // dithered to five tones of the module's colour, the colour the city is
@@ -11,12 +11,13 @@
 // that frame.
 //
 //   Art.has(id)                        does this screen have a picture
-//   Art.cutscene(id, title)            resolves when the pane may paint
-//   Art.mount(slot, id)                put the picture in the pane's band
+//   Art.mount(slot, id)                put the picture in the pane's band, dark until it resolves
+//   Art.detail = 0…1                   how far it has resolved: dark, coarse blocks, the picture
+//   Art.resolve()                      lock it in now, coarse to fine
+//   Art.canvas                         the band's canvas, for drawing it elsewhere
 //   Art.progress = 0…1, Art.tasks = n  COMMIT's tower follows the tasks
 //   Art.flip = "up" | "down" | "unknown" | null
 //                                      PHONE shows the phone as read, not the still
-//   Art.skip()                         end a cutscene now (any key)
 "use strict";
 
 const Art = (() => {
@@ -37,26 +38,43 @@ const Art = (() => {
   // which reads as intent on lines and flat fills; photographs take
   // interleaved gradient noise (Jimenez), whose finer, less regular grain
   // keeps a face from turning into a pattern.
+  //
+  // A picture arriving comes through coarser first: `block` pixels square
+  // and fewer `tones`, the way a slow line paints a frame (RESOLVE).
   const IGN = new Float32Array(W * H);
   for (let y = 0; y < H; y++) for (let x = 0; x < W; x++) {
     const v = 52.9829189 * ((0.06711056 * x + 0.00583715 * y) % 1);
     IGN[y * W + x] = v - Math.floor(v);
   }
-  function tube(src, out, pal, photo) {
+  const TONES = { 2: [0, 3], 3: [0, 2, 4], 4: [0, 1, 3, 4], 5: [0, 1, 2, 3, 4] };
+  function tube(src, out, pal, photo, block = 1, tones = 5) {
     const s = src.getImageData(0, 0, W, H).data, d = out.data;
-    for (let y = 0; y < H; y++) {
-      const row = (y & 7) * 8;
-      for (let x = 0; x < W; x++) {
-        const i = (y * W + x) * 4;
-        const l = (s[i] * 0.3 + s[i + 1] * 0.59 + s[i + 2] * 0.11) / 255;
-        const n = photo ? IGN[y * W + x] : (BAYER[row + (x & 7)] + 0.5) / 64;
-        let k = Math.floor(l * 4 + n);
-        k = k < 0 ? 0 : k > 4 ? 4 : k;
-        const c = pal[k];
-        d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
+    const use = TONES[tones], top = tones - 1;
+    for (let by = 0, cy = 0; by < H; by += block, cy++) {
+      const y1 = Math.min(H, by + block);
+      for (let bx = 0, cx = 0; bx < W; bx += block, cx++) {
+        const x1 = Math.min(W, bx + block);
+        // A block is the mean of its pixels: sampled at one, a thin engraved line vanishes.
+        let sum = 0;
+        for (let y = by; y < y1; y++) for (let x = bx; x < x1; x++) {
+          const i = (y * W + x) * 4;
+          sum += s[i] * 0.3 + s[i + 1] * 0.59 + s[i + 2] * 0.11;
+        }
+        const l = sum / ((y1 - by) * (x1 - bx) * 255);
+        const n = photo ? IGN[cy * W + cx] : (BAYER[(cy & 7) * 8 + (cx & 7)] + 0.5) / 64;
+        let k = Math.floor(l * top + n);
+        k = k < 0 ? 0 : k > top ? top : k;
+        const c = pal[use[k]];
+        for (let y = by; y < y1; y++) for (let x = bx; x < x1; x++) {
+          const i = (y * W + x) * 4;
+          d[i] = c[0]; d[i + 1] = c[1]; d[i + 2] = c[2]; d[i + 3] = 255;
+        }
       }
     }
   }
+  // [block, tones], from a first glimpse to the picture: a quarter of `detail` each.
+  const RESOLVE = [[8, 2], [4, 3], [2, 4], [1, 5]];
+  const RESOLVE_MS = 200;
 
   // ── Scenes: each draws greyscale into a W×H context ──────────────────
 
@@ -189,7 +207,7 @@ const Art = (() => {
     phone: flip(still("art/cerebellum.png", { x: 130, y: 95, r: 26, label: "CEREBELLUM" })),
     commit: still("art/hippocampus.png", { x: 157, y: 106, r: 18, label: "HIPPOCAMPUS", progress: true }),
   };
-  // ── The band and the cutscene share one picture ─────────────────────
+  // ── The band ────────────────────────────────────────────────────────
 
   const src = document.createElement("canvas");
   src.width = W; src.height = H;
@@ -201,24 +219,28 @@ const Art = (() => {
   const mctx = band.querySelector("canvas").getContext("2d");
   const out = mctx.createImageData(W, H);
 
-  const cut = document.createElement("div");
-  cut.id = "cut";
-  cut.hidden = true;
-  cut.innerHTML = `<canvas width="${W}" height="${H}" aria-hidden="true"></canvas><div class="card"><div class="t"><span class="c"></span><span class="m"></span><span class="main"></span></div></div>`;
-  const cctx = cut.querySelector("canvas").getContext("2d");
-  document.body.appendChild(cut);
+  // `detail` is set from outside (the flight sets it by distance) or by
+  // Art.resolve(), which runs it up to 1 over RESOLVE_MS.
+  let current = null, t0 = performance.now(), lastFrame = 0, detail = 1, resolving = 0;
 
-  let current = null, t0 = performance.now(), lastFrame = 0, cutting = null;
+  function render(now) {
+    if (resolving) {
+      detail = Math.min(1, Math.max(detail, (now - resolving) / RESOLVE_MS + 0.01));
+      if (detail >= 1) resolving = 0;
+    }
+    if (detail <= 0) { mctx.fillStyle = "#020305"; mctx.fillRect(0, 0, W, H); return; }
+    const [block, tones] = RESOLVE[Math.min(RESOLVE.length - 1, Math.floor(detail * RESOLVE.length))];
+    SCENES[current].draw(sctx, (now - t0) / 1000);
+    tube(sctx, out, ramp(TINT[current]), SCENES[current].photo, block, tones);
+    mctx.putImageData(out, 0, 0);
+  }
 
   function frame(now) {
     requestAnimationFrame(frame);
     if (!current || document.hidden) return;
     if (now - lastFrame < FPS_MS) return;
     lastFrame = now;
-    SCENES[current].draw(sctx, (now - t0) / 1000);
-    tube(sctx, out, ramp(TINT[current]), SCENES[current].photo);
-    mctx.putImageData(out, 0, 0);
-    if (cutting) cctx.drawImage(mctx.canvas, 0, 0);
+    render(now);
   }
   requestAnimationFrame(frame);
 
@@ -227,7 +249,7 @@ const Art = (() => {
   }
   function show(id) {
     if (!SCENES[id]) { current = null; return; }
-    if (current !== id) { current = id; lastFrame = 0; }
+    if (current !== id) { current = id; resolving = 0; detail = reduce ? 1 : 0; render(performance.now()); }
     if (reduce) still1(id);
   }
 
@@ -242,41 +264,25 @@ const Art = (() => {
       if (slot && SCENES[id]) slot.appendChild(band);
       show(id);
     },
-    skip() { if (cutting) cutting.finish(); },
-    get cutting() { return !!cutting; },
-    // About 0.9 s: the picture fills the window with the module's title,
-    // then shrinks into the pane's band. Resolves at the moment the pane can
-    // paint underneath, so the handoff has something to land on.
-    async cutscene(id, title) {
-      if (reduce || !SCENES[id]) return;
-      await SCENES[id].ready;
-      show(id);
-      const canvas = cut.querySelector("canvas");
-      cut.querySelectorAll(".t span").forEach((s) => (s.textContent = title));
-      canvas.style.transition = "none";
-      canvas.style.transform = "none";
-      cut.classList.remove("out");
-      cut.hidden = false;
-      cctx.drawImage(mctx.canvas, 0, 0);
-      return new Promise((resolve) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          clearTimeout(hold);
-          resolve();
-          requestAnimationFrame(() => {
-            const r = band.getBoundingClientRect();
-            const ok = r.width > 0 && band.isConnected;
-            canvas.style.transition = "";
-            cut.classList.add("out");
-            canvas.style.transform = ok ? `translate(${r.left}px, ${r.top}px) scale(${r.width / innerWidth}, ${r.height / innerHeight})` : "scale(0.2)";
-            setTimeout(() => { cut.hidden = true; cutting = null; }, 260);
-          });
-        };
-        cutting = { finish };
-        const hold = setTimeout(finish, 650);
+    get detail() { return detail; },
+    set detail(v) { detail = Math.max(0, Math.min(1, v)); },
+    get canvas() { return mctx.canvas; },
+    // From the next frame on, once the plate has loaded.
+    resolve() {
+      if (!current || detail >= 1) return;
+      const id = current;
+      SCENES[id].ready.then(() => {
+        if (current !== id || detail >= 1) return;
+        resolving = performance.now();
+        lastFrame = 0;
       });
+    },
+    // A copy of the band as it is now, for a screen on its way out.
+    snapshot() {
+      const c = document.createElement("canvas");
+      c.width = W; c.height = H;
+      c.getContext("2d").drawImage(mctx.canvas, 0, 0);
+      return c;
     },
   };
   return api;

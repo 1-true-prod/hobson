@@ -202,8 +202,9 @@ function log(msg) { console.debug(`[setup] ${msg}`); }
 
 // One light per screen: the module's colour leads the page and the city.
 // The hero and the finale have no module, so they get every colour.
+const tintOf = (screen) => TINTS[screen] || (screen === "final" ? TINTS.commit : TINTS.voice);
 function tint(screen) {
-  const c = TINTS[screen] || (screen === "final" ? TINTS.commit : TINTS.voice);
+  const c = tintOf(screen);
   const root = document.documentElement.style;
   root.setProperty("--tint", c);
   root.setProperty("--tint-rgb", [1, 3, 5].map((i) => parseInt(c.slice(i, i + 2), 16)).join(", "));
@@ -796,12 +797,11 @@ function paint(full) {
     const mod = MODULES.find((m) => m.id === S.screen);
     const of = /^\d+$/.test(where) ? `${+where} of ${MODULES.length}${mod ? " · " + mod.region : ""}` : where.toLowerCase();
     // The band: the module's picture, with its title set over it.
-    main.innerHTML = `<section class="pane glitch-in">
-      <header class="pane-h${Art.has(S.screen) ? " band" : ""}"><div class="band-slot"></div><div class="of">${of}</div><h1 class="title">${name}</h1></header>
+    main.innerHTML = `<section class="pane${reduce ? "" : " arriving"}">
+      <header class="pane-h${Art.has(S.screen) ? " band" : ""}"><div class="band-slot"></div><div class="of">${of}</div><h1 class="title">${esc(name)}</h1></header>
       <div class="pane-b"><div class="say"><span class="who">HOBSON&gt;</span><span class="txt"></span><span class="cur"></span></div><div class="body"></div></div>
       <div class="pane-f"></div></section>`;
-    typeInto($(".say .txt", main), scr.say);
-    Voice.say(scr.say);
+    S.entering = true;
     focused = null;
     Art.mount($(".band-slot", main), S.screen);
   }
@@ -817,42 +817,196 @@ function paint(full) {
 
 // Retype Hobson's line when the same screen now says something else.
 function resay() {
+  if (S.entering) return; // enter() types whatever the line is by then
   const el = $("#main .say .txt");
   const text = SCREENS[S.screen]().say;
   if (el && el.textContent !== text) { typeInto(el, text); Voice.say(text); }
 }
 
+// ── Motion ──────────────────────────────────────────────────────────────
+// Every module is a place down the street (city.js), and going to another is
+// a flight. The screen you leave rushes past the camera; the next comes up
+// the street as a wireframe of itself, its title in outline and its picture
+// sharpening as it nears, and lands on its pane; then it fills in where it
+// lives, the rows printing top to bottom. Going back is the same flight in
+// reverse. About 0.85 s in all; any key lands it at once, and
+// reduced motion has none of it.
+
+const reduce = matchMedia("(prefers-reduced-motion: reduce)").matches;
+const easeOut = (k) => 1 - Math.pow(1 - k, 3);
+let flight = 0, hurry = false;
+
+// fn(k) for k from 0 to 1, a frame at a time; a later flight, or a key, ends it at 1.
+function tween(ms, fn, token) {
+  return new Promise((done) => {
+    const t0 = performance.now();
+    (function step(now) {
+      if (token != null && token !== flight) return done();
+      const k = hurry ? 1 : Math.min(1, Math.max(0, (now - t0) / ms));
+      fn(k);
+      if (k < 1) requestAnimationFrame(step);
+      else done();
+    })(t0);
+  });
+}
+
+// Scale about the vanishing point, the one place in the city nothing moves.
+function aboutVp(el, r) {
+  const vp = City.vp();
+  el.style.transformOrigin = `${vp.x - r.left}px ${vp.y - r.top}px`;
+}
+
+// The screen being left, lifted out of the layout with its colour and its
+// picture as they were, so the next can lay itself out underneath.
+function leave(el, back) {
+  const r = el.getBoundingClientRect();
+  const slot = $(".band-slot", el);
+  if (slot && $(".band-art", slot)) {
+    const still = document.createElement("div");
+    still.className = "band-art";
+    still.appendChild(Art.snapshot());
+    slot.appendChild(still);
+  }
+  const root = getComputedStyle(document.documentElement);
+  for (const v of ["--tint", "--tint-rgb"]) el.style.setProperty(v, root.getPropertyValue(v));
+  Object.assign(el.style, { left: `${r.left}px`, top: `${r.top}px`, width: `${r.width}px`, height: `${r.height}px` });
+  el.classList.add("leaving");
+  if (back) el.classList.add("behind");
+  $("#app").appendChild(el);
+  aboutVp(el, r);
+  // Forward, it comes at you and is gone; back, it falls away up the street.
+  const fx = back
+    ? (k) => { el.style.transform = `scale(${1 / (1 + 7 * easeOut(k))})`; el.style.opacity = String(1 - k); }
+    : (k) => { el.style.transform = `scale(${1 + 0.5 * k * k})`; el.style.opacity = String(1 - k); };
+  tween(back ? 320 : 220, fx).then(() => el.remove());
+}
+
+// The rules a pane is drawn with, for its wireframe: every border across a
+// row, relative to the pane, and only those it shows without scrolling.
+function blueprint(pane, r) {
+  const rules = [];
+  for (const el of $$(".rows, .chips, .loadout, .opt, .task, .step, .field, .loadout > div, .diff, .pane-f", pane)) {
+    const b = el.getBoundingClientRect(), cs = getComputedStyle(el);
+    const add = (y) => { if (y > 1 && y < r.height - 1 && b.width > 0) rules.push({ x: b.left - r.left, y, w: b.width }); };
+    if (parseFloat(cs.borderTopWidth)) add(b.top - r.top);
+    if (parseFloat(cs.borderBottomWidth)) add(b.bottom - r.top - 1);
+  }
+  return rules;
+}
+
+async function arrive(pane, back, token) {
+  if (reduce || !pane) return;
+  if (back) {
+    // From behind the camera: it was nearer than the screen being left, so
+    // its picture is already sharp.
+    Art.detail = 1;
+    aboutVp(pane, pane.getBoundingClientRect());
+    pane.classList.remove("arriving");
+    await tween(340, (k) => { const e = easeOut(k); pane.style.transform = `scale(${1 + 0.3 * (1 - e)})`; pane.style.opacity = String(e); }, token);
+    pane.style.transform = pane.style.opacity = pane.style.transformOrigin = "";
+    return;
+  }
+  const band = $(".band-art", pane);
+  const measure = () => {
+    const r = pane.getBoundingClientRect();
+    const b = band && band.getBoundingClientRect();
+    return {
+      to: { x: r.left, y: r.top, w: r.width, h: r.height },
+      rules: blueprint(pane, r),
+      title: sign(pane, r),
+      picture: b ? { canvas: Art.canvas, x: b.left - r.left, y: b.top - r.top, w: b.width, h: b.height } : null,
+    };
+  };
+  // Far off the picture is a few coarse blocks; it has all its detail by the time it is close.
+  const frame = band ? (s) => { Art.detail = (s - 0.08) / 0.6; } : null;
+  await City.arrive({ measure, frame, color: tintOf(S.screen), ms: 480 });
+}
+
+// The title as the wireframe draws it: in outline, on the baseline the page
+// will set it on, so the outline lands on the letters.
+const metrics = document.createElement("canvas").getContext("2d");
+function sign(pane, r) {
+  const t = $(".pane-h .title", pane);
+  if (!t) return null;
+  const b = t.getBoundingClientRect(), cs = getComputedStyle(t);
+  const size = parseFloat(cs.fontSize), lh = parseFloat(cs.lineHeight) || size;
+  metrics.font = `${size}px ${cs.fontFamily}`;
+  const m = metrics.measureText(t.textContent);
+  const asc = m.fontBoundingBoxAscent, desc = m.fontBoundingBoxDescent;
+  return { text: t.textContent, x: b.left - r.left, y: b.top - r.top + (lh - asc - desc) / 2 + asc, size, font: cs.fontFamily };
+}
+
+// What prints as one line: a whole row, never half of one.
+const PRINT = ".say, h2.sec, .eng-h, .opt, .readout, p, .field, .seg, .box-note > *, .diff > div, .task, .loadout > div, .step";
+
+// Where the pane fills in. Forward it prints; back it is already written.
+function enter(pane, back) {
+  S.entering = false;
+  const line = SCREENS[S.screen]().say;
+  if (!pane) return;
+  pane.classList.remove("arriving");
+  Art.resolve();
+  const say = $(".say .txt", pane);
+  const type = () => { if (say) typeInto(say, line); Voice.say(line); };
+  if (reduce || back) { type(); return; }
+  const token = flight;
+  // The rows, printed like a listing: the body shown down to the end of one
+  // line, then the next, a frame or so each.
+  const body = $(".pane-b", pane), foot = $(".pane-f", pane), of = $(".of", pane);
+  const top = body.getBoundingClientRect().top, h = body.clientHeight;
+  const stops = [...new Set($$(PRINT, body).map((el) => Math.round(el.getBoundingClientRect().bottom - top)).filter((y) => y > 0 && y < h))].sort((a, b) => a - b);
+  const lines = stops.filter((y, i) => i === 0 || y - stops[i - 1] > 8).concat(h);
+  const clip = (y) => { body.style.clipPath = y >= h ? "" : `inset(0 0 ${h - y}px 0)`; };
+  clip(0);
+  foot.style.visibility = of.style.visibility = "hidden";
+  let typed = false;
+  tween(Math.min(300, 20 * lines.length), (k) => {
+    const n = Math.min(lines.length - 1, Math.floor(k * lines.length));
+    clip(k === 1 ? h : lines[n]);
+    if (!typed) { typed = true; of.style.visibility = ""; type(); }
+    if (k === 1) foot.style.visibility = "";
+  }, token);
+}
+
+// Any key while a screen is on its way lands it now.
+function land() {
+  hurry = true;
+  City.land();
+  requestAnimationFrame(() => requestAnimationFrame(() => { hurry = false; }));
+}
+
 async function go(screen) {
-  const first = !S.visited.has(screen) && S.flow !== "update";
-  const pane = $("#main .pane");
-  if (pane && !(first && Art.has(screen))) {
-    pane.classList.add("glitch-out");
-    await sleep(120);
-  }
-  if (first && Art.has(screen)) {
-    await Art.cutscene(screen, MODULES.find((x) => x.id === screen).title);
-  }
+  const token = ++flight;
+  const at = S.route.indexOf(S.screen), to = S.route.indexOf(screen);
+  const back = at >= 0 && to >= 0 && to < at;
+  const old = $("#main > .pane, #main > .boot");
+  if (old && !reduce) leave(old, back);
+  document.body.classList.remove("booting");
   S.screen = screen;
   if (MODULES.some((m) => m.id === screen)) S.visited.add(screen);
   tint(screen);
+  City.fly(back ? -1 : 1);
   if (screen === "phone") { showPhone(); if (S.a.phone) pollPhoneOnce(); }
-  if (screen === "commit") {
-    S.plan = null;
-    S.run = null;
-    Art.progress = 0;
-    paint(true);
-    try {
-      S.plan = await api.post("plan", { answers: S.a });
-    } catch (e) {
-      S.plan = { writes: [], defaults_kept: 0, tasks: [], secrets: [] };
-      log(`plan failed: ${e.message}`);
-    }
-    Art.tasks = S.plan.tasks.length;
-    paint(false);
-    resay();
-    return;
-  }
+  if (screen === "commit") { S.plan = null; S.run = null; Art.progress = 0; }
   paint(true);
+  if (screen === "commit") loadPlan();
+  const pane = $("#main .pane");
+  await arrive(pane, back, token);
+  if (token !== flight) return;
+  enter(pane, back);
+}
+
+async function loadPlan() {
+  try {
+    S.plan = await api.post("plan", { answers: S.a });
+  } catch (e) {
+    S.plan = { writes: [], defaults_kept: 0, tasks: [], secrets: [] };
+    log(`plan failed: ${e.message}`);
+  }
+  Art.tasks = S.plan.tasks.length;
+  if (S.screen !== "commit") return;
+  paint(false);
+  resay();
 }
 
 // ── Actions ─────────────────────────────────────────────────────────────
@@ -861,7 +1015,6 @@ const ACT = {
   mode(arg) {
     Sfx.pick();
     S.flow = arg;
-    document.body.classList.remove("booting");
     if (arg === "express") S.route = ["loadout", "commit"];
     else if (arg === "update") S.route = MODULES.map((m) => m.id).filter((id) => !S.probe.seen.includes(id) || id === "commit");
     else S.route = MODULES.map((m) => m.id);
@@ -1220,6 +1373,9 @@ async function boot() {
 }
 
 function bootHero(returning) {
+  flight++; // a screen still on its way is not wanted now
+  const old = $("#main > .pane");
+  if (old && !reduce) { leave(old, true); City.fly(-1); }
   S.screen = "boot";
   Art.mount(null, "boot");
   tint("boot");
@@ -1252,6 +1408,9 @@ function bootHero(returning) {
 }
 
 async function finale() {
+  flight++;
+  const old = $("#main > .pane");
+  if (old && !reduce) leave(old, false);
   S.screen = "final";
   tint("final");
   Art.mount(null, "final");
@@ -1297,7 +1456,6 @@ document.addEventListener("click", (e) => {
   if (rail && S.probe && S.screen !== "boot" && S.screen !== "final" && !(S.run && !S.run.done)) {
     const id = rail.dataset.rail;
     if (S.flow !== "custom") { S.flow = "custom"; S.route = MODULES.map((m) => m.id); }
-    document.body.classList.remove("booting");
     Sfx.pick();
     go(id);
     return;
@@ -1323,7 +1481,7 @@ document.addEventListener("mouseleave", () => setHover(null));
 
 document.addEventListener("keydown", (e) => {
   if (e.metaKey || e.ctrlKey || e.altKey) return;
-  if (Art.cutting) { e.preventDefault(); Art.skip(); return; }
+  if ($("#main .pane.arriving")) { e.preventDefault(); land(); return; }
   const inInput = document.activeElement && document.activeElement.tagName === "INPUT";
   const k = e.key;
   if (!inInput) listenForHack(k);

@@ -75,11 +75,11 @@ def _cli(*args):
 
 
 @contextlib.contextmanager
-def _pocket_daemon(claude_home, script_dir, home):
+def _pocket_daemon(claude_home, script_dir, home, stand_in=_STAND_IN):
     """A stand-in Pocket TTS daemon run from script_dir with HOME=home (its
     pid and token files go there), on the port the config names."""
     script = script_dir / "pocket-tts-daemon.py"
-    script.write_text(_STAND_IN)
+    script.write_text(stand_in)
     daemon = _REAL_POPEN([sys.executable, str(script), SCRIPTS], stdout=subprocess.PIPE, text=True,
                          env={**os.environ, "HOME": str(home)})
     try:
@@ -125,3 +125,61 @@ def test_an_engine_without_a_daemon_says_so(claude_home):
     (claude_home / "hobson.json").write_text(json.dumps({"engine": "say"}))
     rc, out = _cli("daemon", "stop")
     assert rc == 1 and "Current engine: say" in out
+
+
+# ── hobson say ──────────────────────────────────────────────────────────────
+
+# Its clips carry their text, so the stand-in afplay can say what it played.
+_ECHO_STAND_IN = _STAND_IN.replace('lambda *a: b"RIFF" + bytes(200)',
+                                   'lambda text, *a: b"RIFF" + text.encode().ljust(200)')
+assert _ECHO_STAND_IN != _STAND_IN
+
+# afplay -v VOLUME CLIP: logs the clip's text as it starts and ends.
+_AFPLAY = """#!{python}
+import os, sys, time
+text = open(sys.argv[-1], "rb").read()[4:].decode().strip()
+log = os.environ["FAKE_AFPLAY_LOG"]
+open(log, "a").write(f"start {{time.time()}} {{text}}\\n")
+time.sleep(0.15)
+open(log, "a").write(f"end {{time.time()}} {{text}}\\n")
+"""
+
+
+def test_two_readings_at_once_take_turns_and_never_overlap(claude_home, tmp_path):
+    """The real CLI, twice at once, against a stand-in daemon and afplay.
+    The loop it replaced started a paragraph every few seconds on top of the
+    last, because `hobson test` returned as soon as afplay started."""
+    bin_dir, log = tmp_path / "bin", tmp_path / "played"
+    bin_dir.mkdir()
+    (bin_dir / "afplay").write_text(_AFPLAY.format(python=sys.executable))
+    (bin_dir / "say").write_text("#!/bin/sh\necho say >> \"$FAKE_AFPLAY_LOG\"\nexit 1\n")
+    for tool in ("afplay", "say"):
+        (bin_dir / tool).chmod(0o755)
+    texts = {"a": "Alpha one.\n\nAlpha two.\n", "b": "Beta one.\n\nBeta two.\n"}
+    for name, text in texts.items():
+        (tmp_path / f"{name}.txt").write_text(text)
+    env = {**os.environ, "PATH": f"{bin_dir}:{os.environ['PATH']}", "FAKE_AFPLAY_LOG": str(log)}
+
+    with _pocket_daemon(claude_home, tmp_path, claude_home.parent, _ECHO_STAND_IN):
+        config = json.loads((claude_home / "hobson.json").read_text())
+        config.update(face={"enabled": False}, presence={"enabled": False})
+        (claude_home / "hobson.json").write_text(json.dumps(config))
+        readers = [_REAL_POPEN(["/bin/bash", CLI, "say", "-f", str(tmp_path / f"{name}.txt")],
+                               stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, env=env)
+                   for name in texts]
+        results = [(r.communicate(timeout=30)[0], r.returncode) for r in readers]
+
+    assert [rc for _, rc in results] == [0, 0], results
+    # Read straight after both exited: each waited for its last passage.
+    events = [line.split(" ", 2) for line in log.read_text().splitlines()]
+    assert "say" not in log.read_text()
+    starts = [(float(t), text) for kind, t, text in events if kind == "start"]
+    ends = [(float(t), text) for kind, t, text in events if kind == "end"]
+    assert len(starts) == len(ends) == 4
+    played = sorted(starts)
+    for (_, text), (next_start, _) in zip(played, played[1:]):
+        assert next_start >= dict((t, e) for e, t in ends)[text]  # never two at once
+    order = [text for _, text in played]
+    assert order in (["Alpha one.", "Alpha two.", "Beta one.", "Beta two."],
+                     ["Beta one.", "Beta two.", "Alpha one.", "Alpha two."])
+    assert not list(claude_home.glob("pocket-tts-playback-*.wav"))

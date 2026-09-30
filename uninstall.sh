@@ -97,6 +97,8 @@ state=(
     "$CLAUDE_DIR/hobson.muted"
     "$CLAUDE_DIR/hobson.lock"
     "$CLAUDE_DIR/hobson-commentary.lock"
+    "$CLAUDE_DIR/hobson-voice.lock"
+    "$CLAUDE_DIR/hobson-reading.lock"
     "$CLAUDE_DIR"/hobson-nudge-*.lock
     "$CLAUDE_DIR"/hobson-watchdog-*.lock
     "$CLAUDE_DIR"/hobson-activity-*
@@ -107,13 +109,14 @@ state=(
     "$CLAUDE_DIR/hobson-presence-lines.json"
     "$CLAUDE_DIR/hobson-held.json"
     "$CLAUDE_DIR/hobson-held.lock"
+    "$CLAUDE_DIR/hobson-face.json"
     "$CLAUDE_DIR/hobson-setup.json"
     "$CLAUDE_DIR/kokoro-daemon.log"
     "$CLAUDE_DIR/pocket-tts-daemon.log"
     "$CLAUDE_DIR/kokoro-daemon.token"
     "$CLAUDE_DIR/pocket-tts-daemon.token"
-    "$CLAUDE_DIR/kokoro-playback.wav"
-    "$CLAUDE_DIR/pocket-tts-playback.wav"
+    "$CLAUDE_DIR"/kokoro-playback*.wav
+    "$CLAUDE_DIR"/pocket-tts-playback*.wav
     # Legacy names from claude-bark installs
     "$CLAUDE_DIR/claude-bark.json"
     "$CLAUDE_DIR/voice-bark.muted"

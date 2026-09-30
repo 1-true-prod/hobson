@@ -87,11 +87,37 @@ def no_audio(monkeypatch):
 
     monkeypatch.setattr(base.subprocess, "Popen", FakePopen)
 
-    def fake_say(self, text):
+    def fake_say(self, text, kind=None):
         calls["say"].append(text)
 
     monkeypatch.setattr(base.BaseEngine, "_say_with_volume", fake_say)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def no_face(monkeypatch):
+    """Record what would go on Hobson's face instead of showing it.
+
+    autouse for the same reason as no_audio: the real face.show can reach
+    presence.ensure_running, whose subprocess is not the one no_audio
+    patches, and in a dev checkout build/HobsonPresence.app exists -- a test
+    would launch it. tests/test_face.py keeps the real one, taken at import,
+    with os.kill and ensure_running stubbed.
+
+    Returns a list of (phrase, kind, audio), with "asked" appended for a
+    line shown because you asked (ask.py).
+    """
+    import face
+
+    shown = []
+
+    def fake_show(config, phrase, kind, audio=None, project=None, now=None, asked=False):
+        shown.append((phrase, kind, audio) + (("asked",) if asked else ()))
+        return True
+
+    monkeypatch.setattr(face, "show", fake_show)
+    monkeypatch.setattr(face, "_failed", False)
+    return shown
 
 
 class _FakeResp:

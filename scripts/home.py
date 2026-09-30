@@ -249,8 +249,11 @@ DEFAULT_CONFIG = {
         # A farewell when you leave and a greeting when you are back, even
         # with nothing to tell (presence.py: guarded against flapping).
         "greetings": True,
+        # Answer a wave at the camera (continuous mode). Off, the hand-pose
+        # pass does not run at all; "Answer Waves" in the menu bar toggles it.
+        "waves": True,
         # The helper exits once no hook has run for this long and nothing is
-        # held for your return.
+        # held for your return. Never while paused: its icon stays to resume.
         "exit_after": 1800,
         # Bundle-id prefixes whose microphone use also means a call, beyond
         # the built-in list (presence/main.swift, Signals.callApps).
@@ -269,6 +272,19 @@ DEFAULT_CONFIG = {
         # icon, senses nothing, and Hobson speaks as with presence off.
         # `hobson presence on` resumes it.
         "paused": False,
+    },
+    # Hobson's face (scripts/face.py): a small window where he says each
+    # line as he speaks it, drawn by the presence helper. Works with
+    # presence off (the helper then senses nothing).
+    "face": {
+        "enabled": True,
+        # Commentary is voice only: a window every minute of work is noise.
+        "commentary": False,
+        # A line that waits on you (a waiting Stop, a nudge) stays up until
+        # you type in that session, for at most ten minutes.
+        "hold_waiting": True,
+        # The window's width in points; the height follows.
+        "width": 280,
     },
     # Optional remote decision model (Jev, via OpenRouter's Decisions API).
     # See scripts/decider.py. At "local" (the default) it makes zero network

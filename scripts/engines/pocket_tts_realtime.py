@@ -13,7 +13,7 @@ class PocketTTSRealtimeEngine(DaemonEngine):
         section="pocket_tts",
         venv="pocket-tts",
         script="pocket-tts-daemon.py",
-        playback="pocket-tts-playback.wav",
+        playback="pocket-tts-playback",
         startup_polls=80,       # model load is heavier than Kokoro's; up to 20s
         generate_timeout=10,
         # Language and temperature are fixed when the daemon starts; each

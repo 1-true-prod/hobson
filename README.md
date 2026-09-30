@@ -144,6 +144,10 @@ Voice that talks constantly gets turned off, so most of Hobson's recent work is 
   happened, nothing said. Lock the screen while a session is waiting on you and he mentions it
   on your way out. See [Presence](#presence).
 - **`hobson recap`** — pull a spoken summary of the last 10 minutes when you come back to the desk.
+- **`hobson say`** — have him read something to you: `hobson say -f spec.md`, `pbpaste | hobson
+  say`, or ask an agent to. A passage at a time, returning when he has finished; `hobson off` or
+  Ctrl-C stops him. One voice at a time throughout: another session's announcement waits for the
+  passage playing, and a second reading waits for the first.
 - **`hobson stats`** — see what was spoken, queued, and suppressed, and why.
 
 ## Presence
@@ -183,12 +187,34 @@ from it (on your screen only; nothing is saved).
 **The menu bar.** While presence runs, an icon in the menu bar shows what he sees, with
 **Show Preview** to show or hide that window and **Presence On** to pause: unticked, the camera
 is off, nothing is sensed, and he speaks as if presence were off. Tick it again, or run
-`hobson presence on`, to resume. `hobson presence off` turns it off entirely, icon and all.
+`hobson presence on`, to resume; the icon stays until you do. **Answer Waves** turns wave detection off (and on again): the
+camera stays for your face, but he stops looking for a raised hand. `hobson presence off` turns it off entirely (the icon stays
+only while the face is on, which the helper also draws).
 
 Only a human face counts as someone: not a body, not a shape, not anything else that moves. In
 `continuous` mode, no face and no keystroke for 30 seconds is away (`presence.away_after`); looking
 down at a phone that long counts as leaving. Wave at the camera, with your face in view, and he
 answers: the briefing if anything is waiting, otherwise a hello.
+
+## Hobson's face
+
+When Hobson says something, you see him say it: a small window in the top right corner, under
+the menu bar, with Valet, an ASCII bust drawn in code, speaking the line. The window never takes
+focus, so typing carries on where it was. His mouth follows the audio, he looks towards where the
+camera last saw you, and the signal is a little spotty on purpose. A finished line goes a moment
+after he stops; one that waits on you stays until you type in that session (ten minutes at most).
+Click to dismiss, drag to move (it remembers where). Red means something failed, and nothing else.
+
+Commentary stays voice only. It works with presence off too: the helper then only draws the face.
+`hobson face off` turns it off; `hobson face test` shows a line; **Show Hobson** in the menu bar
+does the same as `on`/`off`.
+
+**Ask Hobson.** The menu bar's **Ask Hobson** asks him about every session at once: **What needs
+me?** (who is waiting on you, what failed, what finished, what is still working), **What have you
+been doing?** (the last half hour, a sentence for each of the three busiest projects, from your
+local Ollama), and **What failed?** The first and last are read from what he keeps and never
+guess. He answers aloud and on the face; muted, on the face only. `hobson ask [status|recap|failed]`
+does the same from the terminal.
 
 ## Personalities
 
@@ -233,17 +259,24 @@ hobson volume [0-10]       Get or set playback volume
 hobson voice [name]        Switch Kokoro voice (interactive picker)
 hobson test                Play a test bark
 hobson recap [minutes]     Speak a summary of recent activity (default 10m)
+hobson say [TEXT|-f FILE]  Read text aloud (or piped in), a passage at a time
 hobson presence            Whether anyone is listening, and what is held for you
 hobson presence on|off     Hold speech while you're away / always speak
 hobson presence mode [signals|auto|continuous]
                             How Hobson knows you're there (camera use)
 hobson presence greetings on|off
                             A word when you leave, a welcome when you're back
+hobson presence waves on|off
+                            Answer a wave at the camera, or stop looking for one
 hobson presence preview on|off
                             A floating window: the feed and what Hobson sees in it
 hobson presence phone [auto|off|SERIAL]
                             Android phone face up = camera on, face down = off
 hobson presence look|setup Take one look / build the sensor and ask for the camera
+hobson face [on|off]       The window where Hobson says each line (on by default)
+hobson face test [LINE]    Show a line on the face, with no voice
+hobson ask [status|recap|failed]
+                            What needs me? / What have you been doing? / What failed?
 hobson lines [category]    Show voice lines from active personality
 hobson monitor             Watch bark activity in real time
 hobson stats               Show what was spoken, queued, and suppressed

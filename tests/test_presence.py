@@ -15,9 +15,11 @@ import presence
 
 
 def _state(claude_home, **fields):
-    """Write the helper's state file as a live helper would."""
+    """Write the helper's state file as a live helper would (the face is on
+    by default, and so is answering waves)."""
     record = {"state": "present", "source": "input", "ts": time.time(), "since": time.time(),
-              "mode": "auto", "camera": "authorized", "pid": 0, "glance_ts": 0}
+              "mode": "auto", "camera": "authorized", "pid": 0, "glance_ts": 0,
+              "face": True, "face_only": False, "waves": True}
     record.update(fields)
     (claude_home / "hobson-presence.json").write_text(json.dumps(record))
     return record
@@ -402,7 +404,7 @@ def test_does_not_start_when_off_unbuilt_or_running(claude_home, no_audio, monke
     monkeypatch.setattr(presence, "helper_built", lambda: False)
     assert not presence.ensure_running(_config(enabled=True))
     monkeypatch.setattr(presence, "helper_built", lambda: True)
-    assert not presence.ensure_running(_config(enabled=False))
+    assert not presence.ensure_running({**_config(enabled=False), "face": {"enabled": False}})
     _state(claude_home, mode="auto")
     assert not presence.ensure_running(_config(enabled=True, mode="auto"))
     assert no_audio["popen"] == []
@@ -427,6 +429,83 @@ def test_the_phone_switch_reaches_the_helper(claude_home, no_audio, built, monke
     presence.ensure_running(_config(enabled=True, phone="auto"))
     argv = no_audio["popen"][-1]
     assert argv[argv.index("--phone") + 1] == "auto" and argv[argv.index("--adb") + 1] == "/sdk/adb"
+
+
+def test_the_face_reaches_the_helper(claude_home, no_audio, built):
+    presence.ensure_running(_config(enabled=True))
+    argv = no_audio["popen"][-1]
+    assert "--face" in argv and "--face-only" not in argv
+    assert argv[argv.index("--face-page") + 1] == presence.face_page()
+
+
+def test_with_presence_off_the_face_runs_the_helper_face_only(claude_home, no_audio, built):
+    """It senses nothing: no preview, no phone, no pause of its own."""
+    presence.ensure_running(_config(enabled=False, preview=True, phone="auto", paused=True))
+    argv = no_audio["popen"][-1]
+    assert "--face" in argv and "--face-only" in argv and argv[:3] == ["open", "-g", "-j"]
+    assert not {"--preview", "--paused", "--phone"} & set(argv)
+
+
+def test_the_face_off_is_passed_on_too(claude_home, no_audio, built):
+    presence.ensure_running({**_config(enabled=True), "face": {"enabled": False}})
+    argv = no_audio["popen"][-1]
+    assert "--face" not in argv and "--face-page" in argv  # Show Hobson can turn it on later
+
+
+@pytest.mark.parametrize("record, config", [
+    ({"face": True}, {**_config(enabled=True), "face": {"enabled": False}}),
+    ({"face": True, "face_only": False}, _config(enabled=False)),   # now face only
+    ({"face": True, "face_only": True, "state": "off"}, _config(enabled=True)),
+])
+def test_a_helper_running_with_other_face_settings_is_restarted(record, config, claude_home, built,
+                                                                 monkeypatch):
+    _state(claude_home, mode="auto", pid=777, **{"face": False, "face_only": False, **record})
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    presence.ensure_running(config)
+    assert killed == [777]
+
+
+def test_a_helper_built_before_the_face_is_restarted(claude_home, built, monkeypatch):
+    """Its record has no "face": face.py never signals it (SIGUSR2 would kill
+    it), and ensure_running replaces it with one that has."""
+    record = _state(claude_home, mode="auto", pid=779)
+    del record["face"], record["face_only"]
+    (claude_home / "hobson-presence.json").write_text(json.dumps(record))
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    presence.ensure_running(_config(enabled=True))
+    assert killed == [779]
+
+
+def test_a_face_only_helper_is_left_alone(claude_home, no_audio, built, monkeypatch):
+    _state(claude_home, state="off", source="face-only", pid=778, face=True, face_only=True)
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    assert not presence.ensure_running(_config(enabled=False))
+    assert killed == [] and no_audio["popen"] == []
+
+
+def test_the_face_setting_is_written_to_its_own_section(claude_home, monkeypatch):
+    restarted = []
+    monkeypatch.setattr(presence, "_restart", lambda: restarted.append(1))
+    presence.main(["--set", "face.enabled", "false", "--keep-running"])  # from the menu
+    assert restarted == []
+    presence.main(["--set", "face.width", "320"])
+    presence.main(["--set", "face.enabled", "true"])                     # from the CLI
+    assert restarted == [1]
+    written = json.loads((claude_home / "hobson.json").read_text())
+    assert written["face"] == {"enabled": True, "width": 320} and "presence" not in written
+
+
+def test_presence_off_with_the_face_on_restarts_as_face_only(claude_home, monkeypatch):
+    calls = []
+    monkeypatch.setattr(presence, "_restart", lambda: calls.append("restart"))
+    monkeypatch.setattr(presence, "stop_helper", lambda *a: calls.append("stop"))
+    presence.main(["--set", "enabled", "false"])
+    presence.set_setting("enabled", False, "face")
+    presence.main(["--set", "enabled", "false"])
+    assert calls == ["restart", "stop"]
 
 
 # ── The engines' speak seams ───────────────────────────────────────────────
@@ -556,6 +635,54 @@ def test_the_preview_is_off_by_default():
     assert home.DEFAULT_CONFIG["presence"]["preview"] is False
 
 
+# ── Answer Waves, from the menu bar ────────────────────────────────────────
+
+def test_answering_waves_is_on_by_default():
+    import home
+    assert home.DEFAULT_CONFIG["presence"]["waves"] is True
+
+
+@pytest.mark.parametrize("waves, flagged", [(True, False), (False, True)])
+def test_waves_off_reaches_the_helper_as_a_flag_and_on_is_no_flag(waves, flagged, claude_home, no_audio, built):
+    presence.ensure_running(_config(enabled=True, waves=waves))
+    assert ("--no-waves" in no_audio["popen"][-1]) is flagged
+
+
+def test_a_face_only_helper_is_not_told_about_waves(claude_home, no_audio, built):
+    """It senses nothing, so the setting is neutral: no flag, and the record it writes (waves on)
+    agrees with what is expected of it, or every hook would restart it."""
+    presence.ensure_running(_config(enabled=False, waves=False))
+    assert "--face-only" in no_audio["popen"][-1] and "--no-waves" not in no_audio["popen"][-1]
+    assert presence._matches({"mode": "auto", "phone_setting": None, "face": True, "face_only": True,
+                              "waves": True}, presence.expected(_config(enabled=False, waves=False)))
+
+
+def test_a_helper_answering_waves_against_the_config_is_restarted(claude_home, built, monkeypatch):
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    _state(claude_home, pid=411, waves=True)
+    presence.ensure_running(_config(enabled=True, waves=False))
+    assert killed == [411]
+    _state(claude_home, pid=412, waves=False)
+    presence.ensure_running(_config(enabled=True, waves=True))
+    assert killed == [411, 412]
+    presence.ensure_running(_config(enabled=True, waves=False))  # agrees: left alone
+    assert killed == [411, 412]
+
+
+def test_the_menu_toggles_waves_without_a_restart_and_the_cli_restarts(claude_home, monkeypatch):
+    stopped = []
+    monkeypatch.setattr(presence, "stop_helper", lambda *a: stopped.append(1) or True)
+    monkeypatch.setattr(presence, "ensure_running", lambda *a: None)
+    monkeypatch.setattr(presence.time, "sleep", lambda s: None)
+    presence.main(["--set", "waves", "false", "--keep-running"])
+    assert stopped == []
+    assert presence.settings(json.loads((claude_home / "hobson.json").read_text()))["waves"] is False
+    presence.main(["--set", "waves", "true"])  # from the CLI: restarted at once
+    assert stopped == [1]
+    assert presence.settings(json.loads((claude_home / "hobson.json").read_text()))["waves"] is True
+
+
 # ── Paused from the menu bar ───────────────────────────────────────────────
 
 def _paused_state(claude_home, **fields):
@@ -604,6 +731,11 @@ def test_presence_on_resumes_a_pause(claude_home, monkeypatch):
     assert cfg["enabled"] is True and cfg["paused"] is False
     presence.main(["--set", "enabled", "true"])  # not paused: nothing to restart
     assert restarted == [1]
+
+
+def test_the_sensor_says_why_it_exited(claude_home):
+    presence.main(["--sensor-exit", "no hook activity for 1800s"])
+    assert "[presence] sensor exited (no hook activity for 1800s)" in (claude_home / "hobson.log").read_text()
 
 
 def test_status_says_paused(claude_home, built):

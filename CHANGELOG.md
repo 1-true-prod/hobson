@@ -4,6 +4,30 @@
 
 ### New
 
+- **`hobson say`** reads text aloud on demand: `hobson say "…"`, `hobson say -f spec.md`, or piped
+  in. A passage at a time, each rendered while the last plays, and it returns when the last has
+  finished; `hobson off`, quiet hours or Ctrl-C stop it mid-passage
+- **One voice at a time.** Hobson no longer talks over himself: every clip, from any session,
+  waits for the one playing. An agent reading a spec through `hobson test "…"` in a loop had
+  eighteen paragraphs playing on top of each other within a minute, and two sessions finishing
+  together always overlapped. Commentary that would have to wait is dropped instead. `hobson test
+  "TEXT"` now reads like `hobson say`
+- **Answer Waves** in the menu bar, and `hobson presence waves on|off`: turns wave detection off
+  and on. Off, the hand-pose pass does not run at all (the camera stays for your face). On by
+  default
+- **Ask Hobson.** From the menu bar or `hobson ask`: *What needs me?*, *What have you been
+  doing?* and *What failed?*, about every session at once, answered aloud and on the face.
+  Muted, shown only. The status and the failures are read from what Hobson keeps, with no
+  model; the recap asks the local model once per project and never says what the notes do not
+- **`hobson monitor` shows the face and the questions**: which window got each line, how long
+  it stayed and why it went, lines that never showed, and a page or audio that failed (in red)
+- `hobson recap` no longer counts Hobson's own briefings and answers as work done
+- **Hobson's face.** Each line he speaks appears in a small window in the top right corner:
+  Valet, an ASCII bust drawn in code, saying it with his mouth on the audio, looking towards
+  where the camera last saw you, over a slightly spotty signal. It never takes focus. A line that
+  waits on you stays until you type in that session; a click dismisses, a drag moves. Commentary
+  stays voice only. On by default, with presence or without; `hobson face off` turns it off,
+  `hobson face test` shows a line, and the menu bar has **Show Hobson**
 - **The setup wizard.** Installing opens a window that walks through every choice: the engine,
   its voice and personality (each heard before anything is downloaded), when Hobson speaks, the
   Ollama model (any model; the default is marked recommended), Jev, presence and the phone switch.
@@ -50,6 +74,8 @@
 
 ### Fixes
 
+- **A paused sensor keeps its menu-bar icon.** It quit after 30 minutes without a hook, and the
+  icon, the only way to resume from the menu, went with it. Every exit is now in the log
 - **The TTS daemons no longer take orders from web pages.** Any page open in a browser could stop
   the Kokoro or Pocket TTS daemon, or make it speak, with a plain request to 127.0.0.1; and Pocket
   TTS would fetch any URL, or load any file, a request named as its voice. The daemons now check

@@ -121,9 +121,17 @@ def test_read_yields_the_records_of_a_file(tmp_path):
 def test_playback_round_trip_and_golden_line():
     for phrase in ("I ran the tests.", "I'm done.", 'He said "no" and it\'s fine.'):
         body = log_record.playback("say-fallback: daemon down", phrase)
-        assert log_record.parse_playback(body) == ("say-fallback: daemon down", phrase)
+        assert log_record.parse_playback(body) == ("say-fallback: daemon down", phrase, None)
     assert log_record.parse_playback(log_record.parse(PLAYBACK).body) == (
-        "daemon-live", "I'm hitting a problem with logging analysis.")
+        "daemon-live", "I'm hitting a problem with logging analysis.", None)
+
+
+def test_playback_carries_what_the_phrase_was_about():
+    """New lines name the kind; the old shape, without it, still reads."""
+    body = log_record.playback("daemon-live", "Welcome back.", "briefing")
+    assert body == "barked (daemon-live) [briefing] -> 'Welcome back.'"
+    assert log_record.parse_playback(body) == ("daemon-live", "Welcome back.", "briefing")
+    assert log_record.tail_phrase(body) == "Welcome back."
 
 
 def test_playback_is_only_a_played_phrase():

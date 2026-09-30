@@ -1,0 +1,91 @@
+/* Hobson's face: one window, drawn by face.js. The presence helper shows it
+   in a transparent, non-activating panel sized to .win (face.js posts it). */
+:root {
+  color-scheme: dark;
+  --bg: #020305;
+  --ink: #e6efe9;
+  --faint: rgba(230, 239, 233, 0.36);
+  --line: rgba(230, 239, 233, 0.14);
+  --tint: #19e6ff;
+  --warn: #ff3b5c;
+  --mono: ui-monospace, "SF Mono", SFMono-Regular, Menlo, Monaco, monospace;
+}
+* { box-sizing: border-box; }
+html, body { margin: 0; background: transparent; overflow: hidden; }
+body { color: var(--ink); font: 13px/1.45 var(--mono); -webkit-user-select: none; user-select: none; cursor: default; }
+
+.win {
+  position: relative;
+  width: 100%;
+  background: var(--bg);
+  border: 1px solid var(--line);
+  border-radius: 10px;
+  padding: 12px 12px 10px;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr);   /* a long project name must not widen it */
+  gap: 9px;
+  overflow: hidden;
+  transition: border-color 400ms;
+  opacity: 0;
+  transform: scale(0, 0.004);
+}
+/* Scanlines over everything, the canvas included. */
+.win::after {
+  content: "";
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  background: repeating-linear-gradient(to bottom, transparent 0, transparent 2px, rgba(0, 0, 0, 0.25) 2px, rgba(0, 0, 0, 0.25) 3px);
+}
+.win[data-kind="broken"] { border-color: rgba(255, 59, 92, 0.45); }
+
+/* Switched on and off like a CRT. */
+.win[data-state="on"] { animation: crt-on 340ms ease-out forwards; }
+.win[data-state="off"] { animation: crt-off 260ms ease-in forwards; }
+@keyframes crt-on {
+  0% { opacity: 1; transform: scale(0, 0.004); filter: brightness(3); }
+  45% { opacity: 1; transform: scale(1, 0.004); filter: brightness(2.4); }
+  100% { opacity: 1; transform: scale(1, 1); filter: none; }
+}
+@keyframes crt-off {
+  0% { opacity: 1; transform: scale(1, 1); }
+  55% { opacity: 1; transform: scale(1, 0.004); filter: brightness(2.4); }
+  100% { opacity: 0; transform: scale(0, 0.004); filter: brightness(3); }
+}
+
+.screen { display: flex; justify-content: center; min-width: 0; }
+.screen canvas { display: block; max-width: 100%; }
+
+.cap { color: var(--ink); min-height: 2.9em; transition: opacity 600ms; overflow-wrap: anywhere; }
+.cap .p { color: var(--tint); }
+.win[data-kind="broken"] .cap .p { color: var(--warn); }
+.cap.past { opacity: 0.45; }
+.cap .cur { display: inline-block; width: 0.6em; height: 1.05em; vertical-align: -0.18em; background: var(--tint); margin-left: 2px; animation: blink 1.05s steps(1) infinite; }
+.win[data-kind="broken"] .cap .cur { background: var(--warn); }
+@keyframes blink { 50% { opacity: 0; } }
+
+.meta { display: flex; justify-content: space-between; align-items: center; gap: 10px; font-size: 11px; letter-spacing: 0.08em; text-transform: uppercase; color: var(--faint); }
+/* A long project name wraps, up to three lines; the panel grows to fit (face.js posts its size). */
+.meta > span:first-child { min-width: 0; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 3; overflow: hidden; }
+.chip { color: var(--tint); flex-shrink: 0; white-space: nowrap; }
+.win[data-kind="broken"] .chip { color: var(--warn); }
+.bars { display: inline-flex; align-items: flex-end; gap: 2px; height: 0.8em; margin-left: 0.8em; vertical-align: -0.05em; }
+.proj:empty + .bars { margin-left: 0; }
+.bars i { width: 2px; background: var(--faint); transition: opacity 120ms; }
+.bars i:nth-child(1) { height: 30%; }
+.bars i:nth-child(2) { height: 55%; }
+.bars i:nth-child(3) { height: 80%; }
+.bars i:nth-child(4) { height: 100%; }
+.bars[data-lvl="1"] i:nth-child(n+2), .bars[data-lvl="2"] i:nth-child(n+3), .bars[data-lvl="3"] i:nth-child(4) { opacity: 0.2; }
+
+/* In a browser (?mock): the window on a dark desk. */
+html.mock { background: #0b0d10; }
+html.mock body { padding: 28px; }
+html.mock .win { width: 280px; margin-left: auto; box-shadow: 0 18px 60px rgba(0, 0, 0, 0.55); }
+
+@media (prefers-reduced-motion: reduce) {
+  .win[data-state="on"], .win[data-state="off"] { animation: none; transform: none; transition: opacity 200ms; }
+  .win[data-state="on"] { opacity: 1; }
+  .win[data-state="off"] { opacity: 0; }
+  .cap .cur { animation: none; }
+}

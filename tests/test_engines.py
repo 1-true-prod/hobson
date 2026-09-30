@@ -198,7 +198,102 @@ def test_say_reads_the_phrase_as_text_never_as_an_option(phrase, no_audio, monke
     from engines.say import SayEngine
     monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
     SayEngine(_cfg())._say_with_volume(phrase)
-    [argv] = [a for a in no_audio["popen"] if a[:2] == ["sh", "-c"]]
-    words = shlex.split(argv[2])
-    assert words[0] == "say" and words[words.index("--") + 1] == phrase
-    assert words.index("--") > words.index("-o")
+    [say] = [a for a in no_audio["popen"] if a[0] == "say"]
+    assert say[-2:] == ["--", phrase] and say.index("--") > say.index("-o")
+    # Played from the rendered clip; the phrase never reaches a shell.
+    [played] = [a for a in no_audio["popen"] if a[:2] == ["sh", "-c"]]
+    words = shlex.split(played[2])
+    assert words[0] == "afplay" and say[say.index("-o") + 1] in words and phrase not in words
+
+
+# ── The face: every played phrase, once, after the voice ─────────────────────
+
+def _face_after_voice(monkeypatch, no_audio, seen):
+    """A face.show that records what was already spawned when it was called."""
+    import face
+
+    def show(config, phrase, kind, audio=None, **k):
+        seen.append({"phrase": phrase, "kind": kind, "audio": audio,
+                     "spawned": [list(a) for a in no_audio["popen"]]})
+        return True
+
+    monkeypatch.setattr(face, "show", show)
+
+
+def _cached(claude_home, phrase):
+    cache = claude_home / "voice-cache-chatterbox"
+    cache.mkdir(exist_ok=True)
+    clip = cache / f"{base.bark_hash(phrase)}.wav"
+    clip.write_bytes(b"RIFF")
+    return clip
+
+
+def test_a_cached_template_goes_on_the_face_after_afplay(claude_home, no_audio, monkeypatch):
+    from engines.chatterbox import ChatterboxEngine
+    phrase = "The migration is finished."
+    clip = _cached(claude_home, phrase)
+    seen = []
+    _face_after_voice(monkeypatch, no_audio, seen)
+    ChatterboxEngine(_cfg("chatterbox")).try_bark(phrase, kind="done")
+    [shown] = seen
+    assert (shown["phrase"], shown["kind"], shown["audio"]) == (phrase, "done", str(clip))
+    assert shown["spawned"][-1][0] == "afplay" and shown["spawned"][-1][-1] == str(clip)
+
+
+def test_the_say_path_renders_first_then_plays_and_shows_the_clip(no_audio, monkeypatch):
+    """The face needs the audio to move to, so say renders before playback."""
+    from engines.say import SayEngine
+    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    seen = []
+    _face_after_voice(monkeypatch, no_audio, seen)
+    SayEngine(_cfg()).speak_dynamic("I pushed the branch.", kind="waiting")
+    [shown] = seen
+    say, played = shown["spawned"]
+    assert say[0] == "say" and shown["audio"] == say[say.index("-o") + 1]
+    assert played[:2] == ["sh", "-c"] and "rm -f" in played[2]
+    assert (shown["phrase"], shown["kind"]) == ("I pushed the branch.", "waiting")
+
+
+def test_a_say_that_cannot_render_plays_and_shows_nothing(no_audio, monkeypatch):
+    from engines.say import SayEngine
+
+    class FailingSay:
+        def __init__(self, args, *a, **k):
+            no_audio["popen"].append(args)
+
+        def wait(self, *a, **k):
+            return 1
+
+    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    monkeypatch.setattr(base.subprocess, "Popen", FailingSay)
+    seen = []
+    _face_after_voice(monkeypatch, no_audio, seen)
+    SayEngine(_cfg())._say_with_volume("I pushed the branch.")
+    assert [a[0] for a in no_audio["popen"]] == ["say"] and seen == []
+
+
+def test_a_failing_face_still_plays_and_logs_the_bark(claude_home, no_audio, monkeypatch):
+    import face
+    from engines.chatterbox import ChatterboxEngine
+
+    def broken(*a, **k):
+        raise RuntimeError("no face today")
+
+    monkeypatch.setattr(face, "show", broken)
+    phrase = "The migration is finished."
+    _cached(claude_home, phrase)
+    ChatterboxEngine(_cfg("chatterbox")).try_bark(phrase, kind="done")
+    assert no_audio["popen"][-1][0] == "afplay"
+    log = (claude_home / "hobson.log").read_text()
+    assert "face failed (no face today)" in log and "barked (template-cache)" in log
+
+
+def test_a_phrase_presence_holds_never_reaches_the_face(no_audio, no_face, monkeypatch):
+    import presence
+    from engines.say import SayEngine
+    monkeypatch.setattr(presence, "route", lambda config, kind, phrase, project=None: None)
+    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    eng = SayEngine(_cfg())
+    eng.try_bark("The migration is finished.", kind="done")
+    assert eng.speak_dynamic("I pushed the branch.", kind="waiting") is False
+    assert no_audio["popen"] == [] and no_face == []

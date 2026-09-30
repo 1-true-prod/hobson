@@ -28,7 +28,8 @@
 // `presence.py --wave`, and Hobson answers. Only faces are people: not
 // bodies, not outlines, not anything else that moves.
 //
-// The menu bar: an icon for the state, "Show Preview" and "Presence On".
+// The menu bar: an icon for the state, "Show Preview", "Presence On" and
+// "Answer Waves" (--no-waves: the hand-pose pass does not run at all).
 // Unticking Presence pauses it (--paused): no camera, no sensing, state
 // "off", and Hobson speaks as with presence off; the icon stays to resume.
 // Each toggle is written to the config (presence.py --set ... --keep-running)
@@ -44,6 +45,11 @@
 // written. The camera prompt appears only with --request-permission, which
 // `hobson presence setup` passes; otherwise an undecided permission means no
 // camera, never a surprise dialog in the middle of work.
+//
+// The face (Face.swift): the same helper draws Hobson saying each line, in a
+// window of its own, when face.py sends SIGUSR2 -- with presence off too
+// (--face-only: nothing is sensed, the state is "off"). SIGUSR2 is ignored
+// before anything else, since its default action would end the sensor.
 //
 // Built by scripts/build-presence.sh into build/HobsonPresence.app, and
 // launched with `open` so that the camera permission belongs to this bundle,
@@ -74,6 +80,10 @@ struct Options {
     var adb = "adb"
     var preview = false          // a floating window: the feed and what the sensor makes of it
     var paused = false           // paused from the menu bar: an icon, and nothing sensed
+    var face = false             // Hobson's face: show each line he speaks (Face.swift)
+    var faceOnly = false         // presence off, the face on: the helper senses nothing
+    var waves = true             // answer a wave (continuous mode); --no-waves turns it off
+    var facePage: String?        // the face's page, presence/face/ in the checkout
 }
 
 func parseOptions() -> Options {
@@ -100,6 +110,10 @@ func parseOptions() -> Options {
         case "--read-phone": o.command = "phone"
         case "--preview": o.preview = true
         case "--paused": o.paused = true
+        case "--face": o.face = true
+        case "--face-only": o.faceOnly = true
+        case "--no-waves": o.waves = false
+        case "--face-page": o.facePage = take()
         case "--look": o.command = "look"
         default: break  // LaunchServices may add its own arguments
         }
@@ -614,6 +628,9 @@ struct DebugSnapshot {
     let wavedAgo: Double?
     let paused: Bool
     let preview: Bool
+    let face: Bool
+    let faceOnly: Bool
+    let waves: Bool
 }
 
 /// A small floating panel: the camera feed (mirrored, as a mirror is), a box
@@ -786,24 +803,45 @@ final class MenuBar: NSObject {
     let status = NSMenuItem(title: "Hobson Presence", action: nil, keyEquivalent: "")
     let previewItem = NSMenuItem(title: "Show Preview", action: #selector(togglePreview), keyEquivalent: "")
     let presenceItem = NSMenuItem(title: "Presence On", action: #selector(togglePresence), keyEquivalent: "")
+    let wavesItem = NSMenuItem(title: "Answer Waves", action: #selector(toggleWaves), keyEquivalent: "")
+    let faceItem = NSMenuItem(title: "Show Hobson", action: #selector(toggleFace), keyEquivalent: "")
+    let askItem = NSMenuItem(title: "Ask Hobson", action: nil, keyEquivalent: "")
+    /// The questions, by the key presence.py --ask takes (ask.py).
+    static let questions = [("status", "What needs me?"), ("recap", "What have you been doing?"),
+                            ("failed", "What failed?")]
+    var onAsk: ((String) -> Void)?
     var onPreview: (() -> Void)?
     var onPresence: (() -> Void)?
+    var onWaves: (() -> Void)?
+    var onFace: (() -> Void)?
     private var shown = ""
 
     static let symbols: [String: String] = [
         "present": "person.fill", "away": "person", "company": "person.2.fill",
-        "call": "phone.fill", "paused": "eye.slash",
+        "call": "phone.fill", "paused": "eye.slash", "face-only": "person.crop.square",
     ]
 
     override init() {
         super.init()
-        for entry in [previewItem, presenceItem] { entry.target = self }
+        for entry in [previewItem, presenceItem, wavesItem, faceItem] { entry.target = self }
         status.isEnabled = false
         menu.autoenablesItems = false
         menu.addItem(status)
         menu.addItem(.separator())
+        let questions = NSMenu()
+        for (key, title) in MenuBar.questions {
+            let q = NSMenuItem(title: title, action: #selector(ask(_:)), keyEquivalent: "")
+            q.target = self
+            q.representedObject = key
+            questions.addItem(q)
+        }
+        askItem.submenu = questions
+        menu.addItem(askItem)
+        menu.addItem(.separator())
         menu.addItem(previewItem)
         menu.addItem(presenceItem)
+        menu.addItem(wavesItem)
+        menu.addItem(faceItem)
         item.menu = menu
         item.button?.toolTip = "Hobson Presence"
         show("present")
@@ -811,12 +849,28 @@ final class MenuBar: NSObject {
 
     @objc func togglePreview() { onPreview?() }
     @objc func togglePresence() { onPresence?() }
+    @objc func toggleWaves() { onWaves?() }
+    @objc func toggleFace() { onFace?() }
+    @objc func ask(_ sender: NSMenuItem) {
+        if let key = sender.representedObject as? String { onAsk?(key) }
+    }
 
     func update(_ s: DebugSnapshot) {
         previewItem.state = s.preview ? .on : .off
         presenceItem.state = s.paused ? .off : .on
-        status.title = s.paused ? "Paused: Hobson speaks as usual" : "\(s.state.capitalized) (\(s.source))"
-        show(s.paused ? "paused" : s.state)
+        wavesItem.state = s.waves ? .on : .off
+        faceItem.state = s.face ? .on : .off
+        // Face only: presence is off in the config, so there is nothing to
+        // preview, pause or wave at here; `hobson presence on` turns it on.
+        previewItem.isHidden = s.faceOnly
+        presenceItem.isHidden = s.faceOnly
+        wavesItem.isHidden = s.faceOnly
+        if s.faceOnly {
+            status.title = "Presence off: face only"
+        } else {
+            status.title = s.paused ? "Paused: Hobson speaks as usual" : "\(s.state.capitalized) (\(s.source))"
+        }
+        show(s.faceOnly ? "face-only" : s.paused ? "paused" : s.state)
     }
 
     private func show(_ state: String) {
@@ -840,9 +894,11 @@ final class Controls {
     let menuBar = MenuBar()
     var window: DebugWindow?
     var session: AVCaptureSession?
+    var face: FaceController?
 
     init(_ monitor: Monitor) {
         self.monitor = monitor
+        monitor.onFaceSignal = { [weak self] in self?.lineArrived() }
         monitor.camera.onSession = { [weak self] session in
             DispatchQueue.main.async {
                 self?.session = session
@@ -861,7 +917,29 @@ final class Controls {
         menuBar.onPresence = { [weak monitor] in
             monitor?.work.async { monitor?.setPaused(!(monitor?.paused ?? false)) }
         }
+        menuBar.onWaves = { [weak monitor] in
+            monitor?.work.async { monitor?.setWaves(!(monitor?.wavesOn ?? true)) }
+        }
+        // Answered by presence.py --ask, detached: the model can take a while.
+        menuBar.onAsk = { [weak monitor] key in monitor?.runScript(["--ask", key]) }
+        menuBar.onFace = { [weak monitor] in
+            monitor?.work.async { monitor?.setFace(!(monitor?.faceOn ?? false)) }
+        }
         if monitor.preview { showPreview(true) }
+        // A line written just before this helper started (face.py started it).
+        if monitor.faceOn { lineArrived() }
+    }
+
+    /// SIGUSR2: face.py has written a line. With the face off, only a line
+    /// you asked for (Ask Hobson, while muted) is shown.
+    func lineArrived() {
+        guard let page = monitor.o.facePage else { return }
+        if face == nil {
+            let f = FaceController(home: monitor.o.home, page: page)
+            f.log = { [weak monitor] args in monitor?.runScript(args) }
+            face = f
+        }
+        face?.lineArrived(faceOn: monitor.faceOn)
     }
 
     func showPreview(_ on: Bool) {
@@ -884,6 +962,10 @@ final class Controls {
     func update(_ s: DebugSnapshot) {
         menuBar.update(s)
         if let w = window, w.panel.isVisible { w.update(s) }
+        if !s.face, face?.showing == true, face?.showingAsked == false { face?.hide("face off") }
+        let showing = face?.showing ?? false
+        monitor.work.async { [weak monitor] in monitor?.faceShowing = showing }
+        face?.gaze(s.cameraOn || s.mode == "auto" ? s.sighting : nil, age: s.sightingAge)
     }
 }
 
@@ -931,8 +1013,12 @@ final class Monitor {
     var phoneKnown = false
     var preview: Bool
     var paused: Bool
+    var faceOn: Bool             // read on the main thread too: a Bool, set on `work`
+    var wavesOn: Bool            // likewise: set on `work`, read for the menu's toggle
     var onSnapshot: ((DebugSnapshot) -> Void)?
     var onPreview: ((Bool) -> Void)?
+    var onFaceSignal: (() -> Void)?
+    var faceShowing = false      // set from the main thread: a line is on screen
     let waves = WaveDetector()
     var lastSighting: Sighting?
     var lastTransition = "none yet"
@@ -945,6 +1031,8 @@ final class Monitor {
         self.o = o
         preview = o.preview
         paused = o.paused
+        faceOn = o.face
+        wavesOn = o.waves
         phone = o.phone.map { PhoneSwitch(want: $0, adb: o.adb) }
     }
 
@@ -952,6 +1040,7 @@ final class Monitor {
 
     func run() {
         signal(SIGUSR1, SIG_IGN)
+        signal(SIGUSR2, SIG_IGN)   // before anything else: its default action is to exit
         signal(SIGTERM, SIG_IGN)
         let look = DispatchSource.makeSignalSource(signal: SIGUSR1, queue: work)
         look.setEventHandler { [weak self] in
@@ -960,9 +1049,13 @@ final class Monitor {
         }
         let term = DispatchSource.makeSignalSource(signal: SIGTERM, queue: work)
         term.setEventHandler { [weak self] in self?.shutdown("terminated") }
+        // A line for the face (face.py), handled on the main thread: it is UI.
+        let line = DispatchSource.makeSignalSource(signal: SIGUSR2, queue: .main)
+        line.setEventHandler { [weak self] in self?.onFaceSignal?() }
         look.resume()
         term.resume()
-        signalSources = [look, term]
+        line.resume()
+        signalSources = [look, term, line]
 
         let t = DispatchSource.makeTimerSource(queue: work)
         t.schedule(deadline: .now(), repeating: o.interval)
@@ -974,7 +1067,7 @@ final class Monitor {
     func tick() {
         var t = now()
         ticks += 1
-        if paused {
+        if paused || o.faceOnly {
             lookRequested = false  // nothing is looked at while paused, nor on resume
             if camera.running {
                 waves.stop()
@@ -1005,7 +1098,7 @@ final class Monitor {
 
         if o.mode == "continuous" && cameraOK && screenUp {
             sample(t)
-            if camera.running {
+            if camera.running && wavesOn {
                 waves.start(frames: { [weak self] in self?.camera.latestFrame() },
                             onWave: { [weak self] in self?.work.async { self?.runScript(["--wave"]) } })
             }
@@ -1038,7 +1131,7 @@ final class Monitor {
             phone: phone?.report, callApp: callApp, locked: locked,
             sighting: lastSighting, sightingAge: t - glanceAt, last: lastTransition,
             hand: waves.hand, wavedAgo: waves.wavedAt > 0 ? t - waves.wavedAt : nil,
-            paused: paused, preview: preview))
+            paused: paused, preview: preview, face: faceOn, faceOnly: o.faceOnly, waves: wavesOn))
     }
 
     /// From the menu. The config is written first, and waited for, then the
@@ -1072,6 +1165,28 @@ final class Monitor {
         glanceVerdict = nil
         companyHits = []
         lastSighting = nil
+        writeState(now(), idle: 0)
+        publish(now(), idle: Signals.idleSeconds(), cameraOK: false, callApp: nil, locked: false)
+    }
+
+    /// Answer Waves, from the menu: written to the config first, like the
+    /// others. Off, the hand-pose pass stops with it, not only its answer.
+    func setWaves(_ on: Bool) {
+        guard on != wavesOn, runScriptAndWait(["--set", "waves", on ? "true" : "false", "--keep-running"])
+        else { return }
+        wavesOn = on
+        if !on { waves.stop() }
+        writeState(now(), idle: 0)
+        publish(now(), idle: Signals.idleSeconds(), cameraOK: false, callApp: nil, locked: false)
+    }
+
+    /// Show Hobson, from the menu: written to the config first, like the
+    /// others. With presence off there is nothing left to do once it is off.
+    func setFace(_ on: Bool) {
+        guard on != faceOn, runScriptAndWait(["--set", "face.enabled", on ? "true" : "false", "--keep-running"])
+        else { return }
+        faceOn = on
+        if !on && o.faceOnly { shutdown("face off, presence off") }
         writeState(now(), idle: 0)
         publish(now(), idle: Signals.idleSeconds(), cameraOK: false, callApp: nil, locked: false)
     }
@@ -1197,8 +1312,12 @@ final class Monitor {
     }
 
     func writeState(_ t: Double, idle: Double) {
-        if paused {
-            writeJSON(["state": "off", "source": "paused", "paused": true, "preview": preview,
+        // "face": this helper shows lines (face.py signals only then: an older
+        // build dies of SIGUSR2). Face only is not a pause: "paused" stays as
+        // configured, or ensure_running would restart it at every hook.
+        if paused || o.faceOnly {
+            writeJSON(["state": "off", "source": o.faceOnly ? "face-only" : "paused", "paused": paused,
+                       "preview": preview, "face": faceOn, "face_only": o.faceOnly, "waves": wavesOn,
                        "ts": t, "since": since, "mode": o.mode, "pid": Int(getpid()),
                        "camera": cameraStatus, "phone_setting": o.phone ?? NSNull(), "version": 1],
                       to: statePath)
@@ -1214,6 +1333,9 @@ final class Monitor {
         record["phone_setting"] = o.phone ?? NSNull()
         record["preview"] = preview
         record["paused"] = false
+        record["face"] = faceOn
+        record["face_only"] = false
+        record["waves"] = wavesOn
         record["camera_allowed"] = cameraStatus == "authorized" && o.mode != "signals"
             && (phone?.allowsCamera ?? true)
         for (k, v) in lastSignals { record[k] = v }
@@ -1221,12 +1343,14 @@ final class Monitor {
     }
 
     /// Stay while anything could still need a return briefing; leave once no
-    /// hook has run for --exit-after seconds and nothing is held.
+    /// hook has run for --exit-after seconds and nothing is held. Paused,
+    /// never: its icon is the only way to resume from the menu, and a paused
+    /// sensor senses nothing, so it costs nothing to keep.
     func exitIfUnneeded(_ t: Double) {
-        guard state == "present" || paused else { return }
+        guard !paused, state == "present" || o.faceOnly, !faceShowing else { return }
         let fm = FileManager.default
         let held = "\(o.home)/hobson-held.json"
-        if !paused, let data = fm.contents(atPath: held),
+        if !o.faceOnly, let data = fm.contents(atPath: held),
            let obj = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
            let items = obj["items"] as? [Any], !items.isEmpty {
             return
@@ -1246,6 +1370,7 @@ final class Monitor {
     func shutdown(_ why: String) {
         camera.stop()
         unlink(statePath)
+        runScript(["--sensor-exit", why])  // detached: the log line outlives this process
         exit(0)
     }
 }

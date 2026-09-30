@@ -17,7 +17,11 @@ APP="$ROOT/build/HobsonPresence.app"
 BUNDLE_ID="local.hobson.presence"
 STAMP_FILE="$APP/Contents/Resources/source.sha256"
 
-stamp="$(cat "$SRC/main.swift" "$SRC/Info.plist" | shasum -a 256 | cut -d' ' -f1)"
+# Every Swift file (main.swift and the face's window, Face.swift), in a fixed
+# order. The face's page (presence/face/) is loaded from the checkout at run
+# time, so it is not part of the build.
+sources=("$SRC"/*.swift)
+stamp="$(cat "${sources[@]}" "$SRC/Info.plist" | shasum -a 256 | cut -d' ' -f1)"
 current=""
 [ -f "$STAMP_FILE" ] && current="$(cat "$STAMP_FILE")"
 
@@ -40,8 +44,8 @@ trap 'rm -rf "$tmp"' EXIT
 bundle="$tmp/HobsonPresence.app"
 mkdir -p "$bundle/Contents/MacOS" "$bundle/Contents/Resources"
 swiftc -O -swift-version 5 \
-    -framework AppKit -framework AVFoundation -framework CoreAudio -framework Vision \
-    -o "$bundle/Contents/MacOS/HobsonPresence" "$SRC/main.swift"
+    -framework AppKit -framework AVFoundation -framework CoreAudio -framework Vision -framework WebKit \
+    -o "$bundle/Contents/MacOS/HobsonPresence" "${sources[@]}"
 cp "$SRC/Info.plist" "$bundle/Contents/Info.plist"
 echo "$stamp" > "$bundle/Contents/Resources/source.sha256"
 codesign --force --sign - --identifier "$BUNDLE_ID" \

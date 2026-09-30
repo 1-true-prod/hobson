@@ -100,7 +100,8 @@ def test_kokoro_requests_name_voice_and_speed(fake_daemon, claude_home):
     assert req["url"] == "http://127.0.0.1:19849/generate"
     assert req["payload"] == {"text": "I pushed the branch.", "voice": "af_bella", "speed": 1.3}
     assert req["timeout"] == 5
-    assert path == str(claude_home / "kokoro-playback.wav")
+    assert os.path.dirname(path) == str(claude_home)
+    assert os.path.basename(path).startswith("kokoro-playback-") and path.endswith(".wav")
 
 
 def test_pocket_requests_name_only_the_voice(fake_daemon, claude_home):
@@ -111,7 +112,36 @@ def test_pocket_requests_name_only_the_voice(fake_daemon, claude_home):
     assert req["url"] == "http://127.0.0.1:19999/generate"
     assert req["payload"] == {"text": "I pushed the branch.", "voice": "alba"}
     assert req["timeout"] == 10
-    assert path == str(claude_home / "pocket-tts-playback.wav")
+    assert os.path.basename(path).startswith("pocket-tts-playback-")
+
+
+def test_every_phrase_gets_its_own_clip(fake_daemon, claude_home):
+    """One fixed file was rewritten by the next phrase while the last still
+    played, and a phrase waiting for its turn on the voice would have played
+    the one after it."""
+    eng = _engine(PocketTTSRealtimeEngine)
+    first = eng._daemon_generate("I pushed the branch.")
+    second = eng._daemon_generate("I merged it.")
+    assert first != second
+    assert os.path.exists(first) and os.path.exists(second)
+    assert oct(os.stat(first).st_mode & 0o777) == "0o600"
+
+
+def test_a_clip_left_behind_is_pruned_after_an_hour(fake_daemon, claude_home):
+    eng = _engine(PocketTTSRealtimeEngine)
+    stale = claude_home / "pocket-tts-playback-old.wav"
+    fresh = claude_home / "pocket-tts-playback-new.wav"
+    for f in (stale, fresh):
+        f.write_bytes(b"RIFF")
+    os.utime(stale, (time.time() - 7200, time.time() - 7200))
+    eng._daemon_generate("I pushed the branch.")
+    assert not stale.exists() and fresh.exists()
+
+
+def test_a_longer_request_timeout_can_be_asked_for(fake_daemon):
+    eng = _engine(PocketTTSRealtimeEngine)
+    eng._daemon_generate("A long passage.", timeout=30)
+    assert fake_daemon.requests[-1]["timeout"] == 30
 
 
 @pytest.mark.parametrize("cls, token_file", [(KokoroRealtimeEngine, "kokoro-daemon.token"),
@@ -137,12 +167,17 @@ def test_an_unset_option_takes_the_config_default(fake_daemon):
 # ── The shared playback path ────────────────────────────────────────────────
 
 @pytest.mark.parametrize("cls", [KokoroRealtimeEngine, PocketTTSRealtimeEngine])
-def test_a_live_daemon_plays_the_phrase(cls, fake_daemon, no_audio, claude_home):
+def test_a_live_daemon_plays_the_phrase(cls, fake_daemon, no_audio, no_face, claude_home):
     eng = _engine(cls)
-    eng._speak_live("I pushed the branch.", allow_cold_start=True)
+    eng._speak_live("I pushed the branch.", allow_cold_start=True, kind="done")
     assert no_audio["say"] == []
-    assert no_audio["popen"][-1][0] == "afplay"
-    assert no_audio["popen"][-1][-1] == str(claude_home / cls.spec.playback)
+    # Played, then removed: sh runs afplay and deletes the clip after it.
+    shell, flag, script = no_audio["popen"][-1]
+    (clip,) = [p for p in os.listdir(claude_home) if p.startswith(cls.spec.playback + "-")]
+    clip = str(claude_home / clip)
+    assert (shell, flag) == ("sh", "-c")
+    assert script.startswith("afplay ") and script.endswith(f"; rm -f {clip}")
+    assert no_face == [("I pushed the branch.", "done", clip)]
 
 
 def test_a_down_daemon_falls_back_to_say_and_warms_up_for_next_time(

@@ -151,19 +151,23 @@ def _unrepr(text):
 class Playback(NamedTuple):
     source: str   # e.g. "daemon-live", "say-fallback: daemon down"
     phrase: str
+    kind: Optional[str] = None   # what it was about ("done", "answer", ...); absent on old lines
 
 
-def playback(source, phrase):
-    """A phrase was played: written by every speaking path, once per utterance."""
-    return f"barked ({source}) -> {phrase!r}"
+def playback(source, phrase, kind=None):
+    """A phrase was played: written by every speaking path, once per
+    utterance. The kind lets a reader tell work from Hobson's own talk (a
+    briefing, an answer): recap summarised those as work."""
+    tag = f" [{kind}]" if kind else ""
+    return f"barked ({source}){tag} -> {phrase!r}"
 
 
-_PLAYBACK = re.compile(rf"barked \(([^)]*)\) -> ({_REPR})$")
+_PLAYBACK = re.compile(rf"barked \(([^)]*)\)(?: \[(\w+)\])? -> ({_REPR})$")
 
 
 def parse_playback(body):
     m = _PLAYBACK.match(body)
-    return Playback(m.group(1), _unrepr(m.group(2))) if m else None
+    return Playback(m.group(1), _unrepr(m.group(3)), m.group(2)) if m else None
 
 
 class Outcome(NamedTuple):

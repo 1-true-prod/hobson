@@ -12,9 +12,12 @@ fixed-meaning events use templates but still render live. No pre-cached
 audio is ever used.
 """
 
+import contextlib
+import glob
 import json
 import os
 import subprocess
+import tempfile
 import threading
 import time
 from typing import NamedTuple, Optional, Tuple
@@ -47,7 +50,7 @@ class DaemonSpec(NamedTuple):
     section: str            # config section, e.g. "kokoro"
     venv: str               # venvs/<venv>/bin/python3 runs the daemon
     script: str             # scripts/<script>
-    playback: str           # scratch WAV under ~/.claude — see _daemon_generate
+    playback: str           # scratch WAVs' prefix under ~/.claude — see _daemon_generate
     startup_polls: int      # readiness polls at 0.25s after a cold start
     generate_timeout: int   # seconds for one /generate request
     options: Tuple[DaemonOption, ...]
@@ -150,11 +153,15 @@ class DaemonEngine(BaseEngine):
 
     # ── Daemon TTS ─────────────────────────────────────────────────────
 
-    def _daemon_generate(self, text):
+    def _daemon_generate(self, text, timeout=None):
         """Send text to daemon, return path to a WAV file or None.
 
-        Writes to a fixed path to avoid atexit/temp-file race where the hook
-        process exits (deleting the temp file) before afplay opens it.
+        A new file for every phrase, played with cleanup (_play): one fixed
+        path was rewritten by the next phrase while the last still played,
+        and a phrase waiting for its turn on the voice would have played the
+        one after it. mkstemp, not a NamedTemporaryFile, which is deleted when
+        the hook exits, before afplay has opened it. `timeout` overrides the
+        spec's, which is sized for one line.
         """
         payload = {"text": text}
         payload.update({o.key: self._options[o.key] for o in self.spec.options if o.in_payload})
@@ -166,7 +173,7 @@ class DaemonEngine(BaseEngine):
 
         try:
             req = Request(f"{self._daemon_url}/generate", data=body, headers=headers)
-            with urlopen(req, timeout=self.spec.generate_timeout) as resp:
+            with urlopen(req, timeout=timeout or self.spec.generate_timeout) as resp:
                 wav_bytes = resp.read()
         except (URLError, OSError) as e:
             self._log(f"daemon generate failed: {e}")
@@ -176,11 +183,23 @@ class DaemonEngine(BaseEngine):
             self._log("daemon returned empty/tiny response")
             return None
 
-        playback_path = home.path(self.spec.playback)
-        with open(playback_path, "wb") as f:
+        self._prune_playback()
+        fd, playback_path = tempfile.mkstemp(
+            prefix=f"{self.spec.playback}-", suffix=".wav", dir=home.state_dir())
+        with os.fdopen(fd, "wb") as f:
             f.write(wav_bytes)
 
         return playback_path
+
+    def _prune_playback(self, older_than=3600):
+        """Remove scratch WAVs a player never cleaned up (killed mid-phrase)."""
+        cutoff = time.time() - older_than
+        for stale in glob.glob(home.path(f"{self.spec.playback}-*.wav")):
+            try:
+                if os.path.getmtime(stale) < cutoff:
+                    os.remove(stale)
+            except OSError:
+                pass
 
     # ── Live speak — all audio goes through here ───────────────────────
 
@@ -204,6 +223,8 @@ class DaemonEngine(BaseEngine):
         phrase = self._for_audience(phrase, kind)
         if phrase is None:
             return False
+        if self._voice_busy_for(phrase, kind):
+            return True
 
         # For async hooks, acquire the cross-process bark lock and check
         # for recent barks — prevents overlapping audio across all engines.
@@ -251,8 +272,8 @@ class DaemonEngine(BaseEngine):
         if daemon_ok:
             wav_path = self._daemon_generate(phrase)
             if wav_path:
-                self._play_wav(wav_path)
-                self._log(log_record.playback("daemon-live", phrase))
+                self._play_wav(wav_path, phrase, kind)
+                self._log(log_record.playback("daemon-live", phrase, kind or "info"))
                 return True
             reason = "daemon error"
         else:
@@ -264,15 +285,26 @@ class DaemonEngine(BaseEngine):
             else:
                 reason = "daemon start failed"
 
-        self._say_with_volume(phrase)
-        self._log(log_record.playback(f"say-fallback: {reason}", phrase))
+        self._say_with_volume(phrase, kind)
+        self._log(log_record.playback(f"say-fallback: {reason}", phrase, kind or "info"))
         return True
 
-    def _play_wav(self, path):
+    def _play_wav(self, path, phrase, kind=None):
         try:
-            self._afplay(path)
+            self._play(path, phrase, kind, cleanup=True)
         except Exception as e:
             self._log(f"afplay failed: {e}")
+            with contextlib.suppress(OSError):
+                os.remove(path)
+
+    def render(self, text, timeout=None):
+        """A clip of `text` from the daemon, starting it if need be, else
+        from `say`; None when neither could."""
+        if self._ensure_daemon():
+            path = self._daemon_generate(text, timeout=timeout)
+            if path:
+                return path
+        return self._render_say(text)
 
     def backfill(self, text):
         pass  # all audio is live, no cache to backfill
