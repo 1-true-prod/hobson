@@ -178,21 +178,21 @@ def test_pretooluse_present_tense_passes(monkeypatch):
     assert phrase == "I'm checking the SSH state."
 
 
-def test_stop_regenerates_once_on_duplicate(monkeypatch):
+def test_stop_accepts_a_near_duplicate(monkeypatch):
+    # A Stop is the turn-ended signal, news in any words. Asked to "say
+    # something else", the 3B model invented failures for 8 of 19 real Stops.
     calls = []
 
     def fake_chat(*a, **k):
         calls.append(1)
-        if len(calls) == 1:
-            return "done | I verified the granite license.", None
         return "done | I merged the preview clean.", None
 
     monkeypatch.setattr(phrase_gen, "_chat", fake_chat)
     category, phrase = phrase_gen.generate_or_skip(
         "Stop", "finished", "Recent: none",
-        recent_voiced=["I verified the granite license."])
-    assert len(calls) == 2, "Stop should regenerate once on rejection"
-    assert phrase == "I merged the preview clean."
+        recent_voiced=["I merged the preview clean."])
+    assert len(calls) == 1, "a near-duplicate Stop is not asked again"
+    assert (category, phrase) == ("done", "I merged the preview clean.")
 
 
 def test_pretooluse_does_not_regenerate(monkeypatch):
@@ -405,108 +405,60 @@ def test_duplicate_allowed_after_decay_window(monkeypatch):
 
 def test_duplicate_still_checked_when_elapsed_unknown(monkeypatch):
     # Bare string = unknown per-match age (legacy shape / backward compat).
-    # Decay is keyed to the matching entry's own timestamp, so a stale
-    # *global* seconds_since_last_voiced must not let an unknown-age match
-    # through -- stay conservative and dedupe.
+    # Decay is keyed to the matching entry's own timestamp, so an
+    # unknown-age match stays conservative and dedupes.
     monkeypatch.setattr(phrase_gen, "_chat",
                         lambda *a, **k: ("done | I'm checking the branch.", None))
     category, phrase = phrase_gen.generate_or_skip(
         "PreToolUse", "Bash: check the branch", "Recent: none",
-        recent_voiced=["I'm checking the branch."],
-        seconds_since_last_voiced=phrase_gen.DUPE_DECAY_SECONDS + 1)
+        recent_voiced=["I'm checking the branch."])
     assert phrase is None
 
 
-def test_duplicate_global_elapsed_no_longer_gates_a_fresh_match(monkeypatch):
-    # Regression guard for the bug this task fixes: seconds_since_last_voiced
-    # is time since *any* phrase, not the matching one, so a stale global
-    # value must not let a genuinely recent match through.
+def test_a_fresh_match_is_a_duplicate(monkeypatch):
+    # Decay is keyed to the matching entry's own timestamp: a match spoken
+    # five seconds ago is a duplicate however long ago anything else was.
     monkeypatch.setattr(phrase_gen, "_chat",
                         lambda *a, **k: ("done | I'm checking the branch.", None))
     category, phrase = phrase_gen.generate_or_skip(
         "PreToolUse", "Bash: check the branch", "Recent: none",
-        recent_voiced=[("I'm checking the branch.", time.time() - 5)],
-        seconds_since_last_voiced=phrase_gen.DUPE_DECAY_SECONDS + 1)
+        recent_voiced=[("I'm checking the branch.", time.time() - 5)])
     assert phrase is None
 
 
 # ── T1: guard rejections are not logged as parse failures ─────────────────
 # A guard rejection (near-duplicate, unrepaired past tense) is the system
-# working as designed -- not a failure to parse the model's output. Before
-# this, both cases left last_raw holding the raw model reply, so
-# describe_generation_failure() read it as UNUSABLE ("could not parse a
-# phrase from ..."), which is false and double-counted in hobson stats.
+# working as designed -- not a failure to parse the model's output. Read as
+# UNUSABLE ("could not parse a phrase from ..."), it was false and
+# double-counted in hobson stats.
 
-def test_rejected_generation_sets_last_raw_marker(monkeypatch):
+def test_a_rejected_generation_says_why(monkeypatch):
     monkeypatch.setattr(phrase_gen, "_chat",
                         lambda *a, **k: ("done | I'm checking the branch.", None))
-    category, phrase = phrase_gen.generate_or_skip(
+    gen = phrase_gen.generate_or_skip(
         "PreToolUse", "Bash: check the branch", "Recent: none",
-        recent_voiced=["I'm checking the branch."],
-        seconds_since_last_voiced=5)
-    assert phrase is None
-    assert phrase_gen.last_raw == "(rejected: near-duplicate of a recent phrase)"
+        recent_voiced=["I'm checking the branch."])
+    assert gen.phrase is None
+    assert (gen.verdict, gen.detail) == ("REJECTED", "guard rejected — near-duplicate of a recent phrase")
+    assert gen.log_line("PreToolUse", "m", batch=5) == \
+        "[PreToolUse] batch of 5 REJECTED: guard rejected — near-duplicate of a recent phrase"
 
 
-def test_stop_retry_reject_keeps_last_rejection_marker(monkeypatch):
-    # Stop retries once on rejection (attempts = 2). If both attempts are
-    # rejected, the loop falls through to `return None, None` -- last_raw
-    # must still carry the *second* attempt's rejection reason, not a stale
-    # value from the first attempt or the raw model text.
-    calls = []
-
-    def fake_chat(*a, **k):
-        calls.append(1)
-        return "done | I verified the granite license.", None
-
-    monkeypatch.setattr(phrase_gen, "_chat", fake_chat)
-    category, phrase = phrase_gen.generate_or_skip(
-        "Stop", "finished", "Recent: none",
-        recent_voiced=["I verified the granite license."])
-    assert len(calls) == 2
-    assert phrase is None
-    assert phrase_gen.last_raw == "(rejected: near-duplicate of a recent phrase)"
-
-
-def test_describe_generation_failure_rejected():
-    from engines.base import describe_generation_failure
-    verdict, detail = describe_generation_failure(
-        "(rejected: near-duplicate of a recent phrase)")
-    assert verdict == "REJECTED"
-    assert "near-duplicate of a recent phrase" in detail
-
-
-def test_describe_generation_failure_skip_error_unusable_unchanged():
-    # Regression: the pre-existing verdicts must classify exactly as before
-    # -- T1 only adds a new REJECTED branch, it does not touch these.
-    from engines.base import describe_generation_failure
-
-    verdict, detail = describe_generation_failure("SKIP")
-    assert verdict == "SKIP"
-    assert detail == "model chose not to speak"
-
-    verdict, detail = describe_generation_failure(
-        "(error: request timed out after 8s)")
-    assert verdict == "ERROR"
-    assert "timed out" in detail
-
-    verdict, detail = describe_generation_failure(
-        "(error: URLError connection refused)")
-    assert verdict == "ERROR"
-    assert "unreachable" in detail
-
-    verdict, detail = describe_generation_failure("(error: boom)")
-    assert verdict == "ERROR"
-    assert "ollama call failed" in detail
-
-    verdict, detail = describe_generation_failure("")
-    assert verdict == "ERROR"
-    assert detail == "ollama returned nothing"
-
-    verdict, detail = describe_generation_failure("garbled | nonsense")
-    assert verdict == "UNUSABLE"
-    assert "could not parse a phrase" in detail
-
+@pytest.mark.parametrize("reply, err, verdict, detail", [
+    ("SKIP", None, "SKIP", "model chose not to speak"),
+    ("", "(error: request timed out after 8s)", "ERROR", "timed out"),
+    ("", "(error: URLError connection refused)", "ERROR", "unreachable"),
+    ("", "(error: boom)", "ERROR", "ollama call failed"),
+    ("", None, "ERROR", "ollama returned nothing"),
+    ("garbled | nonsense", None, "UNUSABLE", "could not parse a phrase"),
+])
+def test_a_generation_without_a_phrase_says_which_failure(monkeypatch, reply, err, verdict, detail):
+    monkeypatch.setattr(phrase_gen, "_chat", lambda *a, **k: (reply, err))
+    gen = phrase_gen.generate_or_skip("PreToolUse", "Bash: x", "ctx")
+    assert gen == (None, None)
+    assert gen.verdict == verdict
+    assert detail in gen.detail
+    assert gen.log_line("Notification", "m") == f"[Notification] {gen.verdict}: {gen.detail}"
 
 # ── The decider may also block a reworded repeat, in commentary only ───────
 #

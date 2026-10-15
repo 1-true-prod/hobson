@@ -88,7 +88,7 @@ def generated(monkeypatch):
 
     def fake(*a, **k):
         calls.append(k.get("verbosity"))
-        return "done", "I'm committing the retry fix."
+        return phrase_gen.Generation("done", "I'm committing the retry fix.")
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip", fake)
     return calls
@@ -173,7 +173,7 @@ def test_commentary_gets_no_task_line(claude_home, no_audio, asked, monkeypatch,
     import phrase_gen
     contexts = []
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: (contexts.append(a[2]), ("done", "I'm committing."))[1])
+                        lambda *a, **k: (contexts.append(a[2]), phrase_gen.Generation("done", "I'm committing."))[1])
     transcript = tmp_path / "t.jsonl"
     transcript.write_text(json.dumps(
         {"type": "user", "message": {"content": "make the retry survive a token refresh"}}))

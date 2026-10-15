@@ -42,7 +42,8 @@ Then start a new Claude Code session. Sessions already running keep the hooks th
   whether it may use the camera; say no and it uses the keyboard, screen lock and calls only.
 - Nothing else: no permissions granted, no shell profile edited (the optional uv install, for the
   neural engines, adds itself to your PATH), nothing sent off your machine
-  unless you turn on [Jev](#jev-optional).
+  unless you turn on [Jev](#jev-optional), which sends redacted session text, or
+  [phone push](#phone-push-optional), which sends a fixed sentence and the project's name.
 
 ### Update, pin, remove
 
@@ -148,6 +149,10 @@ Voice that talks constantly gets turned off, so most of Hobson's recent work is 
   say`, or ask an agent to. A passage at a time, returning when he has finished; `hobson off` or
   Ctrl-C stops him. One voice at a time throughout: another session's announcement waits for the
   passage playing, and a second reading waits for the first.
+- **`hobson coach`** — a guided session, paced by Hobson rather than the agent: an agent writes
+  the steps (`say`, `wait`, `countdown`, `ready` for a click, key or mouse movement from across the room) and he
+  runs them on his own clock in one call, reporting each step as a line of JSON. Other sessions'
+  announcements wait for the end, and are told in one briefing.
 - **`hobson stats`** — see what was spoken, queued, and suppressed, and why.
 
 ## Presence
@@ -191,6 +196,12 @@ is off, nothing is sensed, and he speaks as if presence were off. Tick it again,
 camera stays for your face, but he stops looking for a raised hand. `hobson presence off` turns it off entirely (the icon stays
 only while the face is on, which the helper also draws).
 
+**The session list.** The menu also lists every session, most urgent first: those waiting on you,
+then failed, working, and finished in the last hour, each with a coloured dot. Click one to jump to
+its terminal, as the face's **Take me there** does. The number of sessions waiting on you sits beside
+the icon, and the list is read again every fifteen seconds and whenever a line shows on his face. Nothing is
+listed that he has not seen a hook from.
+
 Only a human face counts as someone: not a body, not a shape, not anything else that moves. In
 `continuous` mode, no face and no keystroke for 30 seconds is away (`presence.away_after`); looking
 down at a phone that long counts as leaving. Wave at the camera, with your face in view, and he
@@ -208,6 +219,14 @@ Click to dismiss, drag to move (it remembers where). Red means something failed,
 Commentary stays voice only. It works with presence off too: the helper then only draws the face.
 `hobson face off` turns it off; `hobson face test` shows a line; **Show Hobson** in the menu bar
 does the same as `on`/`off`.
+
+**Skip and Take me there.** A line that may still have a nudge running against it (waiting on you,
+a nudge, a stalled session, a failure) shows two buttons under it. **Skip** does what typing in that
+session does, so the nudges stop and the line goes. **Take me there** brings that session's terminal
+forward: it selects the tmux pane, if there is one, and switches your tmux client to it, then
+raises the terminal: the exact tab in iTerm2 or Terminal.app (the first time, macOS asks whether
+Hobson may control that app; allow it once), the app itself in any other terminal, Ghostty
+included. If the pane or window is gone, nothing happens. A finished line has no buttons, since nothing is nagging.
 
 **Ask Hobson.** The menu bar's **Ask Hobson** asks him about every session at once: **What needs
 me?** (who is waiting on you, what failed, what finished, what is still working), **What have you
@@ -256,10 +275,11 @@ hobson commentary verbosity [terse|normal|chatty|anomaly]
 hobson commentary chattiness [0-1]
                             With Jev on: how much commentary it lets through
 hobson volume [0-10]       Get or set playback volume
-hobson voice [name]        Switch Kokoro voice (interactive picker)
+hobson voice [name]        Switch the engine's voice: kokoro-realtime or pocket-tts (interactive picker)
 hobson test                Play a test bark
 hobson recap [minutes]     Speak a summary of recent activity (default 10m)
 hobson say [TEXT|-f FILE]  Read text aloud (or piped in), a passage at a time
+hobson coach [-f FILE]     Run spoken steps on Hobson's clock: say, wait, countdown, ready
 hobson presence            Whether anyone is listening, and what is held for you
 hobson presence on|off     Hold speech while you're away / always speak
 hobson presence mode [signals|auto|continuous]
@@ -275,6 +295,8 @@ hobson presence phone [auto|off|SERIAL]
 hobson presence look|setup Take one look / build the sensor and ask for the camera
 hobson face [on|off]       The window where Hobson says each line (on by default)
 hobson face test [LINE]    Show a line on the face, with no voice
+hobson push [status|on URL|off|test]
+                            Send what is held while you are away to your phone (ntfy)
 hobson ask [status|recap|failed]
                             What needs me? / What have you been doing? / What failed?
 hobson lines [category]    Show voice lines from active personality
@@ -310,6 +332,7 @@ Config lives at `~/.claude/hobson.json`:
     "url": "http://localhost:11434"
   },
   "kokoro": { "voice": "am_puck", "speed": 1.1, "daemon_port": 19849, "daemon_idle_timeout": 600 },
+  "pocket_tts": { "voice": "charles", "language": "english", "temp": 0.7, "daemon_port": 19850, "daemon_idle_timeout": 600 },
   "chatterbox": { "device": "mps", "exaggeration": 1.0 },
   "commentary": {
     "cooldown": 8.0,
@@ -338,8 +361,10 @@ Key options:
 - **commentary.chattiness** — with Jev on, how much of that it lets through: 0 next to nothing, 1 all
 - **nudge** — escalating re-announcements when a session is waiting on you; `delays` caps how many
 - **watchdog** — speak up if a session has gone quiet for this many minutes without finishing
+- **pocket_tts.voice / language** — a Pocket TTS voice name, or the path to a precomputed voice file (`.safetensors`); `language` picks its model. `english` follows Kyutai's newest English model, so to keep a voice sounding as it was made, name the dated model it was made with (`english_2026-01`, `english_2026-04`, `english_2026-09`)
 - **daemon_idle_timeout** — seconds a TTS daemon stays warm; too low and utterances fall back to macOS `say`
-- **decider.backend** — `local` (default, nothing leaves your machine) or `jev`; see below
+- **decider.backend** — `local` (default: no network call) or `jev`; see below
+- **push.backend** — `off` (default) or `ntfy`; see [Phone push](#phone-push-optional)
 
 ## Ollama
 
@@ -354,6 +379,30 @@ first-person phrasing and Stop classification at this footprint. For a smaller f
 (slightly weaker at classifying "question" Stops). Set whichever you like via `ollama.model`.
 
 Ollama is optional. If it isn't running, Stop events default to "done" category and AI phrase generation falls back to templates.
+
+## Phone push (optional)
+
+Away from the desk, a session can wait on you for an hour with nobody to hear it. With
+`hobson push on https://ntfy.example.com/your-topic`, what Hobson holds for your return is also
+sent to your phone through [ntfy](https://ntfy.sh): a question, a failure, a stall. Nothing else,
+and never while you are on a call or with company in the room; there the voice stays quiet and so
+does the phone.
+
+- **What is sent:** one request per push, to the URL you gave. The body is one fixed
+  sentence ("webapp is waiting on you.", "webapp stopped on a failure.", "Nothing has moved on
+  webapp for 10 minutes."), and the title is the project's name. Not what Hobson said aloud, no
+  code, no file contents, nothing from the conversation, and no more than six an hour, one per
+  project and kind in ten minutes. That holds for pushes a server answered: one that returns a 5xx
+  or is down gives the hourly slot back, so it gets one try per project and kind every ten minutes.
+- **Key:** an ntfy access token, as `NTFY_TOKEN=tk_...` in `~/.claude/hobson.env` (`chmod 600`),
+  or exported. A topic on a public server is guessable, so Hobson will not push without a token.
+  It is never read from or written to `hobson.json`, never logged, and goes only to an https
+  address; a redirect is refused.
+- **Try it:** `hobson push test` sends one now. `hobson monitor` shows each push as it goes out,
+  and each failure once.
+- `push.kinds` (default `waiting`, `broken`, `stalled`; those three are the only ones that can be
+  pushed, and anything else listed is ignored) and `push.per_hour` are in
+  `hobson.json`; `hobson push off` turns it off.
 
 ## Jev (optional)
 

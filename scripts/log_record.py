@@ -126,6 +126,16 @@ def records(lines):
         yield current
 
 
+def lines(path=None):
+    """The raw lines of a log file, hobson.log by default; [] when it cannot
+    be read (no log yet is not an error to a reader asking what happened)."""
+    try:
+        with open(path or home.log_file(), encoding="utf-8", errors="replace") as f:
+            return f.readlines()
+    except OSError:
+        return []
+
+
 def read(path=None):
     """The Records of a log file, hobson.log by default. Raises OSError if
     it cannot be opened."""
@@ -152,6 +162,35 @@ class Playback(NamedTuple):
     source: str   # e.g. "daemon-live", "say-fallback: daemon down"
     phrase: str
     kind: Optional[str] = None   # what it was about ("done", "answer", ...); absent on old lines
+
+
+class Unlogged(str):
+    """A phrase whose words stay out of the log (kinds.Kind.private). It is
+    said and shown as itself; every writer logs a phrase by its repr, and
+    its repr is `logged`, what the log may know of it ("note 1a2b3c4d, 245
+    chars"). Any str operation returns a plain str, so a text made from one
+    is put together with `joined`."""
+
+    def __new__(cls, text, logged):
+        self = super().__new__(cls, text)
+        self.logged = logged
+        return self
+
+    def __repr__(self):
+        return repr(self.logged)
+
+
+def logged(text):
+    """What the log may show of `text`."""
+    return text.logged if isinstance(text, Unlogged) else text
+
+
+def joined(parts, sep=" "):
+    """`parts` joined, kept out of the log as far as any part is."""
+    text = sep.join(parts)
+    if not any(isinstance(p, Unlogged) for p in parts):
+        return text
+    return Unlogged(text, sep.join(logged(p) for p in parts))
 
 
 def playback(source, phrase, kind=None):

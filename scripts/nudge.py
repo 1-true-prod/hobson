@@ -72,10 +72,79 @@ def nudge_schedule(delays=NUDGE_DELAYS):
     return tuple(delays)
 
 
-def _lock_path(kind, project):
+def lock_path(kind, project):
     """kind is 'nudge' or 'watchdog' — separate lock namespaces, since a
     project may reasonably have one of each running at once."""
     return home.project_file(kind, project, ".lock")
+
+
+# ── Starting one, from a hook ──────────────────────────────────────────────
+# The child's argv is built here and parsed by main() below, in one file:
+# the child runs with stderr discarded, so an argument main() does not
+# accept would kill it without a trace.
+
+def running(kind, project):
+    """Someone holds `kind`'s lock for this project: a nudge or watchdog is
+    running. A probe, released at once; the child's own lock is what
+    enforces one per project."""
+    try:
+        with open(lock_path(kind, project), "a+", encoding="utf-8") as fd:
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            except BlockingIOError:
+                return True
+            fcntl.flock(fd, fcntl.LOCK_UN)
+    except OSError:
+        pass  # the probe failed: say no, and the child's own lock decides
+    return False
+
+
+LOCK_PATIENCE_SECONDS = 1.0
+
+
+def _take(fd, wait=LOCK_PATIENCE_SECONDS):
+    """Take `fd`'s lock for good, or False when another holder keeps it past
+    `wait`. A probe (running) holds the lock for a moment only, and a nudge
+    that gave up on meeting one would never have run. The lock file is never
+    deleted: a waiter that opened it before a delete would lock an inode
+    nobody else can see."""
+    deadline = time.monotonic() + wait
+    while True:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            return True
+        except BlockingIOError:
+            if time.monotonic() >= deadline:
+                return False
+            time.sleep(0.02)
+
+
+def _spawn(args):
+    """Run this script detached, so it outlives the hook. Raises if it
+    cannot be started."""
+    import subprocess  # spawners only: UserPromptSubmit imports this module
+    subprocess.Popen([sys.executable, os.path.abspath(__file__), *args],
+                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def start(project, subject):
+    """Start a nudge for a project that is waiting on you. A second one for
+    the same project exits on its lock."""
+    _spawn(["--project", project, "--subject", subject or ""])
+
+
+def start_watchdog(project, minutes, baseline=None):
+    """Start a watchdog for a project unless one is running; True if one was
+    started. `baseline` is the caller's last_event_time, so the child never
+    re-reads it from disk (it once raced the caller's own save and read the
+    pre-flush value, exiting on its first poll every time)."""
+    if running("watchdog", project):
+        return False
+    args = ["--watchdog", "--project", project, "--minutes", str(minutes)]
+    if baseline is not None:
+        args += ["--baseline", str(baseline)]
+    _spawn(args)
+    return True
 
 
 def activity_path(project):
@@ -88,6 +157,24 @@ def activity_path(project):
     busy somewhere else.
     """
     return home.project_file("activity", project)
+
+
+def touch_activity(project, now=None):
+    """Write a fresh activity timestamp for `project` -- the same signal a
+    typed prompt gives (hobson.py's UserPromptSubmit handler), so anything
+    reading this token (should_continue, session_status.waiting_on_you, the
+    face's own "typed" check) treats it as acknowledged. Used by the hook
+    itself and by the face's Skip button; kept in one place so the file's
+    format (a bare `str(time.time())`, parsed with `float()`) cannot drift
+    between writers. Never raises; False on failure."""
+    try:
+        path = activity_path(project)
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(str(time.time() if now is None else now))
+        return True
+    except OSError:
+        return False
 
 
 # Tools that park the session on the user. While one is the last thing that
@@ -109,20 +196,73 @@ def alive_path(project):
     return home.project_file("alive", project)
 
 
+# How far up from a hook to look for a process with a terminal: its parent
+# is Claude Code, or a shell Claude Code started.
+TTY_HOPS = 4
+
+
+def _controlling_tty():
+    """This process's own terminal (opened directly, never the hook's piped
+    stdin), or None. A hook normally has none: Claude Code starts it in a
+    session of its own, so every live record lacked a tty until
+    _ancestor_tty."""
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY | os.O_NOCTTY)
+        try:
+            return os.ttyname(fd)
+        finally:
+            os.close(fd)
+    except OSError:
+        return None
+
+
+def _ancestor_tty(pid, hops=TTY_HOPS):
+    """The terminal of the nearest process from `pid` up that has one --
+    Claude Code's, for a hook -- or None. One `ps` a step, about 7 ms."""
+    import subprocess
+    for _ in range(hops):
+        if pid <= 1:
+            return None
+        try:
+            fields = subprocess.run(["ps", "-o", "ppid=,tty=", "-p", str(pid)], capture_output=True,
+                                    text=True, timeout=2).stdout.split()
+        except (OSError, subprocess.SubprocessError):
+            return None
+        if len(fields) != 2 or not fields[0].isdigit():
+            return None
+        if fields[1] not in ("??", "-"):
+            return "/dev/" + fields[1]
+        pid = int(fields[0])
+    return None
+
+
+def terminal_info():
+    """Where this session is shown, for the face's Take me there button
+    (terminal_jump.py). Inside tmux, the pane id from $TMUX_PANE -- stable
+    across window and session renames, unlike a name or index; the pane's
+    own tty is no terminal window, so which client shows it is asked of
+    tmux at the click. Outside tmux, the terminal's tty: this process's,
+    else the nearest ancestor's. Finding neither (the desktop app, an IDE
+    without a tty) is normal, not a failure."""
+    pane = os.environ.get("TMUX_PANE")
+    if pane:
+        return {"tmux_pane": pane}
+    tty = _controlling_tty() or _ancestor_tty(os.getppid())
+    return {"tty": tty} if tty else {}
+
+
 def record_alive(project, hook_input):
     """Record the shape of this call -- when, which event, which tool, its
-    timeout -- never its contents. Atomic, so a reader never sees half."""
+    timeout -- never its contents, plus this process's terminal identity
+    (see terminal_info). Atomic, so a reader never sees half."""
     tool_input = hook_input.get("tool_input")
     timeout = tool_input.get("timeout") if isinstance(tool_input, dict) else None
     record = {"ts": time.time(), "event": hook_input.get("hook_event_name") or "",
               "tool": hook_input.get("tool_name") or ""}
     if isinstance(timeout, (int, float)):
         record["timeout_ms"] = timeout
-    path = alive_path(project)
-    tmp = f"{path}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(record, f)
-    os.replace(tmp, path)
+    record.update(terminal_info())
+    home.write_json_atomic(alive_path(project), record, indent=None)
 
 
 def read_alive(project):
@@ -159,12 +299,13 @@ def _speak(config, text, kind="nudge"):
     phrase for your return instead."""
     import hobson
     engine = hobson.load_engine(config)
-    return engine.speak_dynamic(text, allow_cold_start=True, kind=kind) is not False
+    return engine.speak(text, kind, cold_start=True) is not False
 
 
 def _paused_for(config):
-    """The presence state a nudge must wait out (away, call), or None to go
-    ahead. Any failure goes ahead: without presence, a nudge is as it was."""
+    """The presence state a nudge must wait out (away, call, or a guided run's
+    coaching), or None to go ahead. Any failure goes ahead: without presence,
+    a nudge is as it was."""
     try:
         import presence
         state = presence.audience(config)[0]
@@ -174,8 +315,8 @@ def _paused_for(config):
 
 
 def _wait_for_return(project, started_at, deadline):
-    """Block while you are away or on a call. "back", "cancelled" (you
-    typed in this session) or "expired" (NUDGE_MAX_SECONDS)."""
+    """Block while you are away, on a call or in a run. "back", "cancelled"
+    (you typed in this session) or "expired" (NUDGE_MAX_SECONDS)."""
     while time.time() < deadline:
         if not should_continue(activity_path(project), started_at, time.time()):
             return "cancelled"
@@ -188,12 +329,10 @@ def _wait_for_return(project, started_at, deadline):
 def _run(project, subject):
     """The escalating re-announcement loop. Never called from tests."""
     config = home.load_config()
-    lock_path = _lock_path("nudge", project)
+    held_path = lock_path("nudge", project)
 
-    fd = open(lock_path, "a+", encoding="utf-8")
-    try:
-        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-    except BlockingIOError:
+    fd = open(held_path, "a+", encoding="utf-8")
+    if not _take(fd):
         log_record.write(f"[nudge] skipped — a nudge is already running for {project!r}")
         fd.close()
         return
@@ -251,10 +390,6 @@ def _run(project, subject):
         except OSError:
             pass
         fd.close()
-        try:
-            os.remove(lock_path)
-        except OSError:
-            pass
 
 
 def watchdog_should_speak(last_event, last_stop, minutes, now):
@@ -322,19 +457,12 @@ def _run_watchdog(project, minutes, baseline=None):
     Hard cap of one announcement per watchdog — it is a hang detector, not
     a heartbeat. Never called from tests.
 
-    `baseline` is the parent's in-memory last_event_time at spawn time. The
-    parent saves that value to disk only *after* spawning this process (see
-    engines/base.py's _handle_commentary_llm), so re-reading it from disk
-    here would race the parent's own save and always see a stale (pre-flush)
-    value — making every watchdog compare against a timestamp its own parent
-    is about to overwrite, and exit unconditionally on the first poll. When
-    the caller supplies a baseline explicitly, trust it instead. Fall back to
-    the disk read only when no baseline was given (e.g. a hand-run
-    `python3 scripts/nudge.py --watchdog`).
+    `baseline` is the caller's last_event_time at spawn time (start_watchdog).
+    The disk read is only for a hand-run `python3 scripts/nudge.py --watchdog`.
     """
-    lock_path = _lock_path("watchdog", project)
+    held_path = lock_path("watchdog", project)
     try:
-        fd = open(lock_path, "a+", encoding="utf-8")
+        fd = open(held_path, "a+", encoding="utf-8")
         fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except (BlockingIOError, OSError):
         log_record.write(f"[watchdog] already running for {project!r}, exiting")
@@ -384,10 +512,6 @@ def _run_watchdog(project, minutes, baseline=None):
         except OSError:
             pass
         fd.close()
-        try:
-            os.remove(lock_path)
-        except OSError:
-            pass
 
 
 def main():
@@ -398,9 +522,7 @@ def main():
                         help="Run as a hang detector instead of a nudge.")
     parser.add_argument("--minutes", type=float, default=10.0)
     parser.add_argument("--baseline", type=float, default=None,
-                        help="Parent's in-memory last_event_time at spawn "
-                             "time, to avoid racing the parent's own "
-                             "post-spawn save_session().")
+                        help="The caller's last_event_time at spawn time.")
     args = parser.parse_args()
 
     project = args.project or home.derive_project_label()

@@ -30,7 +30,7 @@ def test_chatty_uses_template_no_ollama(claude_home, no_audio, monkeypatch):
     import phrase_gen
     called = {"n": 0}
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or ("done", "x"))
+                        lambda *a, **k: called.__setitem__("n", called["n"] + 1) or phrase_gen.Generation("done", "x"))
     eng = _engine(_cfg(verbosity="chatty"))
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/base.py"}})
@@ -41,7 +41,7 @@ def test_chatty_uses_template_no_ollama(claude_home, no_audio, monkeypatch):
 def test_normal_calls_generate_and_speaks(claude_home, no_audio, monkeypatch):
     import phrase_gen
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I am editing the base file."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I am editing the base file."))
     eng = _engine(_cfg(verbosity="normal"))
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/base.py"}})
@@ -50,7 +50,7 @@ def test_normal_calls_generate_and_speaks(claude_home, no_audio, monkeypatch):
 
 def test_normal_skip_does_not_speak(claude_home, no_audio, monkeypatch):
     import phrase_gen
-    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: (None, None))
+    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: phrase_gen.Generation(None, None, "SKIP", "model chose not to speak"))
     eng = _engine(_cfg(verbosity="normal"))
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/base.py"}})
@@ -72,7 +72,7 @@ def test_commentary_cooldown_blocks_second(claude_home, no_audio, monkeypatch):
     import phrase_gen
     import session_state as ss
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did something useful here."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did something useful here."))
     cfg = _cfg(verbosity="normal", cooldown=60.0)
     cfg["commentary"]["min_tool_calls"] = 1
     eng = _engine(cfg)
@@ -89,7 +89,7 @@ def test_commentary_records_session(claude_home, no_audio, monkeypatch):
     import phrase_gen
     import session_state as ss
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I am wiring up the form."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I am wiring up the form."))
     eng = _engine(_cfg(verbosity="normal"))
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/base.py"}})

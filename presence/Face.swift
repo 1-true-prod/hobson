@@ -15,6 +15,14 @@
 // line), for at most ten minutes. A click dismisses it; a drag moves it, and
 // the position is kept. He looks towards where the camera last saw you: the
 // face boxes stay in this process, as they always have.
+//
+// A line that still has a nudge running against it (waiting, nudge, stalled,
+// broken) shows two buttons, drawn by the page itself: Skip and Take me
+// there, both handled in Python (scripts/terminal_jump.py, via presence.py
+// --face-action), never here. FaceOverlay normally eats every click so a
+// dismiss and a drag both work anywhere on the window; its hitTest lets the
+// bottom strip the page reports through instead, so the real DOM buttons
+// underneath receive their own clicks.
 
 import AppKit
 import AVFoundation
@@ -31,6 +39,8 @@ struct FaceLine {
     let width: Double
     let activity: String?   // a line that waits on you: this session's activity token
     let asked: Bool         // you asked for it (Ask Hobson): shown with the face off too
+    let silent: Bool        // shown, not said (Hobson silenced): no audio, the mouth still
+    let logged: String?     // what the log may say of a private phrase (a note), sent back instead
 
     /// Older than this, a line is not shown at all: it has been said.
     static let maxAge = 10.0
@@ -44,7 +54,8 @@ struct FaceLine {
         return FaceLine(id: id, ts: ts, phrase: phrase, kind: o["kind"] as? String ?? "info",
                         audio: o["audio"] as? String, project: o["project"] as? String,
                         width: min(max(width, 200), 560), activity: o["activity"] as? String,
-                        asked: o["asked"] as? Bool ?? false)
+                        asked: o["asked"] as? Bool ?? false, silent: o["silent"] as? Bool ?? false,
+                        logged: o["logged"] as? String)
     }
 }
 
@@ -96,15 +107,33 @@ final class FacePanel: NSPanel {
     override var canBecomeMain: Bool { false }
 }
 
-/// Over the page, taking the mouse: a click dismisses, a drag moves.
+/// Over the page, taking the mouse: a click dismisses, a drag moves --
+/// except a strip `passThroughBelow` points high at the window's bottom
+/// edge, which this view declines so the page's own Skip / Take me there
+/// buttons receive the click instead (see hitTest).
 final class FaceOverlay: NSView {
     var onClick: (() -> Void)?
     var onMoved: (() -> Void)?
+    /// Height, in points from the bottom of this view, of the strip where
+    /// face.js's own buttons live. 0 when the current line shows none.
+    /// Set from the "size" message's `actions` field -- the page measures
+    /// its own layout; this view never guesses it.
+    var passThroughBelow: CGFloat = 0
     private var grabbed: NSPoint?
     private var origin = NSPoint.zero
     private var travel: CGFloat = 0
 
     override func acceptsFirstMouse(for event: NSEvent?) -> Bool { true }
+
+    /// nil over the button strip hands the point to the sibling behind
+    /// this view (the WKWebView, added further back in z-order), where the
+    /// real DOM buttons take the click; everywhere else behaves as before.
+    override func hitTest(_ point: NSPoint) -> NSView? {
+        guard let superview = superview else { return super.hitTest(point) }
+        let local = convert(point, from: superview)
+        if passThroughBelow > 0 && local.y < passThroughBelow { return nil }
+        return super.hitTest(point)
+    }
 
     override func mouseDown(with event: NSEvent) {
         grabbed = NSEvent.mouseLocation
@@ -142,6 +171,7 @@ final class FaceController: NSObject, WKNavigationDelegate {
     let page: URL
     private var panel: FacePanel?
     private var web: WKWebView?
+    private weak var overlay: FaceOverlay?
     private let messages = FaceMessages()
     private var ready = false
     private var pending: [String: Any]?
@@ -158,7 +188,7 @@ final class FaceController: NSObject, WKNavigationDelegate {
     /// "One moment." waits for the answer that replaces it, this long at most.
     static let maxThinking = 25.0
     private var shownAt = 0.0
-    private var followed = ""        // "audio 3.1s" or "the text": what the mouth followed
+    private var followed = ""        // "audio 3.1s", "the text" or "nothing (silent)": what the mouth followed
     private var why = "said"         // why the line on screen goes
     /// presence.py arguments, run detached: how the window reports to hobson.log
     /// (the helper never writes the log itself).
@@ -215,9 +245,10 @@ final class FaceController: NSObject, WKNavigationDelegate {
         line = next
         shownAt = now()
         why = "said"
-        followed = audio.map { String(format: "audio %.1fs", $0.duration) } ?? "the text"
+        followed = next.silent ? "nothing (silent)" : audio.map { String(format: "audio %.1fs", $0.duration) } ?? "the text"
         var u: [String: Any] = ["text": next.phrase, "kind": next.kind, "project": next.project ?? "",
-                                "start": next.ts, "hold": next.activity != nil || next.kind == "thinking"]
+                                "start": next.ts, "hold": next.activity != nil || next.kind == "thinking",
+                                "silent": next.silent]
         if let a = audio {
             u["env"] = a.env
             u["frame"] = Loudness.frame
@@ -266,6 +297,10 @@ final class FaceController: NSObject, WKNavigationDelegate {
         hiding = false
         let panel = self.panel ?? makePanel()
         if web == nil { makeWeb(in: panel) }
+        // Reset now, ahead of the "size" message that will confirm it for
+        // the new line: a stale non-zero strip from the previous line must
+        // not keep swallowing clicks meant to dismiss this one.
+        overlay?.passThroughBelow = 0
         let frame = panel.frame
         if !showing || abs(frame.width - CGFloat(width)) > 0.5 {
             place(panel, width: CGFloat(width), height: frame.height)
@@ -309,7 +344,7 @@ final class FaceController: NSObject, WKNavigationDelegate {
     }
 
     private func note(_ event: String, _ l: FaceLine?, _ detail: String) {
-        log?(["--face-event", event, l?.phrase ?? "", l?.project ?? "", detail])
+        log?(["--face-event", event, l?.logged ?? l?.phrase ?? "", l?.project ?? "", detail])
     }
 
     /// Memory: a WebContent process is 60-100 MB, for a window seen now and then.
@@ -346,6 +381,7 @@ final class FaceController: NSObject, WKNavigationDelegate {
             self?.panel?.invalidateShadow()
         }
         root.addSubview(overlay)
+        self.overlay = overlay
         panel = p
         return p
     }
@@ -400,6 +436,13 @@ final class FaceController: NSObject, WKNavigationDelegate {
                 panel.setFrame(NSRect(x: f.minX, y: f.maxY - CGFloat(h), width: f.width, height: CGFloat(h)), display: true)
                 panel.invalidateShadow()
             }
+            if let a = (msg["actions"] as? NSNumber)?.doubleValue {
+                overlay?.passThroughBelow = CGFloat(max(0, a))
+            }
+        case "action":
+            guard let action = msg["action"] as? String else { return }
+            log?(["--face-action", action, line?.project ?? ""])
+            hide(action == "skip" ? "skipped" : "there")
         case "hidden":
             if hiding { gone() }
         default:

@@ -1,2 +1,4 @@
-pocket-tts
+# Pinned to the release checked on 2026-10-07: PyPI publishes it from Kyutai's own GitHub workflow.
+# The daemon reads a private voice table that a release can move; bump deliberately.
+pocket-tts==3.3.0
 scipy

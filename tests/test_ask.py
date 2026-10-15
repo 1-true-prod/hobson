@@ -6,12 +6,12 @@ rest of the helper.
 
 import fcntl
 import json
-import threading
 import time
 
 import pytest
 
 import ask
+import session_status
 import presence
 
 NOW = 1_800_000_000.0
@@ -32,7 +32,7 @@ def _config(**extra):
 # ── What needs me? ──────────────────────────────────────────────────────────
 
 def test_nothing_at_all_is_all_quiet(claude_home):
-    assert ask.compose_status(ask.reading(NOW), []) == ask.QUIET_LINE
+    assert ask.compose_status(session_status.reading(NOW), []) == ask.QUIET_LINE
 
 
 def test_each_session_is_read_once_most_urgent_first(claude_home):
@@ -46,7 +46,7 @@ def test_each_session_is_read_once_most_urgent_first(claude_home):
              last_stop_category="done")                           # at work again since
     _session(claude_home, "old", last_stop_time=NOW - 5 * 3600, last_event_time=NOW - 5 * 3600,
              last_stop_category="broken")                         # history
-    read = ask.reading(NOW)
+    read = session_status.reading(NOW)
     assert read == {"waiting": [("webapp", "answer")], "failed": ["mobile app"],
                     "finished": ["docs"], "working": ["hobson"]}
     assert ask.compose_status(read, []) == (
@@ -118,7 +118,10 @@ def test_muted_it_is_shown_and_not_spoken_even_with_the_face_off(claude_home, no
 
 def test_with_the_face_off_no_one_moment_is_left_on_screen(claude_home, no_audio, no_face):
     ask.answer("status", config=_config(face={"enabled": False}))
-    assert no_face == [] and no_audio["say"] == [ask.QUIET_LINE]
+    # Only the spoken answer reaches face.show, which leaves it off screen
+    # with the face off (face.wanted); nothing was shown because you asked.
+    assert [line[:2] for line in no_face] == [(ask.QUIET_LINE, "answer")]
+    assert "asked" not in no_face[0] and no_audio["say"] == [ask.QUIET_LINE]
 
 
 def test_a_recap_that_fails_still_answers(claude_home, no_audio, monkeypatch):
@@ -131,22 +134,16 @@ def test_a_recap_that_fails_still_answers(claude_home, no_audio, monkeypatch):
     assert ask.answer("recap", config=_config()) == ask.NOTHING_DONE
 
 
-def test_a_busy_bark_lock_delays_an_answer_rather_than_dropping_it(claude_home):
-    lock = open(claude_home / "hobson.lock", "a+")
-    fcntl.flock(lock, fcntl.LOCK_EX)
-    threading.Timer(0.3, lambda: (fcntl.flock(lock, fcntl.LOCK_UN), lock.close())).start()
-    began = time.time()
-    assert ask._wait_for_the_bark_lock(timeout=3)
-    assert 0.2 < time.time() - began < 2.5
-
-
-def test_a_lock_that_stays_busy_gives_up_in_time(claude_home):
+def test_a_busy_bark_lock_never_drops_an_answer(claude_home, no_audio):
+    """Another hook holding the bark lock, or one that just spoke, drops a
+    hook's phrase; an answer is spoken all the same (speak's cold_start)."""
     lock = open(claude_home / "hobson.lock", "a+")
     fcntl.flock(lock, fcntl.LOCK_EX)
     try:
-        assert not ask._wait_for_the_bark_lock(timeout=0.3)
+        ask.answer("failed", config=_config())
     finally:
         lock.close()
+    assert no_audio["say"] == [ask.NO_FAILURES]
 
 
 def test_every_step_is_logged_and_none_reads_as_speech(claude_home, no_audio):

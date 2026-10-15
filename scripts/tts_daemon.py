@@ -162,10 +162,10 @@ class _Handler(loopback.GuardedHandler):
             t0 = time.monotonic()
             wav = tts.backend.synthesize(text, voice, params)
             tts.log(f"generated ({time.monotonic() - t0:.2f}s, {len(wav)} bytes, "
-                    f"voice={voice}) -> {text!r}")
+                    f"voice={voice}) -> {len(text)} chars")
             self.send_body(200, wav, "audio/wav")
         except BrokenPipeError:
-            tts.log(f"client disconnected during generate -> {text!r}")
+            tts.log(f"client disconnected during generate -> {len(text)} chars")
         except Exception as e:
             tts.log(f"generate failed: {e}")
             try:

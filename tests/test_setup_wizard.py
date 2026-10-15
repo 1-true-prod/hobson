@@ -101,19 +101,19 @@ def test_no_brain_writes_no_model():
 
 
 def test_a_default_is_not_written():
-    config, changes = sw.apply_settings({}, {"engine": "say", "presence.mode": "auto"})
+    config, changes = home.apply_settings({}, {"engine": "say", "presence.mode": "auto"})
     assert config == {} and changes == []
 
 
 def test_a_choice_that_differs_is_written_and_nothing_else():
-    config, changes = sw.apply_settings({"volume": 7}, {"engine": "kokoro-realtime", "presence.mode": "continuous"})
+    config, changes = home.apply_settings({"volume": 7}, {"engine": "kokoro-realtime", "presence.mode": "continuous"})
     assert config == {"volume": 7, "engine": "kokoro-realtime", "presence": {"mode": "continuous"}}
     assert {c["op"] for c in changes} == {"set"}
 
 
 def test_a_setting_put_back_to_its_default_is_removed():
     user = {"engine": "say", "presence": {"mode": "continuous"}, "decider": {"backend": "jev", "timeout_ms": 9000}}
-    config, changes = sw.apply_settings(user, {"engine": "say", "presence.mode": "auto", "decider.backend": "local"})
+    config, changes = home.apply_settings(user, {"engine": "say", "presence.mode": "auto", "decider.backend": "local"})
     assert config == {"decider": {"timeout_ms": 9000}}
     assert sorted(c["key"] for c in changes if c["op"] == "unset") == ["decider.backend", "engine", "presence.mode"]
     assert user["presence"] == {"mode": "continuous"}  # the input is left alone
@@ -397,9 +397,9 @@ def test_apply_streams_one_event_per_step_and_refuses_a_second_run(server, monke
 # ── Voices ─────────────────────────────────────────────────────────────────
 
 def test_a_voice_is_written_only_when_it_differs_from_the_default(claude_home):
-    assert sw.apply_settings({}, sw.desired_settings({"engine": "kokoro-realtime", "voice": "am_puck"}, False, 0))[0] == \
+    assert home.apply_settings({}, sw.desired_settings({"engine": "kokoro-realtime", "voice": "am_puck"}, False, 0))[0] == \
         {"engine": "kokoro-realtime"}
-    config, _ = sw.apply_settings({}, sw.desired_settings({"engine": "pocket-tts", "voice": "anna"}, False, 0))
+    config, _ = home.apply_settings({}, sw.desired_settings({"engine": "pocket-tts", "voice": "anna"}, False, 0))
     assert config == {"engine": "pocket-tts", "pocket_tts": {"voice": "anna"}}
 
 
@@ -491,7 +491,7 @@ def test_what_is_not_a_model_name_is_dropped(name):
 
 
 def test_a_model_outside_the_catalogue_is_written_and_pulled():
-    config, _ = sw.apply_settings({}, sw.desired_settings({"model": "mistral:7b"}, False, 0))
+    config, _ = home.apply_settings({}, sw.desired_settings({"model": "mistral:7b"}, False, 0))
     assert config == {"ollama": {"model": "mistral:7b"}}
     pull = [t for t in sw.tasks_for({"model": "mistral:7b"}, facts(), False) if t["id"] == "pull"]
     assert pull and "size shows once it starts" in pull[0]["detail"]

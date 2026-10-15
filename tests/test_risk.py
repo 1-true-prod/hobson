@@ -203,8 +203,8 @@ def test_a_realtime_engine_warns_without_the_model(kind, fake_ollama, claude_hom
     else:
         from engines.kokoro_realtime import KokoroRealtimeEngine as Engine
     spoken = []
-    monkeypatch.setattr(Engine, "speak_dynamic",
-                        lambda self, phrase, allow_cold_start=True, **k: spoken.append(phrase))
+    monkeypatch.setattr(Engine, "speak",
+                        lambda self, phrase, kind, cold_start=False: spoken.append(phrase))
     Engine({"engine": kind, "personality": "hobson", "events": ["permission"]}).run(dict(_RM))
     assert fake_ollama.urls == [], "a destructive request is not left to the model's phrasing"
     assert spoken == ["Careful — this one deletes files. It needs your approval."]

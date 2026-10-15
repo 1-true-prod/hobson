@@ -32,7 +32,7 @@ def test_commentary_from_a_subagent_is_suppressed(claude_home, no_audio, monkeyp
     A subagent's tool calls must not narrate."""
     import phrase_gen
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I edited the parser."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I edited the parser."))
     eng = _engine(_cfg())
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/x.py"},
@@ -43,7 +43,7 @@ def test_commentary_from_a_subagent_is_suppressed(claude_home, no_audio, monkeyp
 def test_commentary_from_the_main_session_still_speaks(claude_home, no_audio, monkeypatch):
     import phrase_gen
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I edited the parser."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I edited the parser."))
     eng = _engine(_cfg())
     eng.run({"hook_event_name": "PreToolUse", "tool_name": "Edit",
              "tool_input": {"file_path": "/a/x.py"}})
@@ -53,7 +53,7 @@ def test_commentary_from_the_main_session_still_speaks(claude_home, no_audio, mo
 def test_subagent_suppression_can_be_turned_off(claude_home, no_audio, monkeypatch):
     import phrase_gen
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I edited the parser."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I edited the parser."))
     cfg = _cfg()
     cfg["commentary"]["suppress_subagents"] = False
     eng = _engine(cfg)
@@ -143,7 +143,7 @@ def test_daemon_idle_timeout_outlives_normal_gaps_between_utterances():
     """Measured on 11,173 real gaps between spoken phrases: a 180s idle
     timeout expires during 4.1% of them, and every expiry costs the next
     utterance a fallback to macOS `say` (commentary passes
-    allow_cold_start=False by design). 600s cuts that to 1.1%; beyond it the
+    no cold_start, by design). 600s cuts that to 1.1%; beyond it the
     curve flattens while RAM stays pinned longer.
     """
     from home import DEFAULT_CONFIG

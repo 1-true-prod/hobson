@@ -33,16 +33,19 @@ const out = [];
 const measure = (project) => {
   const c = document.querySelector("canvas"), win = document.querySelector(".win");
   const name = document.querySelector(".meta > span"), chip = document.querySelector(".chip");
+  const actions = document.querySelector(".actions");
   out.push({project, col: c.parentElement.clientWidth, w: c.clientWidth, h: c.clientHeight,
             win: win.offsetWidth, winH: win.offsetHeight,
             lines: Math.round(name.clientHeight / parseFloat(getComputedStyle(name).lineHeight)),
             cut: name.scrollHeight > name.clientHeight, chipLines: chip.getClientRects().length,
             // Layout offsets, not client rects: those carry the CRT's squash.
-            off: (chip.offsetTop + chip.offsetHeight / 2) - (name.offsetTop + name.offsetHeight / 2)});
+            off: (chip.offsetTop + chip.offsetHeight / 2) - (name.offsetTop + name.offsetHeight / 2),
+            actionsH: actions.offsetHeight});
 };
 let t = 0;
-for (const [project, text] of lines) {
-  setTimeout(() => Face.say({text, kind: "waiting", project, start: Date.now() / 1000}), t);
+// A third, optional element per line is the kind (default "waiting").
+for (const [project, text, kind] of lines) {
+  setTimeout(() => Face.say({text, kind: kind || "waiting", project, start: Date.now() / 1000}), t);
   setTimeout(() => measure(project), t + 400);
   t += 600;
 }
@@ -109,3 +112,12 @@ def test_a_long_project_name_wraps_and_leaves_the_bust_alone(tmp_path):
     assert (long["lines"], long["cut"]) == (2, False)
     assert long["winH"] > short["winH"]
     assert (huge["lines"], huge["cut"]) == (3, True)
+
+
+def test_actions_show_only_for_a_line_that_may_still_be_nudging(tmp_path):
+    waiting, done, broken = _lay_out(tmp_path, [
+        SHORT, ("Dev", "All set.", "done"), ("Dev", "It failed.", "broken"),
+    ])
+    assert waiting["actionsH"] > 0
+    assert done["actionsH"] == 0
+    assert broken["actionsH"] > 0

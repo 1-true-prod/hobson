@@ -208,6 +208,37 @@ def test_the_reading_carries_the_context_the_model_is_shown(tmp_path):
     assert r.task is None, "the request is already in the context"
 
 
+def test_the_final_message_comes_from_the_hook_when_the_transcript_lags(tmp_path):
+    """Claude Code writes the transcript asynchronously: at Stop time it often
+    lacks the turn's last message, which the hook input carries. Read from
+    the transcript alone, 72% of real Stops were classified on the message
+    before the last one, and a final "Go?" started no nudge."""
+    f = tmp_path / "t.jsonl"
+    _jsonl(f, [_prompt("pick one for me"), _said("Batch B is next.")])
+    r = so.read({"transcript_path": str(f),
+                 "last_assistant_message": "Both are sketched. A or B?"})
+    assert r.context == ("Earlier: User: pick one for me | Agent: Batch B is next.\n"
+                         "Last message: Both are sketched. A or B?")
+    assert r.last_message == "Both are sketched. A or B?"
+    assert r.awaiting_answer
+
+
+def test_a_final_message_already_in_the_transcript_is_not_read_twice(tmp_path):
+    final = "Pushed it.\n\n```\ngit log -1\n```\n\nAll tests pass."
+    f = tmp_path / "t.jsonl"
+    _jsonl(f, [_prompt("ship it please"), _said(final)])
+    r = so.read({"transcript_path": str(f), "last_assistant_message": final})
+    assert r.context.startswith("Earlier: User: ship it please\nLast message: Pushed it.")
+    assert "|" not in r.context, "the final message was added a second time"
+
+
+def test_without_a_transcript_the_hooks_final_message_is_read(claude_home):
+    (claude_home / "projects").mkdir()
+    r = so.read({"session_id": "nope", "last_assistant_message": "**Go?**"})
+    assert r.context == "Last message: Go?", "read as prose, like the transcript's turns"
+    assert r.awaiting_answer
+
+
 @pytest.mark.parametrize("ending", [
     "Waiting for your go-ahead on the commit: `approve` or `approve + resolve`.",
     "Tell me the two codes and I will prepare the branch.",

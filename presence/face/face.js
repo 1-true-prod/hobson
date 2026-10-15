@@ -5,17 +5,24 @@
 // The presence helper (presence/Face.swift) loads this page in a
 // transparent panel and drives it through three calls:
 //
-//   Face.say({text, kind, project, start, env, frame, hold})  -> duration (s)
+//   Face.say({text, kind, project, start, env, frame, hold, silent})  -> duration (s)
 //       start: epoch seconds the audio began. env: loudness 0..1, one value
 //       per `frame` seconds, from the file afplay is playing. Without env
 //       (no audio, or it was gone), the mouth and caption follow syllables
-//       estimated from the text.
+//       estimated from the text. silent: Hobson is silenced (muted or quiet
+//       hours), so nothing is said: the line is shown whole at once, the mouth still.
 //   Face.gaze(x, y)   where you are, -1..1 from his point of view; null = no one
 //   Face.hide()       CRT off, then {type: "hidden"} to the helper
 //
-// It posts {type: "size", w, h} when its size changes, so the panel fits.
-// The caption is set through textContent only; data comes in as arguments,
-// never as script text. ?mock runs it alone in a browser.
+// It posts {type: "size", w, h, actions} when its size changes, so the panel
+// fits -- `actions` is how tall a strip at the bottom holds the Skip / Take
+// me there buttons (0 when the current line shows neither), which
+// Face.swift's overlay reads so clicks there reach these buttons instead of
+// dismissing the window. A click on either posts {type: "action", action:
+// "skip" | "take-there"}; what it does lives entirely on the Python side
+// (scripts/terminal_jump.py), never here. The caption is set through
+// textContent only; data comes in as arguments, never as script text. ?mock
+// runs it alone in a browser.
 (() => {
 "use strict";
 
@@ -39,8 +46,15 @@ const MOODS = {
   answer: { chip: "at your service", pose: "briefing" },   // you asked (ask.py)
   thinking: { chip: "one moment", pose: "thinking" },      // until the answer replaces it
   info: { chip: "", pose: "idle" },
+  note: { chip: "a note", pose: "idle" },                  // cc-plugin-you-should-know (plugin_notes)
 };
 const BROWS = { waiting: [1, 0.3], briefing: [0.5, 0], broken: [-0.4, 1], thinking: [0.45, -0.2] };
+
+// Skip / Take me there show only for a line about a specific project that
+// may still have a nudge running against it -- not "done" (nothing is
+// nudging) and not a line with no project to jump to (answer, thinking,
+// briefing, commentary, info).
+const ACTION_KINDS = new Set(["waiting", "nudge", "stalled", "broken"]);
 
 const clamp = (x, a, b) => (x < a ? a : x > b ? b : x);
 const smooth = (e0, e1, x) => { const t = clamp((x - e0) / (e1 - e0), 0, 1); return t * t * (3 - 2 * t); };
@@ -107,7 +121,7 @@ class Utterance {
     this.hold = !!u.hold;
     this.ends = wordEnds(this.text);
     const env = Array.isArray(u.env) && u.env.length > 1 ? u.env.map((x) => clamp(+x || 0, 0, 1)) : null;
-    if (this.kind === "thinking") {
+    if (this.kind === "thinking" || u.silent) {
       // Said by no one: shown whole at once, the mouth still.
       this.plan = { syl: [], words: [], dur: 0 };
       this.dur = 0;
@@ -404,6 +418,7 @@ class Window {
     this.chip = win.querySelector(".chip");
     this.proj = win.querySelector(".proj");
     this.bars = win.querySelector(".bars");
+    this.actions = win.querySelector(".actions");
     this.seed = Math.random() * 10;
     this.pose = { yaw: 0, pitch: 0, roll: 0, ex: 0, ey: 0, brow: 0, browTilt: 0 };
     this.tint = TINT.slice();
@@ -455,9 +470,14 @@ class Window {
   report() {
     // offsetWidth/Height ignore the CRT's transform: the size it will have.
     const w = this.win.offsetWidth, h = this.win.offsetHeight;
-    if (w && h && (w !== this.sentW || h !== this.sentH)) {
-      this.sentW = w; this.sentH = h;
-      post({ type: "size", w, h });
+    // How tall a strip at the window's bottom edge the buttons occupy, in
+    // the same units as w/h: 0 when .showActions is off (the row is
+    // display:none, offsetHeight 0). FaceOverlay reads this to let clicks
+    // in that strip reach the page instead of dismissing the window.
+    const actions = this.actions.offsetHeight > 0 ? this.win.offsetHeight - this.actions.offsetTop : 0;
+    if (w && h && (w !== this.sentW || h !== this.sentH || actions !== this.sentActions)) {
+      this.sentW = w; this.sentH = h; this.sentActions = actions;
+      post({ type: "size", w, h, actions });
     }
   }
 
@@ -470,6 +490,7 @@ class Window {
     this.u = new Utterance(u);
     this.hideAt = 0;
     this.proj.textContent = this.u.project;
+    this.win.classList.toggle("showActions", ACTION_KINDS.has(this.u.kind) && !!this.u.project);
     const state = this.win.dataset.state;
     if (state !== "on") {
       this.win.dataset.state = "hidden";
@@ -739,6 +760,8 @@ window.Face = {
   gaze: (x, y) => face.gaze(x, y),
   hide: () => face.hide(),
 };
+face.actions.querySelector(".skip").addEventListener("click", () => post({ type: "action", action: "skip" }));
+face.actions.querySelector(".there").addEventListener("click", () => post({ type: "action", action: "take-there" }));
 face.report();
 post({ type: "ready" });
 

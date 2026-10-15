@@ -4,6 +4,12 @@
 
 ### New
 
+- **`hobson coach`** runs a short script of spoken steps on Hobson's own clock, in one call:
+  `say TEXT`, `wait SECONDS`, `countdown N` and `ready [SECONDS]`, which waits for any key press,
+  click or mouse movement (a presentation clicker works from across the room). Every clip is rendered before
+  the clock starts, so a countdown keeps to the second, and each step is reported as a line of
+  JSON as it ends. While a run goes, other sessions' announcements are held and told in one
+  briefing at the end; `hobson off`, quiet hours or Ctrl-C stop it
 - **`hobson say`** reads text aloud on demand: `hobson say "…"`, `hobson say -f spec.md`, or piped
   in. A passage at a time, each rendered while the last plays, and it returns when the last has
   finished; `hobson off`, quiet hours or Ctrl-C stop it mid-passage
@@ -28,6 +34,11 @@
   waits on you stays until you type in that session; a click dismisses, a drag moves. Commentary
   stays voice only. On by default, with presence or without; `hobson face off` turns it off,
   `hobson face test` shows a line, and the menu bar has **Show Hobson**
+- **Skip and Take me there.** A face line about a session that may still be nudging you (waiting,
+  a nudge, a stall, a failure) now has two buttons. *Skip* is the same signal as typing in that
+  session, so the nudges stop. *Take me there* selects the session's tmux pane, switches your tmux client
+  to it and raises the terminal: the exact tab in iTerm2 or Terminal.app (the first use asks macOS
+  for Automation permission), the app itself in Ghostty or any other
 - **The setup wizard.** Installing opens a window that walks through every choice: the engine,
   its voice and personality (each heard before anything is downloaded), when Hobson speaks, the
   Ollama model (any model; the default is marked recommended), Jev, presence and the phone switch.
@@ -74,6 +85,16 @@
 
 ### Fixes
 
+- **Changing a setting can no longer unmute Hobson for a moment.** Every `hobson` command that
+  changed a setting truncated `hobson.json` and rewrote it, and a hook reading it in between ran
+  on the defaults. Settings are now written whole, in one step, one writer at a time, and a
+  setting put back to its default is removed, so later improvements to the default reach you
+- **`hobson voice` and `hobson volume` no longer run what they are given as Python.** Their
+  arguments were pasted into Python source, so a voice name with a quote in it was executed
+- An unreadable `hobson.json` is kept aside as `hobson.json.unreadable-<time>` before a command
+  writes a new one, instead of being written over
+- **`hobson doctor` checks Pocket TTS.** Without its venv or weights every phrase falls back to
+  macOS `say`; doctor never said so
 - **A paused sensor keeps its menu-bar icon.** It quit after 30 minutes without a hook, and the
   icon, the only way to resume from the menu, went with it. Every exit is now in the log
 - **The TTS daemons no longer take orders from web pages.** Any page open in a browser could stop
@@ -116,6 +137,8 @@
 
 ### Changes
 
+- `hobson config reset` writes only your engine and personality; every other setting follows its
+  default again, where it used to freeze every default of the day into the file
 - **Hobson is now a synthetic butler**: a courteous machine intelligence, precise and faintly
   uncanny. The README, the CLI and the hobson personality's description say so; the phrase
   templates are unchanged
@@ -132,6 +155,9 @@
 - The prompt hook no longer loads the engine module: 39 ms to 33 ms median per prompt
 - Internally, every path, the config, the project label and the quiet controls live in `home.py`,
   resolved from `$HOME` when asked for, and every log line is written and read by `log_record.py`
+- **Pocket TTS installs at a pinned version**, 3.3.0, not the newest release, so a new Pocket TTS
+  release cannot change what `hobson setup pocket-tts` installs until the pin is bumped on purpose.
+  Only that package is pinned; its own dependencies still float
 
 ### Removed
 

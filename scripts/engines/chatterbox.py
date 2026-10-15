@@ -38,6 +38,10 @@ class ChatterboxEngine(BaseEngine):
     templates_module = "bark_templates"
     cache_ext = "wav"
 
+    def voice_label(self):
+        ref = self._reference_audio
+        return f"voice clone ({os.path.basename(ref) if os.path.isfile(ref) else 'no reference audio'})"
+
     def __init__(self, config):
         super().__init__(config)
         self.cache_dir = home.path("voice-cache-chatterbox")

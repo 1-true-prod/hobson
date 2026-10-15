@@ -59,7 +59,30 @@ def _fresh_state(project_label):
         # "question", "working", or None when unknown -- the nudge reads it.
         "last_stop_time": 0.0,
         "last_stop_category": None,
+        # The last permission request that was said (or held for your
+        # return), and the Claude Code session it came from: the echo of it
+        # a few seconds later is not said again (wait_just_said).
+        "last_wait_time": 0.0,
+        "last_wait_session": None,
     }
+
+
+def _backfilled(state, project_label):
+    """`state` as read from disk, brought up to the current schema."""
+    # Backfill any fields missing from older on-disk sessions, using
+    # _fresh_state() as the single source of truth for the schema.
+    for key, default in _fresh_state(project_label).items():
+        state.setdefault(key, default)
+    # Older sessions hold recent_voiced as bare strings (pre-decay
+    # format). Coerce to [phrase, ts] pairs with ts=0.0, which reads
+    # as "unknown" everywhere downstream -- unknown stays
+    # conservative and dedupes, it is never treated as infinitely
+    # old and let through.
+    state["recent_voiced"] = [
+        [entry, 0.0] if isinstance(entry, str) else entry
+        for entry in state.get("recent_voiced", [])
+    ]
+    return state
 
 
 def load_session(project_label):
@@ -67,40 +90,38 @@ def load_session(project_label):
     path = _session_path(project_label)
     try:
         with open(path, encoding="utf-8") as f:
-            state = json.load(f)
-            # Backfill any fields missing from older on-disk sessions, using
-            # _fresh_state() as the single source of truth for the schema.
-            for key, default in _fresh_state(project_label).items():
-                state.setdefault(key, default)
-            # Older sessions hold recent_voiced as bare strings (pre-decay
-            # format). Coerce to [phrase, ts] pairs with ts=0.0, which reads
-            # as "unknown" everywhere downstream -- unknown stays
-            # conservative and dedupes, it is never treated as infinitely
-            # old and let through.
-            state["recent_voiced"] = [
-                [entry, 0.0] if isinstance(entry, str) else entry
-                for entry in state.get("recent_voiced", [])
-            ]
-            return state
+            return _backfilled(json.load(f), project_label)
     except (FileNotFoundError, json.JSONDecodeError):
         return _fresh_state(project_label)
+
+
+def load_all():
+    """Every session on disk, in the order of its file's name, each brought
+    up to the current schema; a file that cannot be read is passed over.
+    For the readers of every session at once (session_status.py)."""
+    try:
+        names = sorted(os.listdir(home.sessions_dir()))
+    except OSError:
+        return []
+    found = []
+    for name in names:
+        if not name.endswith(".json"):
+            continue
+        try:
+            with open(os.path.join(home.sessions_dir(), name), encoding="utf-8") as f:
+                state = json.load(f)
+        except (OSError, ValueError):
+            continue
+        if isinstance(state, dict):
+            found.append(_backfilled(state, state.get("project") or ""))
+    return found
 
 
 def save_session(state):
     """Write session state back to disk, atomically: a reader sees the old
     file or the new one, never a truncated one (which it would read as no
     session at all, and its next save would make that true)."""
-    os.makedirs(home.sessions_dir(), exist_ok=True)
-    path = _session_path(state["project"])
-    tmp = f"{path}.{os.getpid()}.tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(state, f, indent=2)
-        os.replace(tmp, path)
-    except BaseException:
-        with contextlib.suppress(OSError):
-            os.remove(tmp)
-        raise
+    home.write_json_atomic(_session_path(state["project"]), state)
 
 
 def _acquire(fd):
@@ -168,6 +189,40 @@ def stop_category(state):
     return state.get("last_stop_category")
 
 
+def record_wait_said(state, session_id, now=None):
+    """A permission request was announced: spoken, or held for your return."""
+    state["last_wait_time"] = time.time() if now is None else now
+    state["last_wait_session"] = session_id or None
+
+
+def wait_just_said(state, session_id, within, now=None):
+    """Was a permission request announced in the last `within` seconds -- for
+    this Claude Code session, when both are known, else for the project?"""
+    return _wait_within(state, "last_wait", session_id, within, now)
+
+
+def record_wait_shown(state, session_id, now=None):
+    """A permission request was shown on the face while Hobson was silenced.
+    Apart from record_wait_said, and read only on the silenced path: nothing
+    was heard, so a reminder that arrives after the mute ends is said."""
+    state["last_shown_wait_time"] = time.time() if now is None else now
+    state["last_shown_wait_session"] = session_id or None
+
+
+def wait_just_shown(state, session_id, within, now=None):
+    """Was a permission request shown silently in the last `within` seconds
+    (as wait_just_said)?"""
+    return _wait_within(state, "last_shown_wait", session_id, within, now)
+
+
+def _wait_within(state, prefix, session_id, within, now):
+    now = time.time() if now is None else now
+    if not 0 <= now - state.get(f"{prefix}_time", 0.0) <= within:
+        return False
+    said_for = state.get(f"{prefix}_session")
+    return not (said_for and session_id and said_for != session_id)
+
+
 def record_voiced(state, phrase):
     """Update state after a phrase was voiced."""
     state["recent_voiced"].append([phrase, time.time()])
@@ -194,15 +249,10 @@ def build_session_context(state, task=None):
     """
     parts = [f"Task: {task}"] if task else []
 
-    # Recent voiced phrases. Entries are [phrase, ts] pairs; older sessions
-    # (or a caller that hasn't gone through load_session's coercion) may
-    # still hold bare strings, so accept both shapes here too.
-    voiced = state.get("recent_voiced", [])
-    if voiced:
-        phrases = [v[0] if isinstance(v, (list, tuple)) else v for v in voiced[-6:]]
-        quoted = [f'"{p}"' for p in phrases]
-        parts.append(f"Recent: {' '.join(quoted)}")
-    else:
+    # What was said is not shown: llama3.2:3b reused the phrases it was shown,
+    # whatever their age, and the guards then had to catch the copies. They
+    # still read recent_voiced; the prompt says only whether anything was said.
+    if not state.get("recent_voiced"):
         parts.append("No announcements yet this session.")
 
     # Events since last voice
@@ -223,19 +273,6 @@ def build_session_context(state, task=None):
             parts.append(f"Last announced {int(delta / 3600)}h ago.")
 
     return "\n".join(parts)
-
-
-def seconds_since_last_voiced(state):
-    """Seconds since the last spoken phrase, or None if nothing spoken yet.
-
-    Used to decay the near-duplicate guard: a repeat two minutes later is not
-    what makes repetition grate. None means "unknown", and callers stay
-    conservative and dedupe.
-    """
-    last = state.get("last_voiced_time", 0) or 0
-    if not last:
-        return None
-    return max(0.0, time.time() - last)
 
 
 MAX_PENDING = 8
@@ -276,9 +313,7 @@ def should_flush(state, min_calls, min_seconds):
 
     Times off last_flush_time (the last flush *attempt*), not
     last_voiced_time — a flush that spoke nothing must not leave the timer
-    tripped. seconds_since_last_voiced() still uses last_voiced_time; it
-    drives the near-duplicate guard, which genuinely cares about the last
-    time something was actually spoken.
+    tripped.
 
     min_calls/min_seconds have no defaults here on purpose: the sole
     caller (BaseEngine._handle_commentary_llm) always reads them from

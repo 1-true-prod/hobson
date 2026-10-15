@@ -308,9 +308,11 @@ def remote_destructive_probability(command, config):
 PERMISSION_RISK_MIN = 0.5
 
 
-def permission_risk(tool_name, tool_input, config=None):
+def permission_risk(tool_name, tool_input, config=None, remote=True):
     """Why this permission request is destructive, as a clause completing
-    "Careful — this one ...", or None for an ordinary one. Bash only."""
+    "Careful — this one ...", or None for an ordinary one. Bash only.
+    `remote=False` stops at the local rules: what they cannot place is
+    ordinary, and nothing leaves the Mac (the silenced hook)."""
     if tool_name != "Bash" or not isinstance(tool_input, dict):
         return None
     command = tool_input.get("command")
@@ -319,7 +321,7 @@ def permission_risk(tool_name, tool_input, config=None):
     reason = local_risk(command)
     if reason:
         return reason
-    if is_read_only(command):
+    if not remote or is_read_only(command):
         return None
     if config is None:
         from home import load_config

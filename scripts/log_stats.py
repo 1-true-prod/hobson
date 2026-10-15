@@ -17,9 +17,8 @@ import log_record
 _EVENT_RE = re.compile(r"(?<!gen)\[(Stop|PreToolUse|PermissionRequest|Notification)\]")
 _BATCH_RE = re.compile(r"batch of (\d+)")
 
-# "skipped (raw: ...)" is emitted only by builds predating
-# describe_generation_failure(), which replaced it with explicit
-# SKIP:/ERROR:/UNUSABLE: verdicts. The string is therefore a reliable version
+# "skipped (raw: ...)" is emitted only by builds predating the explicit
+# SKIP:/ERROR:/UNUSABLE: verdicts (now phrase_gen.Generation's). The string is therefore a reliable version
 # marker: any line carrying it came from an older build. This matters because
 # that old format lumped genuine Ollama timeouts in with ordinary skips — a
 # 366-line historical backlog of them read as a 42% failure rate for current
@@ -31,7 +30,7 @@ def summarize(lines):
     """Count log activity. Pure — takes an iterable of log lines."""
     s = {
         "queued": 0, "flushed": 0, "flush_spoken": 0, "flush_skipped": 0,
-        "flush_held_back": 0, "stop_working": 0,
+        "flush_held_back": 0, "flush_watched": 0, "stop_working": 0,
         "subagent_suppressed": 0, "silenced": 0, "rejected": 0, "barked": 0,
         "events": {}, "items_per_flush": 0.0,
         "tool_calls": 0, "speech_per_tool_call": 0.0,
@@ -61,6 +60,8 @@ def summarize(lines):
                 s["flush_spoken"] += 1
             else:
                 s["flush_skipped"] += 1
+        if "flush (watched)" in body:
+            s["flush_watched"] += 1
         if "(subagent " in body:
             s["subagent_suppressed"] += 1
         if "silenced (" in body:
@@ -141,6 +142,8 @@ def main():
     print(f"    nothing to say    {s['flush_skipped']:6d}")
     if s["flush_held_back"]:
         print(f"    held back (Jev)   {s['flush_held_back']:6d}")
+    if s["flush_watched"]:
+        print(f"    watched session   {s['flush_watched']:6d}")
     if s["tool_calls"]:
         print(f"  tool calls batched  {s['tool_calls']:6d}")
         print(f"  speech per tool call {s['speech_per_tool_call']:.2f}   (target ~0.26)")

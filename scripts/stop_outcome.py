@@ -490,12 +490,17 @@ class StopReading(NamedTuple):
 
 
 def read(hook_input):
-    """Read how this Stop's turn ended. None when there is no transcript, or
-    nothing in it to go on."""
+    """Read how this Stop's turn ended. None when there is nothing to go on.
+
+    The turn's last message comes from the hook input when it is there:
+    Claude Code writes the transcript asynchronously, and at Stop time it
+    usually lacks that message (72% of real Stops read the one before)."""
     transcript = find_transcript(hook_input)
-    if not transcript:
-        return None
-    context, last_line, message = _format(_turns(transcript)[-4:])
+    turns = _turns(transcript) if transcript else []
+    final = _prose(hook_input.get("last_assistant_message")) or None
+    if final and turns[-1:] != [("Agent", final)]:
+        turns.append(("Agent", final))
+    context, last_line, message = _format(turns[-4:])
     if not context:
         return None
     still_working = bool(message) and works_on_its_own(message)

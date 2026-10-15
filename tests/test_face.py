@@ -121,6 +121,26 @@ def test_a_wait_carries_its_sessions_activity_token(claude_home, helper):
     assert "activity" not in _record(claude_home)
 
 
+def test_a_silent_line_is_marked_and_held_until_you_type(claude_home, helper):
+    """Shown while Hobson is silenced: nothing was said, so it cannot go
+    once said, whatever its kind or face.hold_waiting."""
+    import nudge
+    now = time.time()
+    helper["record"] = {"ts": now, "pid": 4242, "face": True}
+    for config, kind in (({}, "broken"), ({"face": {"hold_waiting": False}}, "waiting")):
+        assert _REAL_SHOW(config, "The build has failed.", kind, project="webapp", now=now, silent=True)
+        rec = _record(claude_home)
+        assert (rec["silent"], rec["audio"], rec["activity"]) == (True, None, nudge.activity_path("webapp"))
+        assert "asked" not in rec
+    assert "'The build has failed.' (waiting, silent) for webapp" in _log(claude_home)
+
+
+def test_a_silent_line_respects_the_face_being_off(claude_home, helper):
+    """Unlike a line you asked for: off means nothing."""
+    assert _REAL_SHOW({"face": {"enabled": False}}, "Needs you.", "waiting", project="p", silent=True) is False
+    assert not (claude_home / "hobson-face.json").exists()
+
+
 # ── hobson face, hobson doctor ──────────────────────────────────────────────
 
 def test_status_says_off_or_how_it_behaves(claude_home, monkeypatch):
@@ -194,6 +214,16 @@ def test_page_trouble_is_logged_and_unknown_events_are_not(claude_home):
     log = _log(claude_home)
     assert "[face] page crashed (its WebContent process ended), reloading" in log
     assert "anything" not in log
+
+
+@pytest.mark.parametrize("action, called", [("skip", "skip"), ("take-there", "take_there")])
+def test_face_action_dispatches_to_terminal_jump(action, called, claude_home, monkeypatch):
+    """What Face.swift sends when Skip / Take me there is clicked."""
+    import terminal_jump
+    seen = []
+    monkeypatch.setattr(terminal_jump, called, lambda project: seen.append(project))
+    presence.main(["--face-action", action, "webapp"])
+    assert seen == ["webapp"]
 
 
 def test_no_face_line_is_counted_as_something_spoken(claude_home, helper):

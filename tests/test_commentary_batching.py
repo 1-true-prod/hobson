@@ -110,8 +110,8 @@ def test_old_sessions_without_pending_are_backfilled(claude_home):
 def _engine(monkeypatch, spoken):
     from engines.pocket_tts_realtime import PocketTTSRealtimeEngine
     monkeypatch.setattr(
-        PocketTTSRealtimeEngine, "speak_dynamic",
-        lambda self, phrase, allow_cold_start=False, **k: spoken.append(phrase),
+        PocketTTSRealtimeEngine, "speak",
+        lambda self, phrase, kind, cold_start=False: spoken.append(phrase),
     )
     return PocketTTSRealtimeEngine({
         # "stop" must be enabled too: test_stop_discards_a_pending_batch
@@ -217,24 +217,17 @@ def test_queue_clears_after_a_flush(fake_ollama, claude_home, monkeypatch):
 # ── Fix A: inline fallback defaults must match DEFAULT_CONFIG ──────────────
 
 
-def test_flush_gate_fallback_matches_default_config(fake_ollama, claude_home, monkeypatch):
-    """_handle_commentary_llm's inline cfg.get(..., default) fallbacks must
-    agree with DEFAULT_CONFIG's commentary.min_tool_calls (5) and
-    min_seconds (60.0) — not the superseded 3 / 15.0. This only surfaces
-    when an engine is built with a commentary dict that omits the keys
-    (load_config()'s deep merge normally fills them in)."""
-    spoken = []
-    engine = _engine(monkeypatch, spoken)
-    del engine.config["commentary"]["min_tool_calls"]
-    del engine.config["commentary"]["min_seconds"]
-    _prime_bootstrapped_session()
-    fake_ollama.chat("done | I ran the tests.")
-
-    for i in range(3):
-        engine.run({"hook_event_name": "PreToolUse", "tool_name": "Bash",
-                    "tool_input": {"description": f"step {i}"}})
-
-    assert spoken == [], "3 calls must not flush once the fallback matches DEFAULT_CONFIG's min_tool_calls=5"
+def test_an_engine_built_without_the_gate_keys_takes_default_config(monkeypatch):
+    """An engine given a commentary section without min_tool_calls and
+    min_seconds gets DEFAULT_CONFIG's (5, 60.0), merged once at construction:
+    there is no inline fallback to drift from them."""
+    from engines.pocket_tts_realtime import PocketTTSRealtimeEngine
+    import home
+    engine = PocketTTSRealtimeEngine({"commentary": {"tools": ["bash"]}})
+    defaults = home.DEFAULT_CONFIG["commentary"]
+    assert engine.config["commentary"]["min_tool_calls"] == defaults["min_tool_calls"] == 5
+    assert engine.config["commentary"]["min_seconds"] == defaults["min_seconds"] == 60.0
+    assert engine.commentary_tools == {"bash"}
 
 
 # ── Fix B: time the gate off the last flush attempt ─────────────────────────
@@ -248,15 +241,13 @@ def test_record_flush_attempt_sets_last_flush_time():
     assert st["last_flush_time"] >= before
 
 
-def test_seconds_since_last_voiced_unaffected_by_a_flush_attempt():
-    """record_flush_attempt must not touch last_voiced_time — that field
-    drives the near-duplicate guard's decay and genuinely cares about the
-    last time something was actually spoken."""
+def test_a_flush_attempt_leaves_last_voiced_time_alone():
+    """record_flush_attempt must not touch last_voiced_time: that is when
+    something was actually spoken, not when a flush was tried."""
     st = _state()
-    st["last_voiced_time"] = time.time() - 120
+    st["last_voiced_time"] = spoken = time.time() - 120
     ss.record_flush_attempt(st)
-    secs = ss.seconds_since_last_voiced(st)
-    assert secs is not None and secs >= 120
+    assert st["last_voiced_time"] == spoken
 
 
 def test_a_failed_flush_does_not_retrigger_the_gate_immediately(fake_ollama, claude_home, monkeypatch):
@@ -271,7 +262,7 @@ def test_a_failed_flush_does_not_retrigger_the_gate_immediately(fake_ollama, cla
 
     def fake_generate_or_skip(*a, **k):
         calls.append(1)
-        return (None, None)
+        return phrase_gen.Generation(None, None, "SKIP", "model chose not to speak")
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip", fake_generate_or_skip)
 

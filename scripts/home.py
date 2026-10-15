@@ -52,6 +52,45 @@ def env_file():
     return path("hobson.env")
 
 
+def read_env(name):
+    """`name` from hobson.env (simple KEY=value lines), else None, never an
+    empty string. The environment is each caller's own first look."""
+    try:
+        with open(env_file(), encoding="utf-8") as f:
+            for line in f:
+                line = line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                k, _, v = line.partition("=")
+                if k.strip() == name:
+                    return v.strip().strip('"').strip("'") or None
+    except OSError:
+        pass
+    return None
+
+
+def is_valid_url(url):
+    """Whether `url` parses at all (urlsplit raises on `http://[::1`)."""
+    from urllib.parse import urlsplit
+    try:
+        urlsplit(url or "")
+    except ValueError:
+        return False
+    return True
+
+
+def https_or_loopback(url):
+    """Whether a secret may go to `url`: https, or plain http to this
+    machine only (a local stand-in)."""
+    from urllib.parse import urlsplit
+    try:
+        parts = urlsplit(url or "")
+    except ValueError:
+        return False
+    return parts.scheme == "https" or (
+        parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1"))
+
+
 def sessions_dir():
     return path("hobson-sessions")
 
@@ -70,6 +109,12 @@ def bark_lock():
 
 def commentary_lock():
     return path("hobson-commentary.lock")
+
+
+def focus_lock():
+    """When a watched session last flushed commentary, across all of them.
+    Only watched flushes read or write it (BaseEngine._acquire_commentary_lock)."""
+    return path("hobson-focus.lock")
 
 
 def project_key(project):
@@ -132,11 +177,7 @@ def _rename_legacy_personality():
     new = _PERSONALITY_ALIASES.get(config.get("personality"))
     if new:
         config["personality"] = new
-        tmp = f"{config_path}.tmp-{os.getpid()}"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(config, f, indent=2)
-            f.write("\n")
-        os.replace(tmp, config_path)
+        write_json_atomic(config_path, config)
 
 
 # ── Config ─────────────────────────────────────────────────────────────────
@@ -144,7 +185,7 @@ def _rename_legacy_personality():
 # 600s, not 180s: measured over 11,173 real gaps between spoken phrases, a
 # 180s timeout expires during 4.1% of them and each expiry costs the next
 # utterance a fallback to macOS `say`, because commentary deliberately
-# passes allow_cold_start=False rather than blocking a hook for a 20s model
+# speaks without cold_start rather than blocking a hook for a 20s model
 # load. 600s drops that to 1.1% and still frees the model after a real
 # break. One constant for both daemon sections of DEFAULT_CONFIG below,
 # which the daemon engine reads its defaults from.
@@ -286,6 +327,18 @@ DEFAULT_CONFIG = {
         # The window's width in points; the height follows.
         "width": 280,
     },
+    # The session in the terminal pane you are looking at gets more, shorter
+    # commentary than the rest (presence.watched). Top level, not under
+    # commentary: with_defaults merges one level deep, so a nested dict would
+    # lose its other defaults when a user set one key.
+    "focus": {
+        "enabled": True,
+        "min_tool_calls": 2,
+        "min_seconds": 15.0,
+        "cooldown": 4.0,
+        "min_words": 2,
+        "max_words": 6,
+    },
     # Optional remote decision model (Jev, via OpenRouter's Decisions API).
     # See scripts/decider.py. At "local" (the default) it makes zero network
     # calls. Three questions go to it, and the decider redacts everything
@@ -301,6 +354,19 @@ DEFAULT_CONFIG = {
     #     sends the command.
     # Never code, file contents, or the conversation itself: the nearest
     # thing is what Hobson said aloud about it, redacted.
+    # Push to the phone what presence holds while you are away (scripts/push.py).
+    # "off" makes no network call. With "ntfy", `url` is the topic's full URL
+    # (https, or http on loopback) and NTFY_TOKEN is read from the environment
+    # or hobson.env, never from here. Only a fixed sentence and the
+    # project label go out, and only for these kinds, never on a call or with
+    # company. At most `per_hour` pushes an hour, one per project and kind
+    # in ten minutes.
+    "push": {
+        "backend": "off",            # "off" | "ntfy"
+        "url": "",
+        "kinds": ["waiting", "broken", "stalled"],
+        "per_hour": 6,
+    },
     "decider": {
         "backend": "local",          # "local" | "jev"
         "model": "typesafe/jev-1.13",
@@ -329,12 +395,26 @@ DEFAULT_CONFIG = {
 }
 
 
+def with_defaults(config):
+    """config merged over DEFAULT_CONFIG: shallow at the top, one level deep
+    for sections. Merging an already merged config changes nothing, so an
+    engine can take load_config()'s result or a partial dict (the tests')
+    alike, and read every key without a fallback of its own.
+
+    A deep copy: a shallow one hands out DEFAULT_CONFIG's own sub-dicts for
+    every section the user did not set, so any caller that mutates one
+    changes the defaults for the rest of the process."""
+    merged = copy.deepcopy(DEFAULT_CONFIG)
+    for key, val in (config or {}).items():
+        if isinstance(val, dict) and isinstance(merged.get(key), dict):
+            merged[key] = {**merged[key], **copy.deepcopy(val)}
+        else:
+            merged[key] = copy.deepcopy(val)
+    return merged
+
+
 def load_config():
-    """config_file() merged over DEFAULT_CONFIG (deep for sub-dicts)."""
-    # A deep copy: a shallow one hands out DEFAULT_CONFIG's own sub-dicts for
-    # every section the user did not set, so any caller that mutates one
-    # changes the defaults for the rest of the process.
-    config = copy.deepcopy(DEFAULT_CONFIG)
+    """config_file() merged over DEFAULT_CONFIG (with_defaults)."""
     user_config = {}
     config_path = config_file()
     if not os.path.isfile(config_path):
@@ -344,14 +424,9 @@ def load_config():
             user_config = json.load(f)
         if not isinstance(user_config, dict):
             user_config = {}
-        # Shallow merge top-level, deep merge engine sub-dicts
-        for key, val in user_config.items():
-            if isinstance(val, dict) and key in config and isinstance(config[key], dict):
-                config[key] = {**config[key], **val}
-            else:
-                config[key] = val
     except (FileNotFoundError, json.JSONDecodeError):
         pass
+    config = with_defaults(user_config)
 
     # Migrate kokoro.realtime_events -> top-level events
     if "events" not in user_config:
@@ -365,6 +440,159 @@ def load_config():
     config["personality"] = _PERSONALITY_ALIASES.get(config.get("personality"),
                                                      config.get("personality"))
     return config
+
+
+# ── Writing the config ─────────────────────────────────────────────────────
+# Every write to hobson.json goes through update_config() or write_config():
+# the CLI, the setup wizard, presence's menu. A file truncated and then
+# rewritten could be read half-written by a hook, which load_config() takes
+# for no file at all: unmuted, every default.
+
+_MISSING = object()
+
+
+def get_dotted(tree, dotted, default=_MISSING):
+    """tree["a"]["b"] for "a.b", or `default` when any step is missing."""
+    node = tree
+    for part in dotted.split("."):
+        if not isinstance(node, dict) or part not in node:
+            return default
+        node = node[part]
+    return node
+
+
+def apply_settings(user_config, desired, defaults=None):
+    """The user config with `desired` ({dotted key: value}) applied, and
+    what changed.
+
+    A value equal to its default is removed rather than written, so the
+    default keeps flowing from DEFAULT_CONFIG; a different one is set.
+    Returns (new_config, changes); each change is {"key", "value", "op"}
+    with op "set" or "unset". `user_config` is not modified.
+    """
+    defaults = DEFAULT_CONFIG if defaults is None else defaults
+    config = json.loads(json.dumps(user_config if isinstance(user_config, dict) else {}))
+    changes = []
+    for dotted, value in desired.items():
+        default = get_dotted(defaults, dotted)
+        current = get_dotted(config, dotted)
+        parts = dotted.split(".")
+        if default is not _MISSING and value == default:
+            if current is _MISSING:
+                continue
+            parent = config
+            for part in parts[:-1]:
+                parent = parent[part]
+            del parent[parts[-1]]
+            if len(parts) == 2 and not config[parts[0]]:
+                del config[parts[0]]
+            changes.append({"key": dotted, "value": value, "op": "unset"})
+        elif current != value:
+            parent = config
+            for part in parts[:-1]:
+                if not isinstance(parent.get(part), dict):
+                    parent[part] = {}
+                parent = parent[part]
+            parent[parts[-1]] = value
+            changes.append({"key": dotted, "value": value, "op": "set"})
+    return config, changes
+
+
+def read_user_config():
+    """hobson.json as written, not merged over the defaults: {} if absent or
+    unreadable."""
+    try:
+        with open(config_file(), encoding="utf-8") as f:
+            data = json.load(f)
+        return data if isinstance(data, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def write_atomic(target, text, mode=None):
+    """Write `text` to `target` in one step (a temp file, then os.replace),
+    so a reader sees the old file or the new one, never half, and no temp
+    file is left behind however it fails. Through a symlink to the file it
+    names, keeping that file's mode unless `mode` is given. A file given a
+    mode is never wider than 600 before it has it: the face record and
+    hobson.env must not be readable by others for a moment."""
+    target = os.path.realpath(target)
+    os.makedirs(os.path.dirname(target), exist_ok=True)
+    if mode is None:
+        try:
+            mode = os.stat(target).st_mode & 0o777
+        except OSError:
+            pass
+    tmp = f"{target}.tmp-{os.getpid()}"
+    try:
+        fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+                     0o666 if mode is None else 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            if mode is not None:
+                os.fchmod(f.fileno(), mode)
+            f.write(text)
+        os.replace(tmp, target)
+    finally:
+        if os.path.exists(tmp):
+            os.remove(tmp)
+
+
+def write_json_atomic(target, data, mode=None, indent=2):
+    """`data` as JSON through write_atomic."""
+    write_atomic(target, json.dumps(data, indent=indent) + "\n", mode)
+
+
+class _ConfigLock:
+    """Two writers at once (the CLI, the menu bar) must not each read the
+    file and save over the other's change."""
+
+    def __enter__(self):
+        import fcntl  # writers only: this module stays light for the hooks
+        os.makedirs(state_dir(), exist_ok=True)
+        self._fd = open(path("hobson-config.lock"), "a+", encoding="utf-8")
+        fcntl.flock(self._fd, fcntl.LOCK_EX)
+        return self
+
+    def __exit__(self, *exc):
+        self._fd.close()  # closing releases the flock
+
+
+def _read_for_update():
+    """The user config to change. An unreadable file is kept beside it, as
+    hobson.json.unreadable-<time>, rather than written over."""
+    target = config_file()
+    try:
+        with open(target, encoding="utf-8") as f:
+            data = json.load(f)
+        if isinstance(data, dict):
+            return data
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError):
+        pass
+    try:
+        os.rename(os.path.realpath(target), f"{target}.unreadable-{int(time.time())}")
+    except OSError:
+        pass
+    return {}
+
+
+def update_config(desired):
+    """Apply {dotted key: value} to hobson.json (apply_settings), atomically,
+    under a lock. Returns the changes made."""
+    with _ConfigLock():
+        config, changes = apply_settings(_read_for_update(), desired)
+        if changes:
+            write_json_atomic(config_file(), config)
+        return changes
+
+
+def write_config(desired):
+    """Replace hobson.json with only `desired` ({dotted key: value}), each
+    written only where it differs from its default: `hobson config reset`."""
+    with _ConfigLock():
+        config, _ = apply_settings({}, desired)
+        write_json_atomic(config_file(), config)
 
 
 # ── Quiet controls ─────────────────────────────────────────────────────────
@@ -410,6 +638,27 @@ def _in_quiet_hours(window, now):
     return hour >= start or hour < end  # wraps midnight
 
 
+EVENT_KEYS = {
+    "Stop": "stop",
+    "PermissionRequest": "permission",
+    "Notification": "notification",
+    "PreToolUse": "commentary",
+}
+
+
+def event_enabled(config, event):
+    """Whether `event` is on in config["events"]. An `events` that is not a
+    collection of names (null, a number) turns every keyed event off rather
+    than raising: the silenced hook must survive a hand-edited config."""
+    key = EVENT_KEYS.get(event)
+    if key is None:
+        return True
+    try:
+        return key in set(config.get("events", ()))
+    except TypeError:
+        return False
+
+
 def silence_reason(config, now=None):
     """Why voice is suppressed right now, or None if it may speak.
 
@@ -438,26 +687,13 @@ def silence_reason(config, now=None):
 _PROJECT_LABEL_CACHE = None
 
 
-def derive_project_label():
-    """Derive a short, speakable project label from the current working directory.
+def project_label(cwd):
+    """A short, speakable project label for a working directory.
 
     Handles workmux __worktrees pattern:
       /Dev/mobile-app                         → "mobile app"
       /Dev/mobile-app__worktrees/app-4005-...  → "mobile app, A P P 4005"
-
-    Returns empty string if label can't be determined.
-    Caches result per-process (cwd doesn't change within a hook invocation).
     """
-    global _PROJECT_LABEL_CACHE
-    if _PROJECT_LABEL_CACHE is not None:
-        return _PROJECT_LABEL_CACHE
-
-    try:
-        cwd = os.getcwd()
-    except OSError:
-        _PROJECT_LABEL_CACHE = ""
-        return ""
-
     if "__worktrees" in cwd:
         idx = cwd.index("__worktrees")
         repo_dir = cwd[:idx].rstrip("/")
@@ -471,14 +707,78 @@ def derive_project_label():
             task = m.group(1).replace("-", " ")
             # Keep first 4 words max for TTS brevity
             task = " ".join(task.split()[:4])
-            label = f"{repo_name}, {task}"
-        elif branch:
-            label = f"{repo_name}, {branch.replace('-', ' ')[:25]}"
-        else:
-            label = repo_name
-    else:
-        name = os.path.basename(cwd.rstrip("/"))
-        label = name.replace("-", " ").replace("_", " ")
+            return f"{repo_name}, {task}"
+        if branch:
+            return f"{repo_name}, {branch.replace('-', ' ')[:25]}"
+        return repo_name
+    return os.path.basename(cwd.rstrip("/")).replace("-", " ").replace("_", " ")
 
-    _PROJECT_LABEL_CACHE = label
-    return label
+
+def derive_project_label():
+    """The label of the current working directory, or "" if there is none.
+    Caches result per-process (cwd doesn't change within a hook invocation).
+    """
+    global _PROJECT_LABEL_CACHE
+    if _PROJECT_LABEL_CACHE is not None:
+        return _PROJECT_LABEL_CACHE
+
+    try:
+        cwd = os.getcwd()
+    except OSError:
+        _PROJECT_LABEL_CACHE = ""
+        return ""
+
+    _PROJECT_LABEL_CACHE = project_label(cwd)
+    return _PROJECT_LABEL_CACHE
+
+
+# ── The CLI's way in ───────────────────────────────────────────────────────
+
+def _value(text):
+    """A value from the command line: JSON where it parses (true, 4,
+    ["stop"]), else the string itself."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        return text
+
+
+def _shown(value):
+    """A config value as the shell reads it: a list space-joined, a section
+    as JSON, None as nothing, true/false as JSON spells them."""
+    if value is None:
+        return ""
+    if isinstance(value, list):
+        return " ".join(str(v) for v in value)
+    if isinstance(value, (dict, bool)):
+        return json.dumps(value)
+    return str(value)
+
+
+def main(argv=None):
+    """python3 scripts/home.py --set KEY VALUE [KEY VALUE ...]   change keys
+       python3 scripts/home.py --replace KEY VALUE [...]         only these
+       python3 scripts/home.py --get KEY [KEY ...]               one per line
+    KEY is dotted (kokoro.voice). The `hobson` CLI reads and writes through
+    this, so every default comes from DEFAULT_CONFIG, and a value given on
+    its command line is never pasted into Python source."""
+    import sys
+    args = list(sys.argv[1:] if argv is None else argv)
+    if len(args) >= 2 and args[0] == "--get":
+        config = load_config()
+        for key in args[1:]:
+            print(_shown(get_dotted(config, key, None)))
+        return 0
+    if len(args) < 3 or args[0] not in ("--set", "--replace") or len(args) % 2 != 1:
+        print(main.__doc__, file=sys.stderr)
+        return 2
+    desired = {args[i]: _value(args[i + 1]) for i in range(1, len(args), 2)}
+    if args[0] == "--set":
+        update_config(desired)
+    else:
+        write_config(desired)
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

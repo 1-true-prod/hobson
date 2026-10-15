@@ -183,3 +183,15 @@ def test_two_readings_at_once_take_turns_and_never_overlap(claude_home, tmp_path
     assert order in (["Alpha one.", "Alpha two.", "Beta one.", "Beta two."],
                      ["Beta one.", "Beta two.", "Alpha one.", "Alpha two."])
     assert not list(claude_home.glob("pocket-tts-playback-*.wav"))
+
+
+def test_every_engine_names_its_own_voice_for_status(claude_home):
+    """`hobson status` asks the engine: its own copy showed Pocket TTS as
+    the personality's say voice."""
+    import home
+    config = home.load_config()
+    labels = {name: hobson.engine_class(name)(config).voice_label() for name in hobson.ENGINES}
+    assert labels["say"] == "Daniel"
+    assert labels["pocket-tts"].startswith(config["pocket_tts"]["voice"] + "  ")
+    assert labels["kokoro-realtime"].startswith(config["kokoro"]["voice"] + "  ")
+    assert labels["chatterbox"].startswith("voice clone (")

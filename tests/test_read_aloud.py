@@ -92,7 +92,7 @@ class FakeEngine:
         self.events.append(f"render {text}")
         return str(path)
 
-    def _play(self, path, text, kind=None, cleanup=False):
+    def play(self, path, text, kind, cleanup=False):
         assert kind == "answer" and not cleanup
         self.events.append(f"play {text}")
         if self.on_play:
@@ -147,7 +147,7 @@ def test_ctrl_c_stops_the_passage_and_cleans_up(engine, monkeypatch):
 
     def interrupt():
         raise KeyboardInterrupt
-    monkeypatch.setattr(read_aloud, "_wait", lambda player: interrupt() if player else None)
+    monkeypatch.setattr(read_aloud, "wait", lambda player: interrupt() if player else None)
     assert read_aloud.read("One.\n\nTwo.", config={}, echo=lambda *_: None) == "interrupted"
     assert engine.events[-1] == "terminate One."
     assert not any(clip.exists() for clip in engine.clips)

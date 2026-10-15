@@ -96,12 +96,11 @@ def test_a_save_that_fails_midway_leaves_the_last_state(claude_home, monkeypatch
     st["total_events"] = 7
     ss.save_session(st)
 
-    def dump_then_fail(obj, f, **k):
-        f.write('{"project": "de')
+    def fail(src, dst):
         raise OSError("disk full")
 
     with monkeypatch.context() as m:
-        m.setattr(ss.json, "dump", dump_then_fail)
+        m.setattr(home.os, "replace", fail)
         with pytest.raises(OSError):
             ss.save_session(st)
     assert ss.load_session("demo")["total_events"] == 7
@@ -137,10 +136,8 @@ def test_mark_event_moves_the_liveness_clock():
 
 def _pocket(monkeypatch, spoken, **commentary):
     from engines.pocket_tts_realtime import PocketTTSRealtimeEngine
-    monkeypatch.setattr(PocketTTSRealtimeEngine, "speak_dynamic",
-                        lambda self, phrase, allow_cold_start=False, **k: spoken.append(phrase))
-    monkeypatch.setattr(PocketTTSRealtimeEngine, "_speak_live",
-                        lambda self, phrase, allow_cold_start=False, **k: spoken.append(phrase))
+    monkeypatch.setattr(PocketTTSRealtimeEngine, "speak",
+                        lambda self, phrase, kind, cold_start=False: spoken.append(phrase))
     return PocketTTSRealtimeEngine({
         "engine": "pocket-tts", "personality": "hobson",
         "events": ["commentary", "stop", "permission", "notification"],
@@ -156,7 +153,7 @@ def _while_generating(monkeypatch, meanwhile, reply=("done", "I edited three fil
 
     def slow_model(*a, **k):
         meanwhile()
-        return reply
+        return phrase_gen.Generation(*reply)
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip", slow_model)
 

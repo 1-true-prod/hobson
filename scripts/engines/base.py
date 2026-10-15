@@ -17,17 +17,26 @@ import fcntl
 import time
 import hashlib
 from abc import ABC, abstractmethod
-from typing import NamedTuple, Optional
+from typing import NamedTuple
 
 # scripts/ on the path, for bark_templates, phrase_gen and the rest.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import home  # noqa: E402
+import kinds  # noqa: E402
+import session_status  # noqa: E402
 import log_record  # noqa: E402
+from bark_templates import bark_hash  # noqa: E402,F401  (the cache key, defined once)
+from announcement import fixed_line, format_tool_name, permission_line  # noqa: E402
 
 
 # How long macOS `say` may take to render a phrase before it is given up.
 SAY_RENDER_TIMEOUT = 15
+
+# How long one model call may take. A cold Ollama load takes ~8s, and a
+# shorter timeout cancels the load itself, so the next call is cold again.
+# The hooks are async, so waiting blocks nobody.
+OLLAMA_TIMEOUT = 20
 
 # Chatty commentary templates — used when commentary.verbosity == "chatty".
 # Keyed by lowercased tool name. {ctx} is filled from extract_context().
@@ -60,19 +69,6 @@ NOTIFICATION_LABELS = {
     "agent_completed": "a background agent finished",
     "auth_success": "signed in",
 }
-
-
-def bark_hash(text):
-    """Stable SHA-256 prefix for cache key. Must match bark_templates.bark_hash."""
-    return hashlib.sha256(text.encode("utf-8")).hexdigest()[:16]
-
-
-def format_tool_name(tool):
-    from bark_templates import normalize_tool_name
-    tool = normalize_tool_name(tool)
-    if not tool:
-        return "something important"
-    return re.sub(r"\s+", " ", tool)[:80]
 
 
 # A declaration: annotations, any number of modifiers, a declaring keyword,
@@ -125,37 +121,6 @@ def _line_delta(old, new):
     if added == removed:
         return None
     return f"+{added}/-{removed} lines"
-
-
-def describe_generation_failure(raw):
-    """Turn phrase_gen's last_raw into a clear log verdict.
-
-    Three outcomes get conflated if you just print raw: the model declining
-    to speak (SKIP), the model erroring (timeout, connection refused), and
-    the model returning something unusable. Only the first is normal. A real
-    Ollama timeout logged as "skipped" reads like working-as-intended, which
-    is how 366 of them sat unnoticed in the log.
-
-    Returns (verdict, detail) where verdict is SKIP, ERROR, REJECTED or
-    UNUSABLE.
-    """
-    text = "" if raw is None else str(raw)
-    if text.startswith("(error:"):
-        inner = text[len("(error:"):].rstrip(")").strip()
-        if "timed out" in inner:
-            return "ERROR", f"ollama timed out — {inner}"
-        if "refused" in inner or "URLError" in inner:
-            return "ERROR", f"ollama unreachable — {inner}"
-        return "ERROR", f"ollama call failed — {inner}"
-    if text.startswith("(rejected:"):
-        inner = text[len("(rejected:"):].rstrip(")").strip()
-        return "REJECTED", f"guard rejected — {inner}"
-    stripped = text.strip().strip("'\"")
-    if not stripped:
-        return "ERROR", "ollama returned nothing"
-    if stripped.upper() == "SKIP":
-        return "SKIP", "model chose not to speak"
-    return "UNUSABLE", f"could not parse a phrase from {stripped!r}"
 
 
 def extract_context(tool_name, tool_input):
@@ -317,46 +282,34 @@ def tts_normalize(text):
     return text.strip()
 
 
-def stop_kind(category):
-    """What a Stop's phrase is about, for presence: a question waits on you,
-    a failure is urgent, anything else (unknown included) is a finish."""
-    return {"question": "waiting", "broken": "broken"}.get(category, "done")
-
-
-def event_kind(hook_input):
-    """What a permission request or notification is about, for presence. A
-    permission request and a waiting notification wait on you; any other
-    notification is news."""
-    if hook_input.get("hook_event_name") == "PermissionRequest":
-        return "waiting"
-    if hook_input.get("notification_type") in NOTIFICATION_WAITING_TYPES:
-        return "waiting"
-    return "info"
-
-
-# The notification types that mean the session is waiting on you; nudge.py's
-# WAITING_TYPES plus a permission prompt, which does not start a nudge but is
-# no less a wait.
-NOTIFICATION_WAITING_TYPES = ("idle_prompt", "agent_needs_input", "permission_prompt")
-
-
-class StopSession(NamedTuple):
-    """What a Stop's phrase source knows of the session, read once."""
-    context: str                    # build_session_context, with the Task line
+class Snapshot(NamedTuple):
+    """What a phrase source knows of the session, read once inside a
+    transaction and used after it, while the model runs with no lock held."""
+    context: str                    # build_session_context (a Stop's has the Task line)
     recent_voiced: list             # [phrase, ts] pairs, for the dedup guard
-    since_voiced: Optional[float]   # seconds since the last phrase, None if none
 
 
-class FixedAnnouncement(NamedTuple):
-    """A template for a fixed-meaning event (BaseEngine._fixed_announcement):
-    the phrase to speak, or None when the event is handled by saying
-    nothing, and its log label."""
-    phrase: Optional[str]
-    label: str
+def _snapshot(state, task=None):
+    from session_state import build_session_context
+    return Snapshot(context=build_session_context(state, task=task),
+                    recent_voiced=list(state.get("recent_voiced", [])))
+
+
+class Clip(NamedTuple):
+    """A phrase rendered to audio (BaseEngine.clip), ready to play."""
+    path: str
+    source: str     # how it was made, for the playback log line ("template-cache", "daemon-live", ...)
+    cleanup: bool   # remove the file once played: say's temp AIFF, a daemon's WAV; never a cached clip
 
 
 class BaseEngine(ABC):
     """Abstract base for TTS engines.
+
+    Every phrase leaves through speak(), which holds the whole path -- the
+    audience, the busy voice, the bark lock and cooldown, playback and the
+    face. What an engine adds is how a phrase becomes audio: clip() (and
+    render(), for a caller that plays its own), and warm() for one that
+    needs warming.
 
     Subclasses must set:
         templates_module: "bark_templates"
@@ -373,36 +326,23 @@ class BaseEngine(ABC):
     cache_ext = None
     engine_name = "base"
 
-    # Map hook event names to config event keys
-    EVENT_MAP = {
-        "Stop": "stop",
-        "PermissionRequest": "permission",
-        "Notification": "notification",
-        "PreToolUse": "commentary",
-    }
-
     def __init__(self, config):
-        self.config = config
-        self.cooldown = config.get("cooldown", 2.0)
+        # Every default comes from DEFAULT_CONFIG, merged here once, so no
+        # read below carries a fallback of its own to drift from it.
+        config = self.config = home.with_defaults(config)
+        self.cooldown = config["cooldown"]
         # Config scale 0-10 mapped to afplay's 0.0-1.0 (1.0 = unity gain)
-        self.volume = max(0.0, min(10.0, float(config.get("volume", 3)))) / 10.0
+        self.volume = max(0.0, min(10.0, float(config["volume"]))) / 10.0
         self._templates = None
         # Personality say voice for macOS say fallback
         self._say_voice = self._load_say_voice(config)
-        # Event filtering
-        self.enabled_events = set(config.get("events", ["stop", "permission", "notification"]))
         # Ollama config
-        ollama_cfg = config.get("ollama", {})
-        self._ollama_model = ollama_cfg.get("model", "llama3.2:3b")
-        self._ollama_url = ollama_cfg.get("url", "http://localhost:11434")
+        self._ollama_model = config["ollama"]["model"]
+        self._ollama_url = config["ollama"]["url"]
         # Commentary config
-        commentary_cfg = config.get("commentary", {})
-        self.commentary_cooldown = commentary_cfg.get("cooldown", 8.0)
-        self.commentary_tools = set(
-            t.lower() for t in commentary_cfg.get(
-                "tools", ["Agent", "Edit", "Write", "Bash"]
-            )
-        )
+        commentary_cfg = config["commentary"]
+        self.commentary_cooldown = commentary_cfg["cooldown"]
+        self.commentary_tools = set(t.lower() for t in commentary_cfg["tools"])
         verbosity = (commentary_cfg.get("verbosity") or "normal").lower()
         if verbosity not in ("terse", "normal", "chatty", "anomaly"):
             verbosity = "normal"
@@ -420,6 +360,10 @@ class BaseEngine(ABC):
         except (FileNotFoundError, json.JSONDecodeError):
             return "Daniel"
 
+    def voice_label(self):
+        """The voice this engine speaks in, as `hobson status` shows it."""
+        return self._say_voice
+
     def _log(self, msg):
         """Log with [engine_name] prefix for structured monitor output."""
         log_record.write(f"[{self.engine_name}] {msg}")
@@ -434,30 +378,35 @@ class BaseEngine(ABC):
         -r` resamples, shifting pitch and tempo together like tape speed, and
         on speech even a 3% shift is audibly robotic — it moves the formants.
         It also silently degraded the macOS `say` fallback, because
-        _say_with_volume renders to AIFF and plays it through this same argv.
+        _render_say renders to AIFF and it plays through this same argv.
         Per-project identity belongs in voice selection (which the kokoro
         daemon supports per request), not in resampling the output.
         """
         args = ["afplay", "-v", str(self.volume)]
-        identity = self.config.get("project_identity") or {}
-        if identity.get("enabled", False):
+        identity = self.config["project_identity"]
+        if identity["enabled"]:
             rate = project_rate(home.derive_project_label(),
-                                spread=identity.get("spread", 0.06))
+                                spread=identity["spread"])
             if rate != 1.0:
                 args += ["-r", str(rate), "-q", "1"]
         return args + [path]
 
-    def _play(self, path, phrase, kind=None, cleanup=False):
+    def play(self, path, phrase, kind, cleanup=False, project=None):
         """Play one clip, detached (it must survive the hook process exiting),
-        then show it on the face. Every spoken phrase leaves through here,
-        after _for_audience, so a held or dropped phrase is never shown. The
+        then show it on the face. Every spoken phrase leaves through here:
+        speak()'s, after its audience check, so a held or dropped phrase is
+        never shown, and the clips `hobson say` and `hobson coach` render
+        for themselves (render()). The
         voice goes first, and the face cannot stop it. `cleanup` removes the
-        clip once played (say's temp AIFF, a daemon's WAV).
+        clip once played (say's temp AIFF, a daemon's WAV). `kind` is
+        required (kinds.require). `project`: the session the phrase is
+        about, for the face's corner, when it is not this one.
 
         It plays after whatever is playing now, from any session: the player
         is handed the voice lock and holds it until it exits (voice.py), so
         two clips never play at once. Returns the player."""
         import voice
+        kinds.require(kind)
         turn = voice.take_turn()
         if turn is None:
             self._log("no turn on the voice, playing anyway")
@@ -476,7 +425,7 @@ class BaseEngine(ABC):
                 os.close(turn)
         try:
             import face
-            face.show(self.config, phrase, kind or "info", path)
+            face.show(self.config, phrase, kind, path, project=project)
         except Exception as e:
             self._log(f"face failed ({e})")
         return player
@@ -484,26 +433,15 @@ class BaseEngine(ABC):
     # ── Nudge (Task 7) ──────────────────────────────────────────────────
 
     def _maybe_start_nudge(self, subject):
-        """Spawn a detached nudge for a session that is waiting on the user.
-
-        Guarded end-to-end — nudge.enabled and any failure to spawn must
-        never break the caller, which runs inline in an async hook. The
-        spawned process is responsible for its own one-per-project lock.
-        Its argv is round-tripped through nudge.py's parser in the tests:
-        the child runs with stderr discarded, so an argument it does not
-        accept would kill it without a trace.
-        """
+        """Start a nudge for a session that is waiting on you (nudge.start),
+        if nudges are on. Never breaks the caller, which runs inline in an
+        async hook."""
         try:
-            cfg = self.config.get("nudge") or {}
-            if not cfg.get("enabled", True):
+            if not self.config["nudge"]["enabled"]:
                 return
+            import nudge
             project = home.derive_project_label()
-            nudge_script = os.path.join(home.ROOT, "scripts", "nudge.py")
-            subprocess.Popen(
-                [sys.executable, nudge_script, "--project", project,
-                 "--subject", subject or ""],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
+            nudge.start(project, subject)
             self._log(f"nudge: spawned for {project!r}")
         except Exception as e:
             self._log(f"nudge: spawn failed ({e})")
@@ -511,66 +449,20 @@ class BaseEngine(ABC):
     # ── Watchdog (Task 9) ───────────────────────────────────────────────
 
     def _maybe_start_watchdog(self, baseline=None):
-        """Ensure a hang-detector is running for this project.
-
-        Spawned lazily on a commentary flush rather than on every event, and
-        guarded on both ends: the parent probes the watchdog's own lock file
-        first (a quick non-blocking flock, released immediately) so a busy
-        project does not fork a subprocess it already knows will exit; the
-        child then takes the same lock for real before it starts polling.
-        The probe is a courtesy, not the source of truth — the child's own
-        lock is what actually enforces one-per-project. Guarded end-to-end:
-        a failed spawn (or a failed probe) must never break the flush it
-        rides on.
-
-        `baseline` should be the caller's last_event_time. Passed straight
-        through as `--baseline`, so the child never has to re-read it from
-        disk -- it once raced the parent's own save and read the stale,
-        pre-flush value, exiting on its first poll every time.
-        """
+        """Ensure a hang-detector is running for this project
+        (nudge.start_watchdog), if the watchdog is on. Started on a
+        commentary flush rather than on every event; never breaks the flush
+        it rides on."""
         try:
-            cfg = self.config.get("watchdog") or {}
-            if not cfg.get("enabled", True):
+            cfg = self.config["watchdog"]
+            if not cfg["enabled"]:
                 return
+            import nudge
             project = home.derive_project_label()
-
-            try:
-                from nudge import _lock_path
-                probe = open(_lock_path("watchdog", project), "a+", encoding="utf-8")
-                try:
-                    fcntl.flock(probe, fcntl.LOCK_EX | fcntl.LOCK_NB)
-                    fcntl.flock(probe, fcntl.LOCK_UN)
-                except BlockingIOError:
-                    probe.close()
-                    return  # a watchdog is already running for this project
-                probe.close()
-            except (ImportError, OSError):
-                pass  # probe itself failed — fall through, the child's own
-                      # lock is still authoritative either way
-
-            nudge_script = os.path.join(home.ROOT, "scripts", "nudge.py")
-            argv = [sys.executable, nudge_script, "--watchdog", "--project", project,
-                    "--minutes", str(cfg.get("minutes", 10))]
-            if baseline is not None:
-                argv += ["--baseline", str(baseline)]
-            subprocess.Popen(
-                argv,
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-            )
-            self._log(f"watchdog: spawn requested for {project!r}")
+            if nudge.start_watchdog(project, cfg["minutes"], baseline=baseline):
+                self._log(f"watchdog: spawn requested for {project!r}")
         except Exception as e:
             self._log(f"watchdog: spawn failed ({e})")
-
-    @staticmethod
-    def _waiting_type(hook_input):
-        """This Notification's type if it means the session is blocked on the
-        user (nudge.WAITING_TYPES), else None."""
-        try:
-            from nudge import WAITING_TYPES
-        except ImportError:
-            return None
-        ntype = hook_input.get("notification_type") or ""
-        return ntype if ntype in WAITING_TYPES else None
 
     def _maybe_nudge_from_notification(self, hook_input):
         """Start a 'waiting' nudge when this Notification means the session
@@ -586,34 +478,13 @@ class BaseEngine(ABC):
         not quietly switch nudges off. agent_needs_input always nudges: a
         background agent that asks is blocked by definition.
         """
-        ntype = self._waiting_type(hook_input)
+        ntype = session_status.nudge_type(hook_input)
         if not ntype:
             return
-        if self._idle_after_finished_turn(hook_input):
+        if session_status.idle_after_settled_turn(hook_input):
             self._log("nudge: not started — the last turn finished, nothing is waiting on you")
             return
         self._maybe_start_nudge(NOTIFICATION_LABELS.get(ntype, ntype))
-
-    def _idle_after_finished_turn(self, hook_input, state=None):
-        """True for an idle_prompt that follows a turn classified "done", or
-        one that ended waiting on the agent's own work ("working").
-
-        It fires whenever the input sits idle, and after either of those
-        nothing is waiting on you -- the Stop already said it finished, or
-        the agent's subagents will wake it. The one gate for everything a
-        waiting notification would otherwise start: the nudge, the realtime
-        waiting line, the static bark. A question, a failure or an unknown
-        ending does not match, and neither does agent_needs_input.
-        """
-        if self._waiting_type(hook_input) != "idle_prompt":
-            return False
-        try:
-            from session_state import load_session, stop_category
-            if state is None:
-                state = load_session(home.derive_project_label())
-            return stop_category(state) in ("done", "working")
-        except Exception:
-            return False
 
     def _permission_risk(self, hook_input):
         """Why this permission request is destructive (risk.permission_risk),
@@ -631,25 +502,6 @@ class BaseEngine(ABC):
             self._log(f"[PermissionRequest] risk check failed ({e})")
             return None
 
-    @staticmethod
-    def _is_question_dialog(hook_input):
-        """AskUserQuestion or ExitPlanMode, which reach hobson as a
-        PermissionRequest. 87 of them in the log were phrased by the model
-        from "Tool: AskUserQuestion" alone: "I finished fixing hobson.", "I'm
-        applying review fixes." The static engines said their permission
-        template for a tool named AskUserQuestion."""
-        if hook_input.get("hook_event_name") != "PermissionRequest":
-            return False
-        try:
-            from nudge import USER_WAIT_TOOLS
-        except ImportError:
-            return False
-        return hook_input.get("tool_name") in USER_WAIT_TOOLS
-
-    @staticmethod
-    def _risky_phrase(reason):
-        return f"Careful — this one {reason}. It needs your approval."
-
     def _fixed_announcement(self, hook_input, state, risk=None):
         """For an event whose meaning is fixed -- a destructive permission
         request (`risk` from _permission_risk), a question dialog, a
@@ -665,33 +517,18 @@ class BaseEngine(ABC):
         keeps it from sounding canned; when all were said recently, one is
         spoken anyway -- being blocked again is news even in the same words.
 
-        Chooses inside the caller's session transaction; the caller speaks
-        (_announce) once it has committed.
+        Chooses inside the caller's session transaction (announcement.fixed_line,
+        which the silenced hook shares); the caller speaks (_announce) once
+        it has committed.
         """
-        from session_state import record_voiced
-        event = hook_input.get("hook_event_name")
-        if event == "PermissionRequest" and risk:
-            phrase, label = self._risky_phrase(risk), f"[PermissionRequest] destructive ({risk})"
-        elif self._is_question_dialog(hook_input):
-            group = self.templates.CATEGORIES.get("question") or {}
-            candidates = [f"{lead} {tail}" for lead in group.get("lead", [])
-                          for tail in group.get("tail", [])]
-            if not candidates:
-                return None
-            phrase, label = self._fresh_choice(candidates, state), "[PermissionRequest] question dialog"
-        elif event == "Notification" and self._waiting_type(hook_input):
-            if self._idle_after_finished_turn(hook_input, state):
-                # Handled, by saying nothing -- falling through would hand
-                # the event to the model, which is worse than either.
-                return FixedAnnouncement(None, "[Notification] not announced — the last turn finished")
-            templates = list(self.templates.NOTIFICATION_TEMPLATES)
-            if not templates:
-                return None
-            phrase, label = self._fresh_choice(templates, state), "[Notification] waiting template"
-        else:
-            return None
-        record_voiced(state, phrase)
-        return FixedAnnouncement(phrase, label)
+        from session_state import record_voiced, record_wait_said
+        chosen = fixed_line(hook_input, state, self.templates, self._fresh_choice, risk)
+        if chosen is None or chosen.phrase is None:
+            return chosen
+        record_voiced(state, chosen.phrase)
+        if hook_input.get("hook_event_name") == "PermissionRequest":
+            record_wait_said(state, hook_input.get("session_id"))
+        return chosen
 
     def _announce(self, fixed):
         """Speak (or, for a silent one, just log) a fixed announcement."""
@@ -699,31 +536,18 @@ class BaseEngine(ABC):
             self._log(fixed.label)
             return
         self._log(f"{fixed.label} -> {fixed.phrase!r}")
-        self.speak_dynamic(fixed.phrase, allow_cold_start=False, kind="waiting")
+        # A wait is never dropped by the cooldown: one recorded as said
+        # (record_wait_said) must have been heard, or held for your return.
+        self.speak(fixed.phrase, "waiting", cold_start=True)
 
-    @staticmethod
-    def _fresh_choice(candidates, state):
-        """A random candidate that is not a near-duplicate of anything said
-        recently -- or any candidate, if every one was: the event is news
-        even in the same words."""
+    def _fresh_choice(self, candidates, state):
+        """A candidate that is not a near-duplicate of anything said recently
+        -- or any candidate, if every one was: the event is news even in the
+        same words. One with cached audio first (_pick_prefer_cached)."""
         from phrase_gen import is_near_duplicate
         recent = state.get("recent_voiced", [])
         fresh = [c for c in candidates if not is_near_duplicate(c, recent)]
-        return random.choice(fresh or candidates)
-
-    def _say_with_volume(self, text, kind=None):
-        """Speak via macOS `say` honoring self.volume.
-
-        `say` has no volume flag, so render to a temp AIFF and play with
-        `afplay -v`. The render is waited for (about half a second; the
-        hooks are async) so the face has the audio to move its mouth to;
-        the temp file is removed after playback. The text comes after `--`:
-        a phrase is model output, and one starting "-o<path>" was taken as
-        an option and wrote audio over that file.
-        """
-        path = self._render_say(text)
-        if path:
-            self._play(path, text, kind, cleanup=True)
+        return self._pick_prefer_cached(fresh or candidates)
 
     def _render_say(self, text):
         """`text` rendered by macOS `say` to a temp AIFF, or None."""
@@ -789,117 +613,144 @@ class BaseEngine(ABC):
 
     def pick_permission(self, tool):
         t = self.templates
+        if not self.cache_dir:
+            return permission_line(t, tool)
         tool = format_tool_name(tool)
-        if self.cache_dir:
-            all_barks = [
-                f"{l} {a.format(tool=tool)}"
-                for l in t.PERMISSION_LEADS for a in t.PERMISSION_ACTIONS
-            ]
-            cached = [b for b in all_barks if self.cached_audio(b)]
-            if cached:
-                return random.choice(cached)
-            return self._pick_prefer_cached(t.GENERIC_PERMISSION_PHRASES)
-        else:
-            # No cache (say engine) — skip MCP/internal tool names
-            if "_" in tool:
-                return random.choice(t.GENERIC_PERMISSION_PHRASES)
-            return f"{random.choice(t.PERMISSION_LEADS)} {random.choice(t.PERMISSION_ACTIONS).format(tool=tool)}"
+        all_barks = [
+            f"{l} {a.format(tool=tool)}"
+            for l in t.PERMISSION_LEADS for a in t.PERMISSION_ACTIONS
+        ]
+        cached = [b for b in all_barks if self.cached_audio(b)]
+        if cached:
+            return random.choice(cached)
+        return self._pick_prefer_cached(t.GENERIC_PERMISSION_PHRASES)
 
     def pick_notification(self):
         return self._pick_prefer_cached(self.templates.NOTIFICATION_TEMPLATES)
 
-    def try_bark(self, bark, lock_file=None, cooldown=None, do_backfill=True, kind=None):
-        """Speak bark via cached audio or fallback to macOS say.
-
-        Priority: cached audio + afplay > macOS say > silent
-        On cache miss: speak via say immediately, backfill cache in background.
-
-        Optional params for commentary: separate lock_file, different cooldown,
-        and do_backfill=False to skip cache backfill for dynamic phrases.
-        `kind` is what the phrase is about, for presence (_for_audience).
-        """
-        bark = self._for_audience(bark, kind)
-        if bark is None:
-            return
-        lock_file = lock_file or home.bark_lock()
-        cooldown = cooldown if cooldown is not None else self.cooldown
-
-        fd = None
-        try:
-            fd = open(lock_file, "a+", encoding="utf-8")
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-
-            fd.seek(0)
-            content = fd.read().strip()
-            now = time.time()
-
-            if content:
-                try:
-                    if now - float(content) < cooldown:
-                        self._log(f"skipped (cooldown) -> {bark!r}")
-                        return
-                except ValueError:
-                    pass
-
-            fd.seek(0)
-            fd.truncate()
-            fd.write(str(now))
-            fd.flush()
-
-            audio = self.cached_audio(bark)
-            if audio:
-                self._play(audio, bark, kind)
-                self._log(log_record.playback("template-cache", bark, kind or "info"))
-            else:
-                self._say_with_volume(bark, kind)
-                if self.cache_dir:
-                    self._log(log_record.playback("say-fallback: cache miss", bark, kind or "info"))
-                else:
-                    self._log(log_record.playback("say", bark, kind or "info"))
-                if do_backfill:
-                    self.backfill(bark)
-
-        except BlockingIOError:
-            self._log(f"skipped (locked) -> {bark!r}")
-        except Exception as e:
-            self._log(f"bark failed ({e}) -> {bark!r}")
-        finally:
-            if fd is not None:
-                try:
-                    fd.close()
-                except Exception:
-                    pass
-
     def _is_event_enabled(self, hook_input):
         """Check if this hook event is enabled in config. Returns False + logs if disabled."""
         event = hook_input.get("hook_event_name")
-        event_key = self.EVENT_MAP.get(event)
-        if event_key and event_key not in self.enabled_events:
-            self._log(f"skipped (event {event_key!r} disabled)")
+        if home.event_enabled(self.config, event):
+            return True
+        self._log(f"skipped (event {home.EVENT_KEYS[event]!r} disabled)")
+        return False
+
+    # ── Speaking: one path for every phrase ────────────────────────────
+
+    def speak(self, phrase, kind, cold_start=False, project=None):
+        """Say `phrase`, of kind `kind` (kinds.KINDS, required). Every phrase
+        Hobson says leaves through here, from a hook or not, on every engine.
+        False only when presence held it for your return or dropped it;
+        True when it played, and when it was skipped (the voice busy for
+        commentary, the bark lock or its cooldown) or could not be rendered,
+        each of which is logged.
+
+        `cold_start`: the phrase may wait for a cold daemon, and the bark
+        lock's cooldown never drops it -- a Stop, and anything said because
+        you asked or because something waits (a nudge, a briefing, an
+        answer). Without it a phrase is dropped while another hook holds the
+        bark lock or spoke within `cooldown` seconds, and a daemon that is
+        down is started in the background for next time.
+
+        It plays after whatever is playing now (play), so a phrase that is
+        not dropped is heard in turn, not over another.
+
+        `project`: the session the phrase is about, when it is not this one
+        (another session's note): held under it and shown in the face's
+        corner. A private kind's words never reach the log (kinds.guarded)."""
+        phrase = self._for_audience(kinds.guarded(phrase, kind), kind, project)
+        if phrase is None:
             return False
+        if self._voice_busy_for(phrase, kind):
+            return True
+        if not self._claim_bark_lock(phrase, cold_start):
+            self.warm()
+            return True
+        clip = None
+        try:
+            clip = self.clip(phrase, kind, cold_start)
+            if clip is None:
+                return True
+            self.play(clip.path, phrase, kind, cleanup=clip.cleanup, project=project)
+        except Exception as e:
+            self._log(f"bark failed ({e}) -> {phrase!r}")
+            if clip is not None and clip.cleanup:
+                with contextlib.suppress(OSError):
+                    os.remove(clip.path)
+            return True
+        self._log(log_record.playback(clip.source, phrase, kind))
         return True
 
-    # ── Dynamic phrase playback (overridable seam) ─────────────────────
+    def _claim_bark_lock(self, phrase, cold_start):
+        """Stamp the bark lock: when a hook last spoke. A `cold_start` phrase
+        stamps it and goes on. Any other is skipped (False) while another
+        hook holds the lock or one spoke within `cooldown` seconds. A lock
+        that cannot be opened lets the phrase through."""
+        try:
+            with open(home.bark_lock(), "a+", encoding="utf-8") as fd:
+                if not cold_start:
+                    try:
+                        fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    except BlockingIOError:
+                        self._log(f"skipped (locked) -> {phrase!r}")
+                        return False
+                    fd.seek(0)
+                    try:
+                        if time.time() - float(fd.read().strip()) < self.cooldown:
+                            self._log(f"skipped (cooldown) -> {phrase!r}")
+                            return False
+                    except ValueError:
+                        pass
+                fd.seek(0)
+                fd.truncate()
+                fd.write(str(time.time()))
+        except OSError:
+            pass
+        return True
 
-    def _for_audience(self, phrase, kind):
+    def clip(self, phrase, kind, cold_start=False):
+        """`phrase` as audio to play (a Clip), or None when it could not be
+        rendered. The static engines' clip: the template cache first, else
+        macOS `say` -- and on a cache miss a template (a kind neither said
+        in passing nor Hobson's own talk) is backfilled for next time."""
+        audio = self.cached_audio(phrase)
+        if audio:
+            return Clip(audio, "template-cache", False)
+        path = self._render_say(phrase)
+        if path is None:
+            return None
+        if not self.cache_dir:
+            return Clip(path, "say", True)
+        props = kinds.of(kind)
+        if not (props.passing or props.own_talk or props.private):
+            self.backfill(phrase)
+        return Clip(path, "say-fallback: cache miss", True)
+
+    def warm(self):
+        """Get ready for the next phrase after one was skipped. Nothing to do
+        for the static engines."""
+
+    def _for_audience(self, phrase, kind, project=None):
         """The phrase to speak now, or None when presence held it for your
-        return or dropped it (presence.route). `kind` is what it is about:
-        "waiting", "broken", "done", "info", "stalled", "commentary",
-        "nudge" or "briefing"; None counts as "info". Every speak seam calls
-        this once, so no engine or event can talk past an empty room. A
-        failure here speaks: without presence, Hobson is as he was."""
+        return or dropped it (presence.route). `kind` is what it is about,
+        one of kinds.KINDS, and required: a phrase with none used to count as
+        news. speak() calls this once, so no engine or event can talk past
+        an empty room. A failure here speaks: without presence,
+        Hobson is as he was."""
+        kinds.require(kind)
         try:
             import presence
-            return presence.route(self.config, kind or "info", phrase)
+            return presence.route(self.config, kind, phrase, project)
         except Exception as e:
             self._log(f"presence check failed ({e}), speaking")
             return phrase
 
     def _voice_busy_for(self, phrase, kind):
-        """Commentary is dropped while anything is playing (voice.busy): by
-        the time its turn came it would be about work already done. Every
-        other kind waits for its turn in _play."""
-        if kind != "commentary":
+        """A phrase said in passing (commentary) is dropped while anything is
+        playing (voice.busy): by the time its turn came it would be about
+        work already done. Every other kind waits for its turn in play()."""
+        if not kinds.of(kind).passing:
             return False
         import voice
         if not voice.busy():
@@ -907,55 +758,38 @@ class BaseEngine(ABC):
         self._log(f"skipped (voice busy) -> {phrase!r}")
         return True
 
-    def speak_dynamic(self, phrase, allow_cold_start=True, kind=None):
-        """Speak a dynamic, non-cacheable phrase. False when presence held or
-        dropped it instead (_for_audience).
-
-        Default: macOS `say` with the personality voice, gated by the bark
-        lock to avoid overlapping other engines' audio. Realtime engines
-        override this to route through their daemon (with say as last resort).
-        """
-        phrase = self._for_audience(phrase, kind)
-        if phrase is None:
-            return False
-        if self._voice_busy_for(phrase, kind):
-            return True
-        try:
-            fd = open(home.bark_lock(), "a+", encoding="utf-8")
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                self._log(f"skipped (locked) -> {phrase!r}")
-                fd.close()
-                return True
-            fd.seek(0); fd.truncate()
-            fd.write(str(time.time())); fd.flush(); fd.close()
-        except OSError:
-            pass
-        self._say_with_volume(phrase, kind)
-        self._log(log_record.playback("say-dynamic", phrase, kind or "info"))
-        return True
-
     # ── Commentary (PreToolUse) — shared across all engines ────────────
 
-    def _acquire_commentary_lock(self):
-        """Acquire the commentary lock + check cooldown. Returns True on success."""
+    def _acquire_commentary_lock(self, watched_cooldown=None, last_flush=0):
+        """Acquire the commentary lock + check cooldown. Returns True on success.
+
+        A watched session (focus) passes its own cooldown and its project's
+        last flush time, and is paced on a clock of its own: the focus lock,
+        which only watched flushes read and write, and its own last flush.
+        Sharing the commentary timestamp, it flushed every 9s beside a busy
+        unwatched session instead of every 4s; writing it, it kept every
+        other session short of the 8s window until their batches went stale.
+        """
+        watched = watched_cooldown is not None
+        cooldown = watched_cooldown if watched else self.commentary_cooldown
         try:
-            fd = open(home.commentary_lock(), "a+", encoding="utf-8")
-            fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            fd.seek(0)
-            content = fd.read().strip()
-            if content:
+            with open(home.focus_lock() if watched else home.commentary_lock(),
+                      "a+", encoding="utf-8") as fd:
+                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                fd.seek(0)
+                content = fd.read().strip()
+                now = time.time()
                 try:
-                    if time.time() - float(content) < self.commentary_cooldown:
-                        fd.close()
+                    if content and now - float(content) < cooldown:
                         return False
                 except ValueError:
                     pass
-            fd.seek(0); fd.truncate()
-            fd.write(str(time.time())); fd.flush(); fd.close()
-            return True
-        except (BlockingIOError, OSError):
+                if watched and now - (last_flush or 0) < cooldown:
+                    return False
+                fd.seek(0); fd.truncate()
+                fd.write(str(now))
+                return True
+        except OSError:
             return False
 
     def _pick_chatty_commentary(self, tool, tool_input):
@@ -987,7 +821,7 @@ class BaseEngine(ABC):
         if (tool or "").lower() not in self.commentary_tools:
             return
 
-        if (self.config.get("commentary", {}).get("suppress_subagents", True)
+        if (self.config["commentary"]["suppress_subagents"]
                 and self._is_subagent_event(hook_input)):
             self._log("[PreToolUse] skipped (subagent "
                       f"{hook_input.get('agent_type') or 'unknown'})")
@@ -1004,20 +838,13 @@ class BaseEngine(ABC):
             tool_input = hook_input.get("tool_input", {})
             phrase = self._pick_chatty_commentary(tool, tool_input)
             self._log(f"[PreToolUse] chatty template -> {phrase!r}")
-            self.speak_dynamic(phrase, allow_cold_start=False, kind="commentary")
+            self.speak(phrase, "commentary")
             return
 
         # terse / normal — append-to-queue must always succeed, so the lock
         # is acquired only once should_flush() opens the gate (inside
         # _handle_commentary_llm), never here.
         self._handle_commentary_llm(hook_input, verbosity)
-
-    def _custom_phrase_prompt(self):
-        """Optional per-engine custom persona prompt passed to phrase_gen.
-
-        Override in subclasses to inject a per-engine persona prompt.
-        """
-        return None
 
     def _handle_commentary_llm(self, hook_input, verbosity):
         """Append this tool call to the pending batch; flush (LLM + speak)
@@ -1034,13 +861,11 @@ class BaseEngine(ABC):
             from phrase_gen import generate_or_skip
             from session_state import (
                 transaction, mark_event,
-                record_voiced, record_skipped, build_session_context,
-                seconds_since_last_voiced,
+                record_voiced, record_skipped,
                 record_pending, should_flush, take_pending, pending_summary,
                 record_flush_attempt,
                 record_fingerprint, mark_repeat_announced, anomaly_reason,
                 action_identity,
-                PENDING_STALE_SECONDS,
             )
         except ImportError as e:
             self._log(f"[PreToolUse] LLM gating unavailable ({e})")
@@ -1051,10 +876,19 @@ class BaseEngine(ABC):
         tool_input = hook_input.get("tool_input") or {}
         context = extract_context(tool, tool_input)
 
-        cfg = self.config.get("commentary", {})
-        min_calls = cfg.get("min_tool_calls", 5)
-        min_seconds = cfg.get("min_seconds", 60.0)
-        stale = cfg.get("pending_stale_seconds", PENDING_STALE_SECONDS)
+        cfg = self.config["commentary"]
+        watched = False
+        if verbosity != "anomaly":
+            try:
+                import presence
+                watched = presence.watched(self.config, project)
+            except Exception as e:
+                self._log(f"[PreToolUse] watched check failed ({e})")
+        focus = self.config["focus"]
+        pace = focus if watched else cfg
+        min_calls = pace["min_tool_calls"]
+        min_seconds = pace["min_seconds"]
+        stale = cfg["pending_stale_seconds"]
         # Repetition is judged on the action itself (action_identity), not
         # on `context`, the short display string: two commands sharing a
         # description are two actions, not one repeated.
@@ -1081,7 +915,8 @@ class BaseEngine(ABC):
                 self._log(f"[PreToolUse] queued ({len(state['pending'])} pending) {tool}: {context}")
                 return
 
-            if not self._acquire_commentary_lock():
+            if not self._acquire_commentary_lock(
+                    focus["cooldown"] if watched else None, state.get("last_flush_time")):
                 # Batch has earned an utterance, but another flush spoke too
                 # recently. Leave the queue intact — do not consume it — so
                 # the next tool call gets another chance to flush it.
@@ -1091,6 +926,8 @@ class BaseEngine(ABC):
             # The flush is going ahead now — time the gate off this attempt,
             # not off whether it ends up producing speech.
             record_flush_attempt(state)
+            if watched:
+                self._log("[PreToolUse] flush (watched)")
             baseline = state["last_event_time"]
             items = take_pending(state, stale_seconds=stale)
             event_detail = pending_summary(items)
@@ -1100,9 +937,7 @@ class BaseEngine(ABC):
                     # loop: a repeat must not re-fire on every further
                     # occurrence of the same action.
                     mark_repeat_announced(state, tool, identity)
-                session_context = build_session_context(state)
-                recent_voiced = list(state.get("recent_voiced", []))
-                since_voiced = seconds_since_last_voiced(state)
+                session = _snapshot(state)
 
         self._maybe_start_watchdog(baseline=baseline)
         if not event_detail:
@@ -1119,14 +954,18 @@ class BaseEngine(ABC):
         gen_verbosity = "normal" if verbosity == "anomaly" else verbosity
 
         p_worth = None
-        if not anomaly:
+        if watched:
+            # You are looking at it: worth hearing by definition, and the
+            # decider's question is about a user not watching the screen.
+            gen_verbosity = "decided"
+        elif not anomaly:
             # With the decider on "jev", whether a released batch is worth
             # hearing is its call, against commentary.chattiness, not
             # Ollama's; terse and normal then differ in nothing. No opinion
             # (backend local, any failure) leaves the verbosity's own bias.
             p_worth = gate.worth_probability(event_detail, self.config)
             if p_worth is not None:
-                bar = gate.threshold(cfg.get("chattiness", gate.DEFAULT_CHATTINESS))
+                bar = gate.threshold(cfg["chattiness"])
                 if p_worth < bar:
                     with transaction(project) as state:
                         record_skipped(state, "PreToolUse")
@@ -1137,35 +976,32 @@ class BaseEngine(ABC):
 
         # The slow part -- the model -- holds no lock; what it produced is
         # applied to the state as it is now, below.
-        category, phrase = generate_or_skip(
-            "PreToolUse", event_detail, session_context,
+        gen = generate_or_skip(
+            "PreToolUse", event_detail, session.context,
             project=project, model=self._ollama_model,
             ollama_url=self._ollama_url,
             # Must exceed a cold model load (~8s for llama3.2:3b) — a
             # shorter timeout aborts the load, Ollama cancels it, and every
             # later call is cold again, so commentary never recovers. Hooks
             # are async so nothing user-facing blocks on this.
-            timeout=20,
+            timeout=OLLAMA_TIMEOUT,
             verbosity=gen_verbosity,
-            custom_prompt=self._custom_phrase_prompt(),
-            recent_voiced=recent_voiced,
-            seconds_since_last_voiced=since_voiced,
+            recent_voiced=session.recent_voiced,
+            **({"words": (focus["min_words"], focus["max_words"])} if watched else {}),
         )
+        phrase = gen.phrase
 
         with transaction(project) as state:
             if phrase:
                 record_voiced(state, phrase)
             else:
                 record_skipped(state, "PreToolUse")
+        notes = "" if p_worth is None else f", worth={p_worth:.2f}"
+        notes += ", watched" if watched else ""
+        self._log(gen.log_line("PreToolUse", f"{self._ollama_model}, {verbosity}{notes}",
+                               batch=len(items)))
         if phrase:
-            decided = "" if p_worth is None else f", worth={p_worth:.2f}"
-            self._log(log_record.outcome("PreToolUse", f"{self._ollama_model}, {verbosity}{decided}",
-                                         category, phrase, batch=len(items)))
-            self.speak_dynamic(phrase, allow_cold_start=False, kind="commentary")
-        else:
-            from phrase_gen import last_raw as raw
-            verdict, detail = describe_generation_failure(raw)
-            self._log(f"[PreToolUse] batch of {len(items)} {verdict}: {detail}")
+            self.speak(phrase, "commentary")
 
     # ── Stop — one pipeline for every engine ───────────────────────────
 
@@ -1176,14 +1012,14 @@ class BaseEngine(ABC):
         and phrase it, record the category for the nudge, and speak.
 
         The phrase source is the one part that differs between engines
-        (_stop_phrase / _speak_stop): templates for the static engines, the
-        model for the daemon engines. The reading, the rules and the
-        bookkeeping are the same for both.
+        (_stop_phrase): templates for the static engines, the model for the
+        daemon engines. The reading, the rules and the bookkeeping are the
+        same for both, and the phrase is spoken with cold_start: the turn
+        has ended, and the hook is async.
         """
         import stop_outcome
         from session_state import (transaction, begin_stop, record_stop_category,
-                                   record_voiced, record_skipped, build_session_context,
-                                   seconds_since_last_voiced)
+                                   record_voiced, record_skipped)
         reading = stop_outcome.read(hook_input)
         project = home.derive_project_label()
         working = reading is not None and reading.still_working
@@ -1197,11 +1033,7 @@ class BaseEngine(ABC):
                 record_stop_category(state, "working")
                 record_skipped(state, "Stop")
             else:
-                session = StopSession(
-                    context=build_session_context(state, task=reading.task if reading else None),
-                    recent_voiced=list(state.get("recent_voiced", [])),
-                    since_voiced=seconds_since_last_voiced(state),
-                )
+                session = _snapshot(state, task=reading.task if reading else None)
         if dropped:
             self._log(f"[Stop] dropped {dropped} pending commentary items")
         if working:
@@ -1218,7 +1050,22 @@ class BaseEngine(ABC):
             else:
                 record_skipped(state, "Stop")
         if phrase:
-            self._speak_stop(phrase, kind=stop_kind(category))
+            self.speak(phrase, kinds.stop_kind(category), cold_start=True)
+
+    def _handle_plugin_notes(self, hook_input):
+        """After a Stop's own announcement: say the notes the Claude Code
+        plugin cc-plugin-you-should-know has left, once each (plugin_notes).
+        Spoken with cold_start and as a "note": held for your return like
+        news, shown on the face, and its words kept out of the log. Never raises: a note is a courtesy, and
+        its source is undocumented."""
+        try:
+            import plugin_notes
+            notes = plugin_notes.claim()
+            if notes:
+                phrase, project = plugin_notes.phrase(notes, self.config, hook_input.get("session_id"))
+                self.speak(phrase, "note", cold_start=True, project=project)
+        except Exception as e:
+            self._log(f"[plugin-notes] failed ({e})")
 
     def _stop_phrase(self, reading, session):
         """The static engines' phrase source: the model's verdict, settled by
@@ -1240,10 +1087,6 @@ class BaseEngine(ABC):
         bark = self.pick(phrased_as)
         self._log(f"template ({phrased_as}) -> {bark!r}")
         return category, bark
-
-    def _speak_stop(self, phrase, kind=None):
-        """Speak a Stop's phrase: a template, cache first."""
-        self.try_bark(phrase, kind=kind)
 
     def _describe_event(self, hook_input):
         """Build a description string for a PermissionRequest, PreToolUse or
@@ -1271,41 +1114,81 @@ class BaseEngine(ABC):
 
         return None
 
-    def run(self, hook_input):
-        """Main dispatch — called by hobson.py entrypoint."""
-        if not self._is_event_enabled(hook_input):
+    # ── A permission request or a notification ─────────────────────────
+
+    def _handle_attention(self, hook_input):
+        """A PermissionRequest or Notification, for every engine. A
+        fixed-meaning one (a destructive request, a question dialog, a
+        waiting notification) is a template, never the model
+        (_fixed_announcement); anything else goes to the engine's phrase
+        source (_event_phrase). Either way the session is marked alive and
+        what was said recorded, and a waiting notification may start a
+        nudge."""
+        from session_state import (transaction, mark_event, record_voiced, record_skipped,
+                                   record_wait_said)
+        event = hook_input.get("hook_event_name", "")
+        if event == "Notification":
+            self._maybe_nudge_from_notification(hook_input)
+        project = home.derive_project_label()
+        risk = self._permission_risk(hook_input)  # may ask the decider: not under the lock
+        event_detail = self._describe_event(hook_input)
+        session = None
+
+        with transaction(project) as state:
+            # Marks the session alive for the watchdog.
+            mark_event(state)
+            fixed = self._fixed_announcement(hook_input, state, risk)
+            if fixed is None:
+                if event_detail:
+                    session = _snapshot(state)
+                else:
+                    record_skipped(state, event)
+
+        if fixed is not None:
+            return self._announce(fixed)
+        if session is None:
+            self._log(f"[{event}] no event detail, skipping")
             return
 
-        event = hook_input.get("hook_event_name")
+        # The slow part -- a model call, on the daemon engines -- holds no lock.
+        category, phrase = self._event_phrase(hook_input, event_detail, session)
 
-        if event == "PreToolUse":
-            return self._handle_commentary(hook_input)
+        kind = kinds.event_kind(hook_input)
+        with transaction(project) as state:
+            if phrase:
+                record_voiced(state, phrase)
+                if event == "PermissionRequest":
+                    record_wait_said(state, hook_input.get("session_id"))
+            else:
+                record_skipped(state, event)
+        if phrase:
+            self.speak(phrase, kind, cold_start=kind == "waiting")
 
-        if event == "PermissionRequest":
-            risk = self._permission_risk(hook_input)
-            if risk:
-                self._announce(FixedAnnouncement(self._risky_phrase(risk),
-                                                 f"[PermissionRequest] destructive ({risk})"))
-                return
-            if self._is_question_dialog(hook_input):
-                bark = self.pick("question")
-                self._log(f"[PermissionRequest] question dialog -> {bark!r}")
-                self.try_bark(bark, kind="waiting")
-                return
+    def _event_phrase(self, hook_input, event_detail, session):
+        """The static engines' phrase source for an event that is not a
+        fixed announcement: a permission or notification template. Returns
+        (category, phrase); the category is None, there being no model."""
+        if hook_input.get("hook_event_name") == "PermissionRequest":
             tool = hook_input.get("tool_name") or "something important"
             bark = self.pick_permission(tool)
             self._log(f"permission ({tool!r}) template -> {bark!r}")
-            self.try_bark(bark, kind="waiting")
-            return
-
-        if event == "Notification":
-            self._maybe_nudge_from_notification(hook_input)
-            if self._idle_after_finished_turn(hook_input):
-                self._log("notification: not announced — the last turn finished")
-                return
+        else:
             bark = self.pick_notification()
             self._log(f"notification template -> {bark!r}")
-            self.try_bark(bark, kind=event_kind(hook_input))
-            return
+        return None, bark
 
-        return self._handle_stop(hook_input)
+    def run(self, hook_input):
+        """Main dispatch — called by hobson.py entrypoint. The same for every
+        engine: only the phrase sources (_stop_phrase, _event_phrase) and how
+        a phrase becomes audio (clip) differ."""
+        if not self._is_event_enabled(hook_input):
+            return
+        event = hook_input.get("hook_event_name")
+        if event == "PreToolUse":
+            return self._handle_commentary(hook_input)
+        if event == "Stop":
+            self._handle_stop(hook_input)
+            return self._handle_plugin_notes(hook_input)
+        if event in ("PermissionRequest", "Notification"):
+            return self._handle_attention(hook_input)
+        self._log(f"[{event}] not an event Hobson speaks for")

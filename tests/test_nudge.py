@@ -3,6 +3,7 @@
 Pure logic only — never spawn a real nudge process in a test.
 """
 
+import fcntl
 import json
 import os
 import subprocess
@@ -171,7 +172,7 @@ def test_watchdog_spawn_is_gated_by_config(claude_home, no_audio, monkeypatch):
     import phrase_gen
     from engines.say import SayEngine
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did a thing."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did a thing."))
 
     eng = SayEngine({
         "engine": "say", "personality": "hobson", "events": ["commentary"],
@@ -191,11 +192,11 @@ def test_watchdog_does_not_spawn_when_one_already_holds_the_lock(
     import os as _os
     import phrase_gen
     from engines.say import SayEngine
-    from nudge import _lock_path
+    from nudge import lock_path as _lock_path
     import home
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did a thing."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did a thing."))
     monkeypatch.setattr(home, "derive_project_label", lambda: "demo")
 
     lock_path = _lock_path("watchdog", "demo")
@@ -219,7 +220,7 @@ def test_watchdog_spawns_on_a_flush_by_default(claude_home, no_audio, monkeypatc
     import phrase_gen
     from engines.say import SayEngine
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did a thing."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did a thing."))
 
     eng = SayEngine({
         "engine": "say", "personality": "hobson", "events": ["commentary"],
@@ -242,7 +243,7 @@ def test_watchdog_spawn_carries_the_parents_in_memory_baseline(
     import phrase_gen
     from engines.say import SayEngine
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did a thing."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did a thing."))
 
     before = time.time()
     eng = SayEngine({
@@ -321,7 +322,7 @@ def test_activity_token_and_lock_share_one_project_key(claude_home):
     import nudge
     key = lambda p: os.path.basename(p).rsplit("-", 1)[-1].split(".")[0]
     for project in ("hobson", "mobile app, dark mode theming", ""):
-        assert key(nudge.activity_path(project)) == key(nudge._lock_path("nudge", project))
+        assert key(nudge.activity_path(project)) == key(nudge.lock_path("nudge", project))
 
 
 def test_distinct_projects_get_distinct_tokens(claude_home):
@@ -365,7 +366,7 @@ def test_user_prompt_submit_never_imports_an_engine(tmp_path):
 # an argument the child's parser does not accept, argparse exits and the
 # process dies without a trace -- the same "a feature that never runs" class
 # as the watchdog race and the Notification matcher. Round-trip the argv
-# engines/base.py actually builds through nudge.main()'s real parser.
+# nudge.start / start_watchdog actually build through nudge.main()'s parser.
 
 def _child_accepts(argv, monkeypatch):
     import sys
@@ -413,10 +414,8 @@ def _realtime(kind, monkeypatch, spoken, events=("notification", "stop")):
         from engines.pocket_tts_realtime import PocketTTSRealtimeEngine as Engine
     else:
         from engines.kokoro_realtime import KokoroRealtimeEngine as Engine
-    monkeypatch.setattr(Engine, "speak_dynamic",
-                        lambda self, phrase, allow_cold_start=True, **k: spoken.append(phrase))
-    monkeypatch.setattr(Engine, "_speak_live",
-                        lambda self, phrase, allow_cold_start=True, **k: spoken.append(phrase))
+    monkeypatch.setattr(Engine, "speak",
+                        lambda self, phrase, kind, cold_start=False: spoken.append(phrase))
     return Engine({"engine": kind, "personality": "hobson", "events": list(events),
                    "nudge": {"enabled": False}})
 
@@ -587,7 +586,7 @@ def test_a_stop_waiting_on_its_own_work_is_not_announced(
     monkeypatch.setattr(stop_outcome, "classify", lambda *a, **k: pytest.fail("no model call"))
     spoken = []
     eng = _say_engine() if kind == "say" else _realtime(kind, monkeypatch, spoken)
-    monkeypatch.setattr(eng, "_speak_stop", lambda phrase, **k: spoken.append(phrase))
+    monkeypatch.setattr(eng, "speak", lambda phrase, kind, cold_start=False: spoken.append(phrase))
     fake_ollama.chat("done | I finished rendering the hard-case pairs.")
     eng.run({"hook_event_name": "Stop", "transcript_path": _transcript(tmp_path, _STILL_WORKING)})
     assert spoken == [] and fake_ollama.urls == []
@@ -666,6 +665,113 @@ def test_verdict_waits_through_a_long_build():
     t = time.time() - 700
     alive = {"ts": t, "tool": "Bash", "timeout_ms": 900000}
     assert _verdict(state={"last_event_time": t}, alive=alive, baseline=t) == "wait"
+
+
+def test_terminal_info_in_tmux_is_the_pane_alone(claude_home, monkeypatch):
+    """The pane's own tty is no terminal window: which client shows the
+    pane is asked of tmux at the click, so nothing else is looked up here."""
+    def no_lookup(*a, **k):
+        raise AssertionError("no tty lookup inside tmux")
+
+    monkeypatch.setattr(nudge, "_controlling_tty", no_lookup)
+    monkeypatch.setattr(nudge, "_ancestor_tty", no_lookup)
+    monkeypatch.setenv("TMUX_PANE", "%7")
+    assert nudge.terminal_info() == {"tmux_pane": "%7"}
+
+
+def test_terminal_info_outside_tmux_reads_its_own_tty_first(claude_home, monkeypatch):
+    """From /dev/tty, never the hook's own piped stdin."""
+    opened = {}
+
+    def fake_open(path, flags):
+        opened["path"] = path
+        return 99
+
+    monkeypatch.setattr(nudge.os, "open", fake_open)
+    monkeypatch.setattr(nudge.os, "ttyname", lambda fd: "/dev/ttys003")
+    monkeypatch.setattr(nudge.os, "close", lambda fd: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    assert nudge.terminal_info() == {"tty": "/dev/ttys003"}
+    assert opened["path"] == "/dev/tty"
+
+
+def _ps(monkeypatch, table):
+    """`ps -o ppid=,tty= -p PID` answered from {pid: "ppid tty"}."""
+    import subprocess
+    seen = []
+
+    class Done:
+        def __init__(self, stdout):
+            self.stdout = stdout
+
+    def fake_run(cmd, **kwargs):
+        seen.append(cmd[-1])
+        return Done(table.get(cmd[-1], ""))
+
+    monkeypatch.setattr(subprocess, "run", fake_run)
+    return seen
+
+
+def test_terminal_info_outside_tmux_takes_the_nearest_ancestor_tty(claude_home, monkeypatch):
+    """A hook has no terminal of its own (Claude Code starts it in a session
+    of its own: every live record lacked a tty); Claude Code above it has."""
+    monkeypatch.setattr(nudge, "_controlling_tty", lambda: None)
+    monkeypatch.setattr(nudge.os, "getppid", lambda: 500)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    seen = _ps(monkeypatch, {"500": "400 ??\n", "400": "300 ttys004\n"})
+    assert nudge.terminal_info() == {"tty": "/dev/ttys004"}
+    assert seen == ["500", "400"]
+
+
+def test_ancestor_tty_stops_at_launchd_and_after_its_hops(claude_home, monkeypatch):
+    seen = _ps(monkeypatch, {"500": "1 ??\n"})
+    assert nudge._ancestor_tty(500) is None
+    assert seen == ["500"], "launchd is not asked about"
+    seen = _ps(monkeypatch, {str(n): f"{n - 1} ??\n" for n in range(10, 100)})
+    assert nudge._ancestor_tty(99, hops=3) is None
+    assert seen == ["99", "98", "97"]
+
+
+def test_ancestor_tty_survives_ps_failing(claude_home, monkeypatch):
+    import subprocess
+
+    def boom(*a, **k):
+        raise OSError("no ps")
+
+    monkeypatch.setattr(subprocess, "run", boom)
+    assert nudge._ancestor_tty(500) is None
+    _ps(monkeypatch, {})
+    assert nudge._ancestor_tty(500) is None, "a pid that is gone answers nothing"
+
+
+def test_terminal_info_is_empty_with_no_terminal_anywhere(claude_home, monkeypatch):
+    """The desktop app, an IDE without a tty: normal, not a failure."""
+    monkeypatch.setattr(nudge, "_controlling_tty", lambda: None)
+    monkeypatch.setattr(nudge, "_ancestor_tty", lambda pid: None)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    assert nudge.terminal_info() == {}
+
+
+def test_record_alive_carries_the_terminal_info(claude_home, monkeypatch):
+    monkeypatch.setattr(nudge, "terminal_info", lambda: {"tmux_pane": "%7"})
+    nudge.record_alive("proj", {"hook_event_name": "PreToolUse", "tool_name": "Bash"})
+    assert nudge.read_alive("proj")["tmux_pane"] == "%7"
+
+
+def test_touch_activity_writes_a_timestamp_should_continue_accepts(claude_home):
+    started = time.time() - 10
+    assert nudge.touch_activity("proj", now=started + 5)
+    assert nudge.should_continue(nudge.activity_path("proj"), started, started + 10) is False
+
+
+def test_touch_activity_never_raises_on_failure(claude_home, monkeypatch):
+    import builtins
+
+    def boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(builtins, "open", boom)
+    assert nudge.touch_activity("proj") is False
 
 
 def test_alive_round_trips_per_project(claude_home):
@@ -753,6 +859,73 @@ def test_an_ordinary_permission_still_goes_to_the_model(fake_ollama, claude_home
     assert fake_ollama.urls, "only question dialogs skip the model"
 
 
+# ── Nor Claude Code's reminder of a request just said ──────────────────────
+#
+# Claude Code sends a permission_prompt Notification 6-7 s after a permission
+# request nobody has answered. Hobson said both, the second phrased by the
+# model from "waiting for your approval" alone: 48 of 93 never mentioned a
+# wait, 14 claimed a failure ("I deleted files without permission").
+
+_ECHO = {"hook_event_name": "Notification", "notification_type": "permission_prompt",
+         "message": "Claude needs your permission to use Bash", "session_id": "s1"}
+
+
+def _waiting_phrases():
+    import bark_templates
+    return set(bark_templates.NOTIFICATION_TEMPLATES)
+
+
+def test_the_reminder_of_a_question_just_said_is_not_said(fake_ollama, claude_home, monkeypatch):
+    spoken = []
+    eng = _realtime("pocket-tts", monkeypatch, spoken, events=["permission", "notification"])
+    eng.run({**_ASK, "session_id": "s1"})
+    eng.run(dict(_ECHO))
+    assert len(spoken) == 1 and spoken[0] in _question_phrases()
+    assert fake_ollama.urls == []
+
+
+def test_the_reminder_of_a_model_phrased_request_is_not_said(fake_ollama, claude_home, monkeypatch):
+    spoken = []
+    eng = _realtime("pocket-tts", monkeypatch, spoken, events=["permission", "notification"])
+    fake_ollama.chat("question | I need approval to run the build.")
+    eng.run({"hook_event_name": "PermissionRequest", "tool_name": "Bash",
+             "tool_input": {"command": "make"}, "session_id": "s1"})
+    calls = len(fake_ollama.urls)
+    eng.run(dict(_ECHO))
+    assert spoken == ["I need approval to run the build."]
+    assert len(fake_ollama.urls) == calls, "the reminder never goes to the model"
+
+
+def test_a_reminder_with_nothing_said_before_is_a_template(fake_ollama, claude_home, monkeypatch):
+    # The request was not said -- permission events off here; muted, held
+    # back, or a model SKIP elsewhere -- so the reminder is all you hear.
+    spoken = []
+    eng = _realtime("pocket-tts", monkeypatch, spoken, events=["notification"])
+    eng.run({**_ASK, "session_id": "s1"})
+    eng.run(dict(_ECHO))
+    assert len(spoken) == 1 and spoken[0] in _waiting_phrases()
+    assert fake_ollama.urls == []
+
+
+def test_a_reminder_for_another_session_is_said(fake_ollama, claude_home, monkeypatch):
+    spoken = []
+    eng = _realtime("pocket-tts", monkeypatch, spoken, events=["permission", "notification"])
+    eng.run({**_ASK, "session_id": "s1"})
+    eng.run({**_ECHO, "session_id": "s2"})
+    assert len(spoken) == 2 and spoken[1] in _waiting_phrases()
+
+
+def test_a_static_engine_skips_the_reminder_too(claude_home, no_audio):
+    from engines.say import SayEngine
+    eng = SayEngine({"engine": "say", "personality": "hobson",
+                     "events": ["permission", "notification"], "nudge": {"enabled": False}})
+    eng.run({**_ASK, "session_id": "s1"})
+    eng.run(dict(_ECHO))
+    spoken = " ".join(map(str, no_audio["say"]))
+    assert any(p in spoken for p in _question_phrases())
+    assert not any(p in spoken for p in _waiting_phrases())
+
+
 # ── Nor the one-off "waiting" line, after a finished turn ─────────────────
 #
 # With nudges gated, each finished turn you walked away from still got two
@@ -795,3 +968,74 @@ def test_a_background_agent_waiting_is_announced_even_after_a_finished_turn(
     _realtime("pocket-tts", monkeypatch, spoken).run(
         {"hook_event_name": "Notification", "notification_type": "agent_needs_input"})
     assert len(spoken) == 1
+
+
+def test_alive_record_outside_tmux_does_not_depend_on_the_runners_terminal(claude_home, monkeypatch):
+    monkeypatch.delenv("TMUX", raising=False)
+    monkeypatch.delenv("TMUX_PANE", raising=False)
+    monkeypatch.setattr(nudge, "_controlling_tty", lambda: None)
+    nudge.record_alive("proj", {"hook_event_name": "PreToolUse", "tool_name": "Bash"})
+    assert nudge.read_alive("proj")["tool"] == "Bash"
+    assert "tty" not in nudge.read_alive("proj")
+
+
+def test_a_nudge_outlasts_a_probe_that_holds_its_lock(claude_home):
+    import threading
+    path = nudge.lock_path("nudge", "webapp")
+
+    def probe():
+        with open(path, "a+") as fd:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            time.sleep(0.2)
+
+    holder = threading.Thread(target=probe)
+    holder.start()
+    time.sleep(0.05)
+    with open(path, "a+") as fd:
+        assert nudge._take(fd) is True
+    holder.join()
+
+
+def test_a_nudge_still_gives_way_to_a_real_one(claude_home):
+    with open(nudge.lock_path("nudge", "webapp"), "a+") as first:
+        fcntl.flock(first, fcntl.LOCK_EX)
+        with open(nudge.lock_path("nudge", "webapp"), "a+") as second:
+            assert nudge._take(second, wait=0.1) is False
+
+
+def _run_one_nudge(monkeypatch):
+    lines = []
+    monkeypatch.setattr(nudge.log_record, "write", lines.append)
+    monkeypatch.setattr(nudge.home, "load_config", lambda: {"nudge": {"delays": [0.01]}})
+    monkeypatch.setattr(nudge, "should_continue", lambda *a: False)
+    nudge._run("webapp", "a question")
+    return lines
+
+
+def test_a_nudge_run_meets_a_probe_holding_its_lock(claude_home, monkeypatch):
+    import threading
+    path = nudge.lock_path("nudge", "webapp")
+    held = threading.Event()
+
+    def probe():
+        with open(path, "a+") as fd:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            held.set()
+            time.sleep(0.3)
+
+    holder = threading.Thread(target=probe)
+    holder.start()
+    held.wait()
+    lines = _run_one_nudge(monkeypatch)
+    holder.join()
+    assert any("started" in line for line in lines)
+    assert not any("skipped" in line for line in lines)
+
+
+def test_a_finished_nudge_leaves_its_lock_file_for_the_next(claude_home, monkeypatch):
+    _run_one_nudge(monkeypatch)
+    path = nudge.lock_path("nudge", "webapp")
+    assert os.path.exists(path)
+    with open(path, "a+") as waiter:
+        assert nudge._take(waiter) is True
+        assert nudge.running("nudge", "webapp") is True

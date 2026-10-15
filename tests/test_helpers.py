@@ -1,5 +1,6 @@
 """Pure helpers: tts_normalize, derive_project_label, format_tool_name, extract_context."""
 
+import announcement
 import engines.base as base
 import home
 
@@ -94,16 +95,16 @@ def test_derive_project_label_caches(monkeypatch):
 # ── format_tool_name ───────────────────────────────────────────────────────
 
 def test_format_tool_name_empty():
-    assert base.format_tool_name("") == "something important"
+    assert announcement.format_tool_name("") == "something important"
 
 
 def test_format_tool_name_strips_mcp():
-    assert base.format_tool_name("mcp__claude_ai_Slack__slack_send_message") == \
+    assert announcement.format_tool_name("mcp__claude_ai_Slack__slack_send_message") == \
         "slack_send_message"
 
 
 def test_format_tool_name_truncates():
-    assert len(base.format_tool_name("x" * 200)) == 80
+    assert len(announcement.format_tool_name("x" * 200)) == 80
 
 
 # ── extract_context ────────────────────────────────────────────────────────

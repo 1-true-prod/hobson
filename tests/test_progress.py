@@ -85,7 +85,7 @@ def test_repetition_does_not_force_a_flush_in_normal_mode(
     from engines.say import SayEngine
     from home import derive_project_label
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("broken", "That test keeps failing."))
+                        lambda *a, **k: phrase_gen.Generation("broken", "That test keeps failing."))
     eng = SayEngine({
         "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "normal", "cooldown": 0,
@@ -132,7 +132,7 @@ def test_anomaly_mode_stays_silent_on_routine_work(claude_home, no_audio, monkey
     import phrase_gen
     from engines.say import SayEngine
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did a thing."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did a thing."))
     eng = SayEngine({
         "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["edit"], "verbosity": "anomaly", "cooldown": 0},
@@ -150,7 +150,7 @@ def test_a_repeat_anomaly_is_also_announced_only_once(claude_home, no_audio, mon
     import phrase_gen
     from engines.say import SayEngine
     monkeypatch.setattr(phrase_gen, "generate_or_skip",
-                        lambda *a, **k: ("done", "I did a thing."))
+                        lambda *a, **k: phrase_gen.Generation("done", "I did a thing."))
     eng = SayEngine({
         "engine": "say", "personality": "hobson", "events": ["commentary"],
         "commentary": {"tools": ["bash"], "verbosity": "anomaly", "cooldown": 0},

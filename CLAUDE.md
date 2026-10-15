@@ -23,30 +23,38 @@ hobson.py (entrypoint, reads stdin JSON from Claude Code hooks)
     -> load_config() from ~/.claude/hobson.json
     -> _is_event_enabled() check against config "events" list
     -> load_engine() via dynamic import
-    -> engine.run(hook_input)
-        -> PermissionRequest: pick_permission(tool_name)
-        -> Notification: pick_notification()
+    -> engine.run(hook_input)            (BaseEngine.run, the one dispatcher)
+        -> PermissionRequest / Notification: BaseEngine._handle_attention() --
+           fixed-meaning events from templates (_fixed_announcement), else
+           _event_phrase(): pick_permission(tool_name) / pick_notification()
         -> Stop: BaseEngine._handle_stop() -- stop_outcome.read(), then classify() via
            Ollama (configurable model) -> StopReading.settle() -> pick(done/broken/question)
-    -> engine.try_bark(phrase)
-        -> cached audio? afplay : macOS say + background backfill
+        -> then, for a Stop: BaseEngine._handle_plugin_notes() -- plugin_notes.claim(), the
+           first note summarised and spoken as kind "note" (see Plugin notes)
+    -> engine.speak(phrase, kind)          (BaseEngine.speak, every engine's)
+        -> clip(): cached audio? : macOS say + background backfill -> play()
 ```
 
 **Daemon engines** (kokoro-realtime, pocket-tts) generate phrases live via Ollama + daemon TTS:
 ```
-hobson.py -> DaemonEngine.run(hook_input)
+hobson.py -> BaseEngine.run(hook_input)    (the same dispatcher)
     -> _is_event_enabled() check against config "events" list
     -> Stop: BaseEngine._handle_stop() -- stop_outcome.read(), then
        phrase_gen.generate_or_skip("Stop", reading.context, stop=reading)
-    -> PermissionRequest / Notification: phrase_gen.generate_or_skip(event, detail)
+    -> then, for a Stop: BaseEngine._handle_plugin_notes() -- plugin_notes.claim(), the
+       first note summarised (local model) and spoken as kind "note" (see Plugin notes)
+    -> PermissionRequest / Notification: _handle_attention() -> _event_phrase():
+       phrase_gen.generate_or_skip(event, detail)
        via Ollama (configurable model) -- one call decides and phrases; detail from
        _describe_event(). Except fixed-meaning events, spoken from templates
        and never the model (_fixed_announcement): a waiting-on-you Notification
        (idle_prompt / agent_needs_input), a question dialog (AskUserQuestion /
-       ExitPlanMode arrive as PermissionRequest), and a destructive permission request
+       ExitPlanMode arrive as PermissionRequest), a destructive permission request,
+       and Claude Code's permission_prompt reminder (said nothing for when the
+       request was said for that session in the last 20s)
     -> PreToolUse: BaseEngine._handle_commentary() (batched; see below)
-    -> _speak_live(phrase)
-        -> daemon generate -> afplay : macOS say fallback
+    -> engine.speak(phrase, kind)
+        -> clip(): daemon generate : macOS say fallback -> play()
 ```
 
 The two are one engine, `DaemonEngine` in `engines/daemon.py`. Each backend is a `DaemonSpec`
@@ -91,7 +99,7 @@ It differs from kokoro in three ways worth knowing:
   full scale and is otherwise near-inaudible at normal system volume.
 - **The daemon self-terminates** after `pocket_tts.daemon_idle_timeout` seconds (default **600**).
   A cold model load is heavier than Kokoro's, so engine-side startup allows up to 20s. The 600s
-  figure is measured, not guessed: commentary passes `allow_cold_start=False` (it will not block a
+  figure is measured, not guessed: commentary speaks without `cold_start` (it will not block a
   hook for a 20s model load), so every utterance arriving after the daemon has idled out goes out
   via macOS `say` instead. At the old 180s default, 5.1% of real barks fell back that way; the
   gap distribution puts 600s at ~1.1%, which is where the curve flattens. The daemon engine takes
@@ -106,6 +114,21 @@ falls back to macOS `say`, silently and permanently — which is why the wizard 
 NOT INSTALLED (`engine_ready`: for pocket-tts, the venv *and* the weights in the Hugging Face
 cache) and installs it on COMMIT.
 
+**Pocket TTS 3.x** (checked 2026-10-06 on 3.3.0). `requirements-pocket-tts.txt` pins `pocket-tts==3.3.0`
+(the version, not a hash; its dependencies still float), so a fresh install gets the release that was
+checked, and a bump is a deliberate step after checking PyPI's attestation for it. The daemon touches only `TTSModel.load_model`,
+`get_state_for_audio_prompt`, `generate_audio`, `sample_rate` and the voice table above, and all of
+them still work as it uses them. `language: english` now means `english_2026-09`; the dated
+`english_2026-04` and `english_2026-01` can still be named. The weights the wizard fetches
+(`pocket-tts-without-voice-cloning`, the folder `engine_ready` looks for) cannot clone from an audio
+clip, on 2.1 or on 3.3 (`has_voice_cloning` is False); cloning needs the gated `kyutai/pocket-tts`
+repo and a Hugging Face login. A custom voice therefore arrives as a path to a precomputed
+`.safetensors` voice state, which is a snapshot taken through one model. One such state, made on
+2.x, was rendered through `english_2026-04` and `english_2026-09`: the long-term spectrum differed
+by 2.4–2.8 dB where two renders of the same model differ by 1.9–2.1 dB, and median pitch stayed
+within the noise between renders. Close, but not identical, so pin
+`pocket_tts.language` to a dated model when a voice has to stay as it was made.
+
 **What the model is given** (`stop_outcome.py`, `session_state.build_session_context`): the event line and
 a session block. A **Stop's** event line is `Earlier: … | …` (up to three prior turns, 200 characters
 each) then `Last message: …` (500), from `last_transcript_context`: shown as four equal turns, the
@@ -119,9 +142,29 @@ hook's own `transcript_path`, never `find_transcript`'s any-project fallback). `
 is 2048: at 1024 a long Stop already overflowed, and Ollama drops the earliest message first — the
 rules. `_chat` logs `prompt at the context limit` when a prompt reaches the edge.
 
+**The last message comes from the hook, not the transcript.** Claude Code writes the transcript
+asynchronously, and at Stop time it usually does not yet hold the turn's final message. Read from the
+transcript alone, 339 of 470 matched Stops since 2026-10-01 (72%; 77 more unmatched) were classified
+and phrased on the message *before* the last one, and 86 final questions started no nudge.
+`stop_outcome.read` therefore appends the hook input's `last_assistant_message` as the final turn
+whenever the transcript does not already end with it, read through `_prose` like any turn. The field
+was checked live on Claude Code 2.1.299: present and complete at 2,620 and 12,354 characters. Every
+Stop number in this file from before this change (the held-out figures below included) was measured on
+complete transcripts, so it describes the classifier on the right input, not what the live hook saw.
+
+**The model is not shown what was said before.** The session block used to list the last six spoken
+phrases ("Recent:"), of any age; 93% were over two minutes old, and llama3.2:3b reused them: 67% of
+off-batch commentary took two or more content stems from one (2% for a Recent block from an hour away),
+and paired replays of real Stops carried a stale phrase 33 times with the block and never without,
+with no category changed. The block now says only "No announcements yet this session." when nothing was
+said. `recent_voiced` is still kept, for the duplicate guards and the decider, which read it. The rule
+"Do not repeat or reword anything under Recent" and the few-shot examples' Recent lines were left as
+they were, because the replays measured that prompt. The measurement (one arena over the harness-design
+paper) is in `research/2026-10-14-harness-arena/`, which is untracked.
+
 **Do not give commentary the Task line.** Replayed on 80 real commentary batches and blind-judged, the
 old prompt beat it 36–25: the model spoke the request as the action ("I'm opening a report for you").
-Commentary, permission and notification prompts are byte-identical to before the Stop work.
+Commentary, permission and notification prompts were byte-identical to before the Stop work until the Recent block was removed from all of them (above).
 
 **A Stop's category is not the model's alone** — the model called 45 of 46 question-ending Stops
 "done", and 26 "broken" against 2 real ones, and a non-"done" Stop starts a nudge. `stop_outcome.read()`
@@ -139,8 +182,15 @@ phrase sources (`classify` on the static engines, `generate_or_skip(stop=…)` o
 - A SKIP after a clear check (`awaiting_answer=False`) is "done"; a failed call stays unknown.
 - Stops run at `STOP_TEMPERATURE` 0.3 (commentary stays at 0.7, for variety past the dedup guard).
   Because a low temperature repeats itself, a Stop's second attempt is shown its first reply and why
-  it was rejected (`_retry_turn`) — including a reply over `MAX_WORDS`, which used to go silent
-  with no retry at all.
+  it was rejected (`_retry_turn`): a reply over `MAX_WORDS`, which used to go silent with no retry
+  at all, or a `doubts()` "broken".
+- **A Stop is never rejected as a near-duplicate.** It is the turn-ended signal, news in the same
+  words. The retry a rejection used to buy ("Not that: … Say something else.") left a 3B model with
+  nothing else true to say, and it made things up: replayed on 19 real near-duplicate Stops with the
+  complete last message, it turned 8 "broken" ("I failed to fetch the ticket's Scope."), where
+  accepting the duplicate turned none (bad outcomes 10–0, exact McNemar p=.002; n=19, one seed,
+  agent-labelled). `settle()` relabelled the category, but the invented failure was still spoken.
+  The rejection also caused 11 of the 40 silent Stops from 09-27 to 10-14.
 
 Measured on hand-labelled real Stops — 101 tuned on, 100 **held out** (labels by an agent that saw no
 model output; the replay harness is not in the repo). Held out: category right 57% → 77%, wrongful
@@ -157,7 +207,7 @@ five minutes, while the runs were still going), which buried the one real finish
 message says it is waiting on its own runs, reviewers, build or workers ("Compile running.", "Once it
 lands I'll…", "Heartbeats only. Waiter alive. Nothing to act on.") and nothing is asked of the
 developer, the Stop is logged as `[Stop] still working`, spoken by nobody, and recorded as
-`last_stop_category = "working"` — which `_idle_after_finished_turn` treats like `done`, so the idle
+`last_stop_category = "working"` — which `session_status.idle_after_settled_turn` treats like `done`, so the idle
 prompt after it nudges nobody either. What counts as running is deliberately narrow: an emulator or a
 watcher is "still running" long after the agent stopped waiting on it, "waiting for review" is other
 people, and Plannotator, "let me know when it finishes" or "holding on your nod" is a wait on you
@@ -172,9 +222,28 @@ them first"). 11% of all Stops are flagged. A structural check — background ag
 was measured too and dropped: it added precision only by losing most of the recall, and it cannot see
 workers run outside Claude Code.
 
-**Engine subclass pattern**: `BaseEngine` in `engines/base.py` handles all shared logic (event filtering, lock/cooldown, template selection with cache-preference, commentary, playback); config and paths come from `home.py`, and every log line goes through `log_record.py`. Static subclasses set `templates_module`, `cache_dir`, `cache_ext` and implement `backfill(text)`. Every engine's Stop is `BaseEngine._handle_stop()`; only its phrase source differs (`_stop_phrase` / `_speak_stop`: templates for the static engines, the model for `DaemonEngine`). `DaemonEngine` overrides `run()` for PermissionRequest and Notification.
+**Engine subclass pattern**: `BaseEngine` in `engines/base.py` handles all shared logic (event filtering, the one dispatcher, fixed announcements, commentary, the Stop pipeline, speaking); config and paths come from `home.py`, and every log line goes through `log_record.py`. What an engine supplies is narrow: its phrase sources (`_stop_phrase`, `_event_phrase`: templates for the static engines, the model for `DaemonEngine`) and how a phrase becomes audio (`clip()`, `render()`, `warm()`). Static subclasses set `templates_module`, `cache_dir`, `cache_ext` and implement `backfill(text)`. Before the dispatcher was one, the static engines' own `run()` never marked the session alive, never recorded what it said, and did not rotate the fixed lines; `tests/test_speak_contract.py` drives every family through the same events and reads what was said from the log.
 
-**Event filtering**: The top-level `events` config key controls which hook events trigger voice. `BaseEngine._is_event_enabled()` maps hook event names to config keys (`Stop`->`stop`, `PermissionRequest`->`permission`, `Notification`->`notification`, `PreToolUse`->`commentary`). All engine `run()` methods call this at the top. `UserPromptSubmit` has no `events` key — it is intercepted in `hobson.py` and never reaches an engine.
+**Kinds** (`scripts/kinds.py`): every phrase has a kind (`waiting`, `broken`, `stalled`, `done`,
+`info`, `commentary`, `nudge`, `briefing`, `answer`, `thinking`), and `KINDS` declares once what
+each means to everyone who decides on it: the briefing's urgency, never held, said in passing
+(dropped rather than held or queued, no look, off the face), waits on you (the face holds it),
+offers the face's buttons, Hobson's own talk (recap), names the project. `stop_kind` and
+`event_kind` are where hook events get theirs. A speaking path must name one (`kinds.require`):
+`hobson recap` spoke with none, which counted as news, so it was held while you were away and
+retold by the next recap as work. `face.js` keeps its own `MOODS`/`ACTION_KINDS` for drawing;
+`tests/test_kinds.py` holds them to the table.
+
+**Session status** (`scripts/session_status.py`): who is waiting on you, what failed, what is
+working or finished, across every session. The facts are written in four places (session state,
+`nudge.record_alive`, `nudge.touch_activity`, a running nudge's lock) and read only here:
+`waiting_on_you`, `reading` (Ask Hobson), `idle_after_settled_turn` (a `done` or `working` Stop
+leaves nothing waiting), `nudge_type`, `is_question_dialog`, and `WAITING_NOTIFICATIONS`, which is
+`nudge.WAITING_TYPES` plus `permission_prompt` (a wait that starts no nudge). Every session file is
+read through `session_state.load_all`, never raw. nudge.py stays the writer, importing none of
+this: the UserPromptSubmit path must stay cheap.
+
+**Event filtering**: The top-level `events` config key controls which hook events trigger voice. `BaseEngine._is_event_enabled()` maps hook event names to config keys (`Stop`->`stop`, `PermissionRequest`->`permission`, `Notification`->`notification`, `PreToolUse`->`commentary`). All engine `run()` methods call this at the top. `UserPromptSubmit` has no `events` key — it is intercepted in `hobson.py` and never reaches an engine. The map is `home.EVENT_KEYS`, read through `home.event_enabled`, because the silenced hook gates on it too and imports no engine.
 
 **Commentary abstraction**: PreToolUse handling lives in `BaseEngine._handle_commentary()` and is shared by all engines. Three verbosity modes (`commentary.verbosity`):
 - `terse` — LLM-gated with SKIP-heavy bias; only voice notable events
@@ -188,9 +257,9 @@ workers run outside Claude Code.
 With `decider.backend` `"jev"`, `terse` and `normal` stop differing: whether a released batch is
 spoken is the decider's call (see Batching), and Ollama only phrases it.
 
-The seam engines override for everything spoken outside a Stop is `speak_dynamic(phrase, allow_cold_start)`. Static engines (`say`, `chatterbox`) inherit the default (macOS `say` with bark-lock gating); the daemon engines override it to route through their daemon. This means commentary works on every engine without duplicating the gating logic.
+**Speaking** is one method, `BaseEngine.speak(phrase, kind, cold_start=False)`, for everything Hobson says, from a hook or not (nudge, presence, ask, recap and coach call it too): the audience (`_for_audience`, which refuses a phrase without a kind), the busy voice for commentary, the bark lock and its cooldown (`_claim_bark_lock`), then the engine's `clip()` and `play()` (afplay, the voice lock, the face), and one playback log line. It returns False only when presence held or dropped the phrase. `cold_start` is for a phrase that may wait for a cold daemon and is never dropped by the cooldown: a Stop, and anything said because you asked or something waits; without it a phrase is skipped while another hook holds the bark lock or spoke within `cooldown` seconds, and `warm()` starts a down daemon for next time. It replaced three hand-rolled copies (`try_bark`, `speak_dynamic`, the daemon's `_speak_live`), each with its own cooldown. On the static engines `clip()` reads the template cache for every phrase (the destructive warning and the fixed waiting lines play from it on chatterbox), and backfills a miss unless the kind is said in passing or Hobson's own talk.
 
-**One voice at a time** (`scripts/voice.py`): every clip leaves through `BaseEngine._play`, which
+**One voice at a time** (`scripts/voice.py`): every clip leaves through `BaseEngine.play`, which
 first waits its turn on `~/.claude/hobson-voice.lock` and hands the locked descriptor to the player
 (`pass_fds`). A flock belongs to the open file, not the process, so the lock is held for exactly as
 long as afplay plays, although the hook that started it has exited. The next clip, from any
@@ -202,8 +271,8 @@ minute, with the other sessions' announcements on top. Commentary does not queue
 while anything plays (`_voice_busy_for`), stale by the time its turn would come. A daemon engine
 writes each phrase to its own WAV (`mkstemp`, played with cleanup): the one fixed file was
 rewritten by the next phrase while the last still played, and a phrase waiting for its turn would
-have played its successor. The static engines' `try_bark` waits for its turn holding the bark
-lock, so a second static bark in that time is dropped, as it was before when locked.
+have played its successor. The bark lock is let go before a clip waits for its turn, on every
+engine, so a phrase past the cooldown queues behind the one playing rather than being dropped.
 
 **hobson say** (`scripts/read_aloud.py`): reads text aloud on demand, from arguments, `-f FILE`
 or standard input. The text is cut into passages (paragraphs; a long one at sentence ends, at most
@@ -218,6 +287,47 @@ it within a quarter of a second (`silence_reason` is polled while a passage play
 SIGTERM and SIGHUP; the passage playing is stopped and every clip removed however it ends. `hobson
 test "TEXT"` is the same path. Log lines are `[read] …` plus one `barked (read-aloud) [answer]` per
 passage, and recap reads both as Hobson's own talk.
+
+**hobson coach** (`scripts/coach.py`): a script of spoken steps run on Hobson's own clock, for a
+guided session an agent cannot pace itself: its harness blocks `sleep`, and a turn through the
+agent takes far longer than "hold for two seconds". Chained `hobson say` calls had no pauses but
+the time each line took to say. One step a line, from `-f FILE` or standard input: `say TEXT`,
+`wait SECONDS`, `countdown N` (N to one, a second apart, at most 10; the next step starts a
+second after "one") and `ready [SECONDS]` (any key, click or mouse movement after it begins, else
+the time, 60s by default). The whole script is parsed before anything is said, and every clip is
+rendered before the clock starts: a countdown rendered as it went would stretch by Pocket TTS's
+seconds a line. Standard output is NDJSON written as it happens -- `start`, a `step` as each ends
+(seconds from the start; `ready` adds `by: input|timeout` and `after`), one `end` -- so a run
+killed at the harness's 10-minute limit still leaves what it did. It only reports: what to do with
+an answer is the agent's call.
+
+- **Clips are cut to their speech** (`_trim`, `speech_span`; WAV only, float32 or 16-bit). A
+  Pocket TTS clip of one number measured 0.9-1.8s, opening with a 10 ms click at -42 dB and then
+  -66 dB until the word, which came anywhere from 0 to 1.3s in. Played as rendered, each number
+  landed late by a different amount, and a clip outlasting its beat held the voice lock and pushed
+  the next number back. Trimmed (speech = 35 dB under the peak for 30 ms running, so the click
+  does not count; 20 ms kept before, 120 ms after): 0.28-0.77s over 15 renders, the word within
+  the first 0.09s. A number still sounding at the next beat is stopped all the same, so no engine
+  can make a beat slip. `say`'s AIFF is left as it is (0.44-0.55s a number). Checked without a
+  speaker (scratch HOME, `say`, a stand-in afplay logging start times): the numbers started 1.03s
+  and 0.97s apart. Not yet heard on Pocket TTS.
+
+- **Input** for `ready` is `CGEventSourceSecondsSinceLastEventType`, read through ctypes: the
+  counter the presence helper reads, no permission, no helper (presence may be paused). It says
+  *that* something was pressed, not what; telling keys apart would need Input Monitoring. A key
+  goes to whichever window has focus, Claude Code's prompt included, so a click or a clicker is
+  the safe signal.
+- **Everything else waits.** A run holds `hobson-reading.lock` (a `hobson say` elsewhere waits for
+  it) and `hobson-coaching.lock` (`voice.coaching`). While that is held, `presence.audience` is
+  `coaching` before it reads the sensor -- presence on, off or paused -- so every other session's
+  announcement is held on the salver, commentary is dropped, a nudge pauses
+  (`pauses_nudge`), and a transition or a wave says nothing. When the run ends, however it ends,
+  `coach.brief` tells what was held ("In the meantime: …"), unless Hobson was silenced, when it
+  stays on the salver.
+- **Stops** like a reading: `hobson off`, quiet hours, Ctrl-C, SIGTERM, SIGHUP; the clip playing is
+  stopped and every clip removed. A run waits at most 60s for a reading already going
+  (`READING_WAIT`). Exit 0 done, 2 a bad script (nothing said), 130 interrupted, else 1. Log lines
+  are `[coach] …` plus `barked (coach) [answer]` per clip, both Hobson's own talk to recap.
 
 **Batching (the attention gate)**: terse/normal commentary does *not* speak per tool call.
 `_handle_commentary_llm()` appends every call to a per-project pending queue and flushes — one
@@ -270,11 +380,91 @@ that was genuinely a loop, and all 56 episodes it had announced ended with the a
 its own. It was removed (c21f0b5). The replay, `scripts/stuck_replay.py`, is in history at
 433abef if the question is reopened — do not bring the detector back without re-running it.
 
+**The session you are looking at gets more** (`presence.watched`, the `focus` config section). The
+user's call, and the opposite of the field: Claude Code, Codex, Cursor and peon-ping go quiet about
+the session in view; Hobson narrates it, in very short updates, often. Every other session is as
+before. A session is watched when presence says `present`, the helper's record names a
+`frontmost` app (its bundle *path*, `/Applications/Ghostty.app`, because that is what
+`terminal_jump._owning_app` reads off `ps`; a bundle id would never compare equal), and that app
+owns the terminal: in tmux, this hook's own `$TMUX_PANE` must be the current pane of the tmux client
+you are looking at: the one flagged `focused` in `#{client_flags}` (tmux's focus events), else the
+one used most recently (`terminal_jump.active_tmux_client`, one `tmux list-clients`); outside tmux, the
+tty in the liveness record (app level only: Ghostty does not expose its tabs' ttys). A helper
+built before this publishes no `frontmost`, so nothing is watched until `scripts/build-presence.sh`
+has run and the running helper is stopped (`hobson presence stop`; the next hook starts the new
+one). `ensure_running` does not restart it for the missing key on purpose: an old binary restarted
+still lacks it, and would be killed and respawned every 15s with its camera. The fallback, tmux's `client_activity`, counts typing, not
+focus, and across all clients: with focus events off, a tmux client in another app typed into a
+moment ago wins over the Ghostty one you are only reading, and the pane you look at reads as
+unwatched until you type there. Ties between clients fall to the tty's name. With the `focused`
+flag, clicking to another window moves the watch without a keystroke. The decision is
+the pure `presence.watching`. Unknown, away, a call, company, presence off, paused or face-only, a
+stale record, any failure: not watched, which is today's behaviour. No new permission is asked for.
+For the watched session, terse/normal commentary only (chatty and anomaly are untouched):
+
+- The gate opens at `focus.min_tool_calls` (2) or `focus.min_seconds` (15) instead of 5 or 60, and
+  the log says `[PreToolUse] flush (watched)`, which `hobson stats` counts as "watched session".
+- Its cooldown is `focus.cooldown` (4s), measured from its own last flush and from one timestamp
+  that only watched flushes read and write (`hobson-focus.lock`, so several watched sessions, which
+  happens outside tmux where every session in the front app counts, share one 4s pace). It neither
+  reads nor writes the shared commentary timestamp. Reading it, a watched session beside a busy
+  unwatched one flushed about every 9s in batches of 6 instead of every 4s in batches of 3; writing
+  it, it kept every other session short of its 8s window until its batch went stale. Tests hold
+  both. The cost: an unwatched session can speak about 2s after a watched phrase where it used to
+  wait 8s, and a watched session speaking often makes an unwatched batch more likely to be dropped
+  at `_voice_busy_for` after its model call has been made.
+  The shared pace is first come, first served. Two sessions are watched at once only outside
+  tmux, where `presence.watched` asks whether the app owning the session's tty is the frontmost one
+  and every session in that app (two Ghostty tabs) passes; in tmux only the pane that is current
+  in the client you used last is. A quiet watched session beside a busy one loses its turns: in a
+  seeded replay (600s, Poisson arrivals, 5 seeds a case, the real flock and session state, a fake
+  clock), one at 0.2 calls/s flushed 47-56 times alone, 16-24 beside a watched one at 1 call/s
+  (longest silence 78-133s, 9-25% of its calls lost) and 8-14 beside one at 2 calls/s (105-233s,
+  28-54% lost); beside one at 0.3 or 0.1 calls/s it lost 0-2%. Every loss is the `MAX_PENDING`
+  8-call cap trimming the deferred queue, none is staleness. Kept as it is, and
+  the number to know if two busy tabs of one terminal ever feel short of commentary.
+- No worth call to the decider: a batch you are looking at is worth hearing, and the question is
+  about a user "not watching the screen". The duplicate guard's decider calls (rescue and
+  restatement) still run, so with `jev` the more frequent watched flushes cost about one call each,
+  as before ($0.000017 a call in the log). On 2,387 real P(worth) values in the log, today's bar
+  (0.4) passes 18.6%; +0.2 chattiness would pass 30.9%, still holding back two thirds; skipping
+  passes all. The logged values carry their batch size (1: 946, 2: 250, 3: 238, 4: 224, 5: 688, 6-8: 41),
+  and 2-call batches pass today's bar 27.2% of the time against 16.4% for 5-call ones. The
+  phrase comes from the `decided` prompt, which has no SKIP.
+- The budget is `focus.min_words`-`focus.max_words` (2-6), passed to the prompt and the length
+  check (`phrase_gen.generate_or_skip(words=…)`), and restated after the event. Stated among the
+  rules alone, llama3.2:3b kept writing 7-11 words, and on 100 real batch summaries ×2, 67-76% (72% over both replays) failed
+  the length check; restated, 92% passed the length and batch guards at 4.3 words on average, with no recent
+  phrases to repeat (the 4-12 prompt, unchanged: 83% at 7.9). The off-batch guard took 7% of the
+  short ones against 4%: short phrases share fewer words with the batch, not many fewer. Replayed
+  in order, one project's 100 summaries 15s apart with each spoken phrase carried forward and the
+  decider local, the near-duplicate guard took 2 of 100 at 2-6 (84 spoken) and 4 at 4-12 (81 spoken) in the run
+  saved in the trail (`dup_replay_r1.txt`); earlier unsaved runs gave 1-3 and 2-3, and 89 spoken
+  with 3 rejected at 2-6, 82 with 0 at 4-12. The rate moves between runs and is a few percent
+  either way. On a synthetic repeating cycle it rejects 6 of 14 short phrases, not measured on
+  real use: an open question for the listening test.
+- Stops, waits, permission requests, presence routing and the busy voice are unchanged: commentary
+  is still dropped while a clip plays or you are away.
+
+The check costs the PreToolUse hook nothing until the record says present with an app in front,
+then one `tmux` call (a pane that is not current stops there), then the `ps` walk. Measured
+queue-only from the hook, 20 runs each, on a noisy machine, median: about 90 ms before (alternated
+with the branch), about 90-110 ms with a frontmost app (medians of 101.0 and 91.5 ms for the watched pane, 109.7 and 101.9 ms for another one). The
+real frontmost app was Chrome, so the app in front was emulated as Ghostty in the record; the tmux
+client and the `ps` walk were real (`bench_r2.txt` in the trail). UserPromptSubmit never runs it. In tmux,
+the watched decision is per pane: each hook reads its own `$TMUX_PANE`. The pending queue and
+`last_flush_time` are per project, the cwd's label, so two panes in one cwd share a queue, and the
+watched one flushes the other's calls. Outside
+tmux the tty comes from the project's liveness record, last writer wins. `focus` is a
+top-level section because `with_defaults` merges one level deep: nested under `commentary`, setting
+one key would drop the others' defaults. The numbers are a first guess, to be tuned by ear.
+
 **Session state** (`scripts/session_state.py`): per-project rolling memory keyed by project label
 (ties to worktree/cwd, survives session restarts) at `~/.claude/hobson-sessions/<hash>.json`.
-Holds the pending queue, the fingerprint ring (anomaly mode only), recently-voiced phrases (for dedup and prompt
-continuity), `last_event_time`, `last_stop_time` and `last_stop_category`, each with one writer
-(`mark_event`, `begin_stop`, `record_stop_category`).
+Holds the pending queue, the fingerprint ring (anomaly mode only), recently-voiced phrases (for the duplicate guards;
+no longer shown to the model), `last_event_time`, `last_stop_time` and `last_stop_category`, and the last
+permission request said and its Claude Code session (`last_wait_time`, `last_wait_session`), each with one
+writer (`mark_event`, `begin_stop`, `record_stop_category`, `record_wait_said`).
 
 Every write goes through `transaction(project)`: a per-project `flock` on `<hash>.lock`, a load, and
 one atomic save (temp file + `os.replace`); an exception inside saves nothing. Hooks overlap — they
@@ -303,7 +493,7 @@ least its own timeout. The decision is `nudge.watchdog_verdict()`, pure and test
 
 A nudge starts only when the last turn left the user as the blocker: an `idle_prompt` after a Stop
 classified `done` is neither announced nor nudged (it fires on every idle input, including after
-finished work, and the Stop already said so) — one gate, `_idle_after_finished_turn()`. Nor is one
+finished work, and the Stop already said so) — one gate, `session_status.idle_after_settled_turn()`. Nor is one
 after a Stop recorded `working`: the agent's own subagents or build will wake it.
 `last_stop_category` in session state holds the raw classification, `None` when unknown — unknown
 still nudges.
@@ -321,7 +511,7 @@ idle (`presence._look` sends SIGUSR1); `continuous` a frame a second, which alon
 and a departure within seconds. Python reads the file: missing, stale (>5s) or malformed is
 `unknown`, and **unknown behaves exactly as Hobson did before presence** — every failure lands there.
 
-Every speak seam — `try_bark`, `speak_dynamic`, `DaemonEngine._speak_live` — calls
+The one speak seam, `BaseEngine.speak`, calls
 `_for_audience(phrase, kind)` → `presence.route`, once, so no engine or event can talk past an
 empty room. `kind` is what the phrase is about (`stop_kind`/`event_kind` in `engines/base.py`):
 away or call **holds** it on the salver (`~/.claude/hobson-held.json`, global, flocked, capped,
@@ -331,9 +521,9 @@ It gates at the seam, not in `hobson.py`, on purpose: a Stop is still read and c
 you are away, because the nudge gate and the briefing need `last_stop_category`. Presence is not
 folded into `silence_reason()`: silence drops, away holds, and the log says which.
 
-On return (away/call/company → present) one briefing, most urgent first (`URGENCY`), two told and
+On return (away/call/company → present) one briefing, most urgent first (`kinds.Kind.urgency`), two told and
 the rest counted, a session's repeated waits collapsed, sessions still waiting on you named
-(`waiting_on_you`: a running nudge, an unanswered question Stop, a fresh permission request) —
+(`session_status.waiting_on_you`: a running nudge, an unanswered question Stop, a fresh permission request) —
 those only after `MIN_AWAY_FOR_WAITS`. Leaving (a lock, or the camera in continuous mode — a look
 in auto mode notices too late) says "Before you go — X is waiting on you" if something is.
 With `presence.greetings` (default on — the user asked for Hobson to *always* react to them
@@ -363,8 +553,8 @@ hidden, so with the preview it unhides itself (without taking focus) and is laun
 Changing `mode`, `phone`, `preview` or `waves` through the CLI restarts the sensor at once.
 
 The menu bar (`MenuBar`, `Controls` in `main.swift`): while the sensor runs it has an icon (an SF
-Symbol per state; `eye.slash` paused) and a menu: the state, **Show Preview**, **Presence On** and
-**Answer Waves**. Show Preview shows or hides the window in place, and closing the window unticks it. Unticking
+Symbol per state; `eye.slash` paused) and a menu: the state, the session list (below),
+**Ask Hobson**, **Show Preview**, **Presence On**, **Answer Waves** and **Show Hobson**. Show Preview shows or hides the window in place, and closing the window unticks it. Unticking
 Presence *pauses* it (`presence.paused`, `--paused`): the camera off, nothing sensed, the state
 file `"off"` (no audience, so Hobson speaks as with presence off), and the icon kept so you can
 resume. `hobson presence off` is different: nothing runs. `hobson presence on` resumes a pause
@@ -379,6 +569,34 @@ as the icon vanishing. Every exit is logged, `[presence] sensor exited (why)`. V
 preview and pausing from the menu left the same pid and no `sensor started` line. The icon
 appears for everyone with presence on (the default), which is also how the camera-capable helper
 shows itself.
+
+**The session list** is the same reading Ask Hobson speaks, kept in view. `python3
+scripts/session_status.py --json` prints `session_status.menu_json()`: `waiting`, the count, and `rows`,
+each `{project, state, text}`, waiting first, then failed, working, and the last hour's finished.
+Under the status line the menu draws one row per session ("● webapp — waiting on you (question)",
+the dot coloured by state); a row's click runs `presence.py --face-action take-there PROJECT`, the
+face's own button, and a count beside the icon is the number waiting. The menu opens on what was last
+drawn: `Controls.refreshSessions` reads on a global queue (never the main thread), on opening the
+menu, on a face signal and every 15s, and swaps the rows in when it returns, with "(updating)" on
+the header if it takes over 300ms. One read at a time (a trigger that finds one running does
+nothing, and a read is ended after 10s), so a slow Python cannot pile up. A read costs about 50 ms
+warm and 145 ms on the first run, measured with three sessions. A face-only helper has the menu too:
+`Controls` is built whatever the presence setting.
+
+The list is careful with the pointer and with the nudge. A read that returns the rows already shown
+leaves them alone (`setSessions` compares), since swapping every row moves the one being aimed at,
+and the menu reads again as it opens. Before the first read the list says "Reading sessions…", a
+first read that fails "Could not read sessions", and a later failure keeps the rows with "(last
+read failed)" on the header. A read that ignores SIGTERM is killed two seconds later: it blocks on
+the pipe, and `sessionsReading` would otherwise stay set and stop every refresh. With no count the
+status item is square (24 pt, as it was before the list); a variable length gave 32 pt, so the
+length is set to variable only while a count shows. The count's probe, `nudge.running`, takes
+each nudge lock for a moment, and a nudge that starts in that moment used to find it held and give
+up ("a nudge is already running"), the very time one starts, as a wait is announced and the face
+signals the helper; the nudge now retries its lock for a second before it concludes another runs
+(`nudge._take`). A finished nudge or watchdog leaves its lock file in place: deleting it let a waiter lock an unlinked inode, which the probe could not see, and a third nudge ran beside it. Waiting rows run most recent first, by the session's last turn or tool call, and
+a row reads "waiting on your approval" from `session_status.NEED`, the one table the spoken lines
+use as well. A session with no project name has nowhere to jump to and is not a row.
 
 Waves (continuous mode only; `WaveDetector`): 15 times a second the newest frame goes through
 Vision's hand pose, on its own queue. A wave is a raised, open hand (three fingertips above the
@@ -420,10 +638,12 @@ day, which is why "call" is a list of call apps and not "the mic is in use".
 presence lets Hobson see you, and this is the other direction. Each line he speaks appears in a
 small window, top right under the menu bar: Valet, an ASCII bust drawn in code (parted hair, wing
 collar, a glowing bow tie), saying it over a slightly spotty signal, then switching off like a CRT.
-It is a viewer, never a player: every playback goes through one seam, `BaseEngine._play` (afplay
+It is a viewer, never a player: every playback goes through one seam, `BaseEngine.play` (afplay
 first, then `face.show`, which never raises), after `_for_audience`, so a held or dropped phrase
 never shows and a face failure leaves the voice as it was. The say fallback renders its AIFF before
-playing (`_say_with_volume`, about half a second) so there is audio to follow.
+playing (`_render_say`, about half a second) so there is audio to follow. The one other way in is
+a silent line, shown while Hobson is silenced: it comes from `hobson._show_silently`, not from a
+playback, and does not pass `_for_audience` (see *Quiet controls*).
 
 - **The hand-off.** `face.show` writes `~/.claude/hobson-face.json` (mode 600: it holds the phrase)
   and sends the helper **SIGUSR2**, only when its record says `"face": true`: SIGUSR2's default
@@ -440,11 +660,44 @@ playing (`_say_with_volume`, about half a second) so there is audio to follow.
 - **What shows.** Everything spoken but commentary (`face.commentary`, off: a window every minute
   of work is noise). The kind sets the mood: waiting, nudge and a watchdog stall need you (brows
   up, a tilt); `broken` alone is red; done nods; the briefing bows. In company the company line
-  goes without the project, as the voice does.
+  goes without the project, as the voice does (never while silenced: the helper senses nothing then). While Hobson is silenced, nothing is spoken, and
+  what waits on you is shown instead (a silent line, below).
 - **How long.** A said line goes 1.5s after its audio ends (30s at most). A line that waits on you
   (waiting, nudge, with `face.hold_waiting`) stays until that session's activity token is newer
   than the line, which is to say you typed there, for at most 10 minutes. A click dismisses it; a
   drag moves it, and the corner is kept in the helper's defaults (`faceTopLeft`).
+- **Silent lines** (`face.show(..., silent=True)`, `"silent": true` in the record): shown while
+  Hobson is silenced, with no audio. The page shows the line whole at once with the mouth still,
+  as for "One moment.", in its kind's pose and chip. There is no "once said" for it to go after, so
+  it carries the activity token and stays until you type in that session, whatever its kind and
+  `face.hold_waiting`, for at most 10 minutes; a silent `broken` would stay the same way (no hook
+  path shows one today: the rules alone never read a Stop as broken). Unlike an `asked` line, it
+  respects the face being off. Its Skip / Take me there buttons are its kind's, as for any line.
+  The face has one slot: a silent line is replaced by any later line, from any session, and is
+  not brought back when that one goes.
+- **Skip / Take me there** (`scripts/terminal_jump.py`): a line that may still have a nudge running
+  against it (waiting, nudge, stalled, broken) shows two buttons, drawn by the page itself. Skip
+  touches the project's activity token (`nudge.touch_activity`) -- the same signal a typed prompt
+  gives, so a running nudge or watchdog stops at its next check and the line's own "typed" hold
+  takes it down. Take me there reads what `nudge.record_alive` last captured for that project
+  (`terminal_info`): inside tmux only `$TMUX_PANE` (stable across window/session renames, unlike a
+  name or index); outside it, the terminal's tty. A hook has no tty of its own (Claude Code starts
+  it in a session of its own, so `/dev/tty` fails: every live record lacked one, and the first
+  version raised nothing for a week), so it is the nearest ancestor's, Claude Code's, one `ps` a
+  step (`_ancestor_tty`). Then two independent best-effort steps. tmux: `select-window` /
+  `select-pane` on the pane, then `switch-client` for the client already showing that session,
+  else the one used most recently, asked of tmux at the click -- the pane's own tty is no terminal
+  window. The terminal: the app owning the client's (or the recorded) tty, found by walking up
+  from the processes on it to the first `.app` (the outermost, so an IDE's helper resolves to the
+  IDE). In iTerm2 or Terminal.app, whose AppleScript dictionaries expose a session's/tab's `tty`,
+  that tab is selected (the first use prompts for Automation permission); any other app is
+  brought forward with `open -a`, which needs none. Ghostty (1.3) scripts its terminals but not
+  their ttys, so it gets the app, not the tab. Either half failing (closed pane, no client, quit
+  app) costs only that half, logged, never an error dialog. Both buttons are DOM
+  elements in the page, not drawn by Swift: `FaceOverlay`, which otherwise eats every click so a
+  plain click dismisses and a drag moves the window from anywhere, lets a bottom strip through to
+  them (`hitTest`, `passThroughBelow`) -- sized from the page's own `{type: "size", ..., actions}`
+  message, never a guessed constant, since only the page knows its real layout.
 - **Focus.** A borderless non-activating panel that can never become key, shown with
   `unhideWithoutActivation` + `orderFrontRegardless` (the helper starts hidden under `open -j`):
   typing carries on wherever it was (verified: the frontmost app is unchanged while it shows).
@@ -457,7 +710,9 @@ playing (`_say_with_volume`, about half a second) so there is audio to follow.
   routing is unchanged) and `face_only`, and keeps `paused` as configured, since a face-only
   helper reporting a pause would be restarted by every hook. `expected()` is the one place that
   says what a helper should be running with; the argv and the restart check both come from it.
-  The helper does not exit while a line is on screen.
+  The helper does not exit while a line is on screen. Silenced (`home.silence_reason`: a mute, a
+  timed mute, quiet hours) is the other case that runs face only, a camera helper included: see
+  "Muting turns the camera off".
 - **Cost.** A WebContent process, 60-100 MB while it exists: the web view is made on the first
   line and released after 10 minutes hidden. Nothing renders while the window is hidden.
 - **Developing it.** `presence/face/index.html?mock` runs the page alone in a browser, cycling
@@ -482,7 +737,7 @@ playing (`_say_with_volume`, about half a second) so there is audio to follow.
 **Ask Hobson** (`scripts/ask.py`; the menu bar's *Ask Hobson* submenu, `hobson ask`): the one
 thing Hobson says because you asked, about every session at once. Three questions:
 
-- **What needs me?** (`status`) Read from session state, `presence.waiting_on_you` and the salver,
+- **What needs me?** (`status`) Read from `session_status.reading` (session state, liveness, activity, a running nudge) and the salver,
   **no model**: who is waiting on you, what was held for your return (told, and taken off the
   salver, as a wave's answer does), what stopped on a failure in the last 2h with nothing since,
   then what finished in the last hour and what is working (a tool call in the last 2 min after its
@@ -499,20 +754,171 @@ thing Hobson says because you asked, about every session at once. Three question
   which is true because it was said. Measured live on the real log, 3 runs × 3 projects: nothing
   invented after the change; 4 of 9 replies replaced.
 
-An answer is kind `answer`: never held (`presence.NEVER_HELD`: you are at the menu, whatever the
+An answer is kind `answer`: never held (`kinds.Kind.never_held`: you are at the menu, whatever the
 camera thinks), shown with no project in the corner. The face shows "One moment." (kind
 `thinking`: whole at once, mouth still, eyes up and aside) at once for every question, even the
 instant ones, which take 2–4s to be heard on Pocket TTS; it holds the window until the answer
 replaces it, 25s at most. Muted or in quiet hours an answer is shown and not spoken, and with the
 face off too (`asked` in the record, which the helper honours in `Controls.lineArrived` and in the
-per-tick hide). On the static engines, which drop a phrase while the bark lock is held, an answer
-waits up to 5s for it. Every step is an `[ask]` line: the question and where from, the answer with
+per-tick hide). It is spoken with `cold_start`, so the bark lock never drops it. Every step is an `[ask]` line: the question and where from, the answer with
 what it was built from and, for the recap, each call's time or failure.
+
+**Plugin notes** (`scripts/plugin_notes.py`): Claude Code's built-in plugin `cc-plugin-you-should-know`
+leaves a note for a session now and then ("Heads up: …"), and Hobson reads it aloud. The source is
+`~/.claude/plugins/store/cc-plugin-you-should-know_builtin-<hash>.json` (globbed, undocumented and
+new, so every read is defensive): `sessions` holds one entry per session, and an entry with a `view`
+(`kind: "offer"`, a one-sentence `line`, a Markdown `explanation`, `shownAt` in epoch milliseconds) is
+a note. Its `id` is the transcript's name, and the first `cwd` in that transcript gives the project.
+
+- **When.** At a Stop, after the Stop's own announcement (`BaseEngine._handle_plugin_notes`, the end of
+  `run`): a note is offered during a turn, so a Stop follows it, and it needs no new process. Spoken as
+  kind `note`, with `cold_start`: news, so presence holds it while you are away and the face shows it.
+- **Once.** `claim` takes the notes not in `~/.claude/hobson-plugin-notes.json` (`(id, shownAt)` pairs,
+  every note still in the store; only keys that have left it are pruned: past a cap the oldest were fresh
+  again at every Stop) under a flock and records them *before* anything is spoken, so two Stops at once cannot
+  both read one; a failed speak loses the note rather than repeating it. The first run (no state file)
+  records every existing note as said, so an install never reads out old ones; a store that cannot be
+  read, or is missing, does not count as a first run, so a store that appears later is its own baseline.
+  A note over 12 hours old (the salver's age) is recorded and not said: one written after its turn's Stop
+  can wait hours for the next. The same note in two store files (a plugin update leaves the old hash's)
+  is one. Several at once: the oldest is said and the rest counted ("And one more, for webapp."), and the
+  counted ones are never said.
+- **What is said** is the note's own `line`, then one model sentence on what to do about it, only if that
+  reply passes `recap._not_in_the_notes` and `_echoes_the_prompt`. The model is not asked to summarise:
+  an earlier trial had llama3.2:3b say the whole note, in a butler's voice or plainly, and none of 15 to 25
+  replies passed the check (its outputs were not kept, so that figure cannot be re-checked), and some
+  reversed a cause ("pushes to production after the review check"). Asked only for the follow-up, on five
+  synthetic notes, four tries each (n=20, one run, llama3.2:3b, `summary()` as shipped; the outputs are in
+  the trail's `summary-rerun.json`), 10 passed the check and 10 fell back to the line alone, which is
+  already the plugin's summary. An earlier run on the same notes kept 7, so expect 7 to 13 of 20. Of the
+  10 kept, 6 read as right, 1 as vague and 3 as loose or wrong ("Skip payment tests if PAY SANDBOX KEY is not set
+  initially", "Edit lock dot JSON to invalidate cache before bumping batch dependencies"). The check is about topic, not truth: it asks only that the reply's content words occur in the
+  note, so a reversed instruction ("Run the drop before the copy.") passes it. None of 54 live follow-ups
+  was reversed, which is a count of what happened, not a guarantee. The reply is never a hook's `generate_or_skip`: its budget and duplicate guards are for
+  announcements nobody asked for, and a note must not go silent.
+- **Another session's note** is filed under its own project: `speak` takes a `project`, which
+  `presence.route` (the hold and the briefing) and the face's corner use. The phrase names it once
+  ("On webapp: …") and the briefing does not name it twice. The project is the first `cwd` in the first
+  200 lines of the session's transcript (`project_of`); a transcript line that is not an object is
+  skipped, not the file.
+- **Private.** A note is session text: only local Ollama sees it (never the decider), and its words stay
+  out of `hobson.log` from every path. `note` is a private kind (`kinds.Kind.private`) and its phrase is a
+  `log_record.Unlogged`, a string whose `repr()` is `note aaaaaaaa, 245 chars`; every phrase writer logs
+  with `!r`, so the playback, the held and dropped lines, the briefing, the face's events (the helper
+  reports the record's `logged` field) and the salver's rebuilt briefing text carry the placeholder, while
+  the voice, the face and the salver get the words, and a TTS daemon's own log records a phrase's length, not its words. A note is never backfilled into the chatterbox cache
+  (its phrase would sit on an argv forever), and recap does not read it as work.
+- **A changed source** (a file that will not parse, or has no `sessions` list) yields nothing and logs one
+  `[plugin-notes]` line per process; an entry missing a key is no note. An entry whose `view` fails
+  validation, or whose `shownAt` is not a finite epoch in milliseconds (seconds look 1970-old), is skipped
+  alone and logged once per process by its keys, never its values.
+- **While muted** (`hobson._show_notes_silently`, beside H2's `_show_silently`): a silenced Stop still
+  claims every new note, as above, and shows the first on the face with `silent=True`, its `line` only: no
+  model, no engine, no words in the log (a test runs the entry under `-X importtime`). The log line says `note claimed`, `N notes claimed` and `note aaaaaaaa shown`. A wait
+  that this Stop just put on the face keeps the window: the notes are claimed and
+  not shown. With the face off they are claimed and not shown. A note is therefore never said after
+  unmuting: muted, it is shown once and marked said.
 
 **Quiet controls**: `silence_reason(config)` in `home.py` is the single gate, called by
 `hobson.py` before any engine is loaded. It returns a reason string for: `muted`, a timed mute
 (`mute_until`, an epoch set by `hobson off 30m`), or `quiet_hours` (`[start, end]` hours, wrapping
 midnight). Everything downstream — including an in-flight nudge — checks it.
+
+Silent is not blind. A Stop that arrives silenced is still read by the rules alone
+(`hobson._read_silent_stop`: `works_on_its_own`, `awaits_developer`; no model, nothing said, no
+nudge), and its category is recorded as `working`, `question` or unknown. Before, it was skipped
+unread, and the last category Hobson knew stood in for every turn since. The user mutes so that a
+meeting does not hear Hobson, not to stop him keeping track, and was muted 66 of 169 active hours in
+three weeks. `hobson on`, when it ends a mute, says in one line who is still waiting on you
+(`presence.on_unmute`, from `session_status.waiting_on_you`), never the backlog. A timed mute that
+runs out has no such moment and says nothing. Every silenced line names its event (`silenced (muted):
+Stop, read as question`), and `hobson off`/`on` log `[mute] on [for 30m]` / `[mute] off (N waiting on
+you)`. Before these, the log could not say how long a mute lasted or what it covered.
+
+Silent is not invisible either. While silenced, what waits on you is shown on the face without a
+sound (`hobson._show_silently`): a permission request, a waiting notification (`idle_prompt`,
+`agent_needs_input`, `permission_prompt`) and a Stop the rules read as `question`. The user mutes
+for meetings, and Hobson used to show nothing then. Quiet hours behave the same as a mute, by the
+user's decision, and so does a timed mute. The line is the fixed one the engines speak, chosen in
+`scripts/announcement.py`, which both use (`BaseEngine._fixed_announcement` calls it) and which
+imports no engine: a silenced PermissionRequest loads no engine, no model and no `phrase_gen`
+(`tests/test_muted_face.py` drives one under `-X importtime`). A silenced Stop still imports
+`stop_outcome` and `ollama_client` for the rules, and calls neither model, as before. Nothing
+leaves the Mac: the destructive warning comes from `risk.py`'s local rules only
+(`permission_risk(..., remote=False)`), and a command they cannot place, or rules that fail, get the
+ordinary permission line. The same gates hold as for the voice: the `events` list (a malformed one,
+such as `null`, turns every event off rather than raising) and `face.enabled` (off shows nothing).
+Two more are the silenced path's own:
+
+- **An idle prompt is shown only after a Stop read as `question`.** The engines nudge after an
+  unknown ending too, but the silent read has no model: it cannot tell a finished turn from an
+  unknown one, so every finished turn of a meeting would put up a "needs you" held for 10 minutes.
+  `agent_needs_input`, permission requests, question dialogs and question Stops show regardless.
+- **Claude Code's reminder of a request just shown is not shown** (its vaguer line would replace
+  the specific one). A request the face will show writes
+  `record_wait_shown` (`face.deliver` returned `SIGNALLED`, a running helper told, or `STARTED`, the
+  helper launched, which reads the record at launch and shows the line; `face.show` is True only for
+  the first, so the hook asks `deliver`). Nothing is written when face is off, the write failed, or
+  the spawn was throttled with no helper running. It is read only here: `record_wait_said` stays the engines', because nothing was
+  heard. A mute that ends inside the 20s echo window lets the reminder be spoken as before.
+
+**Muting turns the camera off.** The helper quits after `exit_after` with no hook activity, and a
+muted hook is not activity, so a silenced permission request in a long meeting found none running
+and `face._signal` started one as configured: with `presence.mode: continuous`, the camera and its
+green light, in the meeting the user muted for. Round one made a helper started while silenced face
+only and left a running camera helper alone ("accepted"). The premise was wrong: `_record_alive` runs
+before the silence check, and the helper counts the liveness files as activity, so a camera helper
+running when the user muted stayed on for as long as any session worked. Now silenced
+(`home.silence_reason`: a mute, a timed mute, quiet hours) means face only, for every helper:
+`expected(config, silenced)` says so, `_matches` compares a running helper with it like any other
+setting, and the one mismatch rule in `ensure_running` does the rest. A mismatched helper is stopped
+and the new one started **in the same call**, once the old process is gone (`_exited`: `getpgid`,
+polled for two seconds at most): `open` without `-n` hands a launch to a running instance of the
+same bundle, so a start issued while the old helper still exits is lost, and the silenced hook that
+shows a line needs a helper to read it now. If the old one is slow to go, nothing is started and the
+next hook does it (the old rule). Unmuting is the same flip the other way: a face-only helper
+that disagrees with the config is stopped and the full one started. With the face off there is no
+face-only helper to turn into, so a silenced `ensure_running` stops a camera helper and starts none.
+
+It runs within seconds of the change wherever one is made. `hobson off` and `hobson on` run
+`presence.py --start` detached, which is `ensure_running`. A silenced hook calls `_ensure_presence`
+too, after `_silenced_what`, so a timed mute or the start of quiet hours (no command at all) is seen
+by the next hook, and its end by the next one after that; nothing in between needs the camera. It is
+a stat and a read when nothing changes, and repeated hooks, silenced and then not, neither stop nor start anything
+(`test_hooks_in_a_row_change_nothing_once_the_helper_matches`). The order matters for a hook that
+also has a line: `face._signal` does not signal a camera helper while silenced (the line would go to
+a helper that is being stopped) and falls through to `ensure_running`, which starts the face-only
+one, and the line, already written, shows when it launches. `record_wait_shown` is written on any
+truthy `deliver` (`SIGNALLED` or `STARTED`); only in this turning case does it depend on `STARTED`,
+and it records nothing if `_exited` times out before the old helper is gone. `_ensure_presence` runs
+after (`test_a_silenced_hook_shows_its_wait_before_it_reconciles_the_helper`): reconciled first, the
+old helper unlinks its state, `_signal` finds no live helper and is throttled, and the wait is not
+recorded as shown. Two hooks turning the helper at once both call `open`, one deleting the other's
+fresh spawn marker, which is harmless: `open` without `-n` reuses the instance, and a second one
+loses the flock and exits (`singleInstance` in `main.swift`). `_restart` (the menu's toggles,
+`hobson presence ...`) stops a helper first only when not silenced; silenced, `ensure_running`
+alone decides, so a face-only helper is left alone through a setting change and a camera one is
+turned.
+
+What the user gives up: while silenced, presence senses nothing (state `off`, no audience), so the
+company line of H2 and of the notes cannot fire while muted (`presence.audience` was read there, and
+no longer is): the face shows the full line even with someone in the room. Nothing else depends on
+the camera then. Muted, Hobson speaks, holds and pushes nothing: the engines never run
+(`silence_reason` returns before them), `presence.route` is reached only from `speak`, so neither
+the salver nor `push.notify` is; nudge, recap, ask, `hobson say` and coach each check
+`silence_reason` themselves; greetings, farewells, waves and a return briefing are the helper's
+transitions, which a face-only helper does not produce, and `on_transition` skips the briefing
+while silenced anyway. What was held before the mute stays on the salver for the next return. The
+session list, its badge and the notes are not part of the sensing, and are still there in face only
+(the menu hides only Preview, Presence and Answer Waves). After an unmute the full helper starts
+fresh, so a return from away that straddled the mute is not briefed.
+
+Away, coaching or unknown, a silent line is shown as it is and waits for you; a line shown while away is not
+added to the return briefing. `face.show` can start the presence helper
+(`presence.ensure_running`), face only while silenced. Nothing is recorded as voiced, since nothing was heard. The log line ends
+`, shown`, `, not shown (face off)`, `, not shown (<error>)` or `, not signalled (see [face])`,
+e.g. `silenced (muted): PermissionRequest, shown`, never with a phrase: the `[face]` line carries
+it.
 
 **UserPromptSubmit**: handled in `hobson.py` *before* config or engine work — it writes this
 project's activity token (`nudge.activity_path()`, `~/.claude/hobson-activity-<key>`) and
@@ -535,14 +941,62 @@ phrases from the last 120s with a known timestamp, and fails open. Those questio
 candidate phrase and up to six recently spoken phrases, each redacted. The commentary gate (see
 Batching) sends the redacted batch summary.
 
-**The decider is where data leaves the Mac.** A question's state is a list of parts: a plain
+**Phone push is the other place data leaves the Mac** (`scripts/push.py`; `hobson push`). Off by
+default. With `push.backend` "ntfy", `presence.route` calls `push.notify` right after `hold()`, only
+when the state is `away`: not `call`, not `company` (a buzz would say what the voice was kept from
+saying), and only for the kinds in `push.kinds` (`waiting`, `broken`, `stalled`; a `done` can wait
+on the salver). One POST to `push.url`: the body is a fixed sentence per kind from `push.body_for` ("webapp is
+waiting on you.", "webapp stopped on a failure.", "Nothing has moved on webapp for 10 minutes.":
+the minutes are the digits read from the watchdog's own line), the title the project label, and
+nothing from the session. It is not the spoken phrase: on the daemon engines that is model output
+written from the session's last message (the live log holds "Should I add a note on test [8]'s
+cancel path?"), and a held phrase was never meant to leave the Mac. There is no switch for it. The token, `NTFY_TOKEN`, is read from the environment or
+`hobson.env` by `home.read_env` (the decider's `find_key` uses the same reader), never from
+`hobson.json`, never logged, and sent only where `home.https_or_loopback` allows. A redirect is
+refused (`_NoRedirect`): urllib would forward the `Authorization` header to wherever it points. A
+push is refused for want of a token even to a self-hosted server, since a topic URL is guessable.
+The hook never waits: `notify` claims a slot in `hobson-push.json` (one push per project and kind in
+10 minutes, which folds a session's repeated waits into one buzz; `push.per_hour` an hour in all,
+default 6), then starts `push.py --send` with the payload on its standard input, in a session of
+its own (`start_new_session=True`, so it outlives the hook; `nudge.py` is spawned differently). The hourly slot is
+given back, under the same lock, when no server answered (the child cannot start, the connection
+fails or times out) or it answered with a 5xx, so an outage while away does not use up the hour. Any
+answer under 500 (a redirect or a 4xx) keeps it (a revoked token's 401, ntfy rate-limiting the client's 429): the server answered, and a
+retry per held phrase would only be told no again (12 notifies against a 401 stand-in made 12
+requests before this, against 200 one). The project-and-kind collapse is never given back, so
+whatever fails is retried at most once per project and kind in 10 minutes. Only `waiting`,
+`broken` and `stalled` have a sentence (`body_for` has no catch-all): any other kind in
+`push.kinds` ("done"), or a `kinds` that is not a list, is ignored with one `[push] not sent`
+line, and a `push.url` that is not a string is no url. Timestamps in the future (a clock stepped
+back) are dropped rather than kept. `hobson push on` refuses a malformed URL or plain http off this machine, and
+`route` returns what it did without push whatever push raises. The child makes the request and writes one `[push]` line, `sent (waiting,
+200)` or `failed (waiting): HTTP 401`, a status or an exception's class and never its text, which
+could carry the URL. No `[push]` line ends in `-> 'phrase'`, and recap reads them as Hobson's own
+talk. `hobson push test` sends one synchronously. Tested over real HTTP against a loopback
+stand-in, the detached child included (`tests/test_push.py`). Remote approve and deny are not
+here: they need a blocking hook, which Claude Code ships natively.
+
+**The decider is one of two places data leaves the Mac (phone push, above, is the other), and the one that sends session text.** A question's state is a list of parts: a plain
 string is Hobson's own framing, sent as written; session text goes as a `decider.Command`,
 `Summary` or `Phrase`, and `decider.redact()` runs on it by kind, to the length its question was
 calibrated on (600, 220, 200 characters). Redaction used to be each caller's job and lived in
 `risk.py`; the duplicate check skipped it, so spoken phrases went out as spoken. The key goes
-only to an https endpoint (plain http only on loopback). Tests see what left through the `jev`
+only to an https endpoint (plain http only on loopback); an endpoint that does not parse at all
+(`http://[::1`) is refused the same way, with the reason "not a valid URL", where it used to raise
+out of `probability` and `check_key`. Tests see what left through the `jev`
 fixture, which records each request after redaction: stubbing a caller's decider call would
 test the state before it.
+
+**Swapping the decider's model.** Another model on OpenRouter's Decisions API takes the same
+request, so it needs only `decider.model` (Solar Decide, `upstage/solar-decide`, answered all three
+questions through the unchanged parser). But every decider threshold (the gate's, the dedup pair's
+and the risk check's) was fitted on `typesafe/jev-1.13`'s probabilities and has to be re-checked
+first, and the hook's timeout is the other gate: a call that times out falls back to local, so a
+model too slow from a hook is no use however accurate it is. Measure latency from a hook, not from
+a vendor's table. Cloudflare's Clef and Clef-flash take the same request body but are not on
+OpenRouter: Workers AI puts the account id in the URL path, wraps the answer in a `result` object
+and reports tokens, not a cost. They would need a second backend here, and a cost worked out from
+tokens for the `cost=` log line that `hobson monitor` sums.
 
 **Permission risk** (`scripts/risk.py`): a destructive Bash permission request is announced as
 "Careful — this one deletes files. It needs your approval." — a fixed sentence, never the model,
@@ -630,7 +1084,7 @@ written or installed before COMMIT; closing the window before it changes nothing
   verbosity from fixed lists, a voice only as a catalogue id for that engine (`VOICES`, never a
   path; a custom voice already in the config is shown as YOURS and kept), a model only if it matches
   `MODEL_NAME` (any Ollama name — the brain screen takes any model, pulled on COMMIT), the phone
-  only when the page answered it. `apply_settings()` writes only values that differ from
+  only when the page answered it. `home.apply_settings()` writes only values that differ from
   `DEFAULT_CONFIG` and **removes** one set back to its default, so an improved default still
   reaches the install. `decider.backend: "jev"` is written only after `decider.check_key()`
   passed a real call in this session; the key goes to `hobson.env` (mode 600 from creation),
@@ -727,7 +1181,7 @@ load time, so a default improved later reaches old installs.
 `hobson update` fast-forwards the checkout and runs `install.sh --update`. CI
 (`.github/workflows/ci.yml`) runs that whole cycle under bash 3.2 and Homebrew bash 5.
 
-**Cache key**: `bark_hash(text)` = SHA-256 first 16 hex chars. Must be consistent across `bark_templates.py`, `engines/base.py`, and all cache-gen scripts.
+**Cache key**: `bark_hash(text)` = SHA-256 first 16 hex chars. Defined once, in `bark_templates.py`; the engines and every cache-gen script import it.
 
 ## Configuration
 
@@ -766,6 +1220,8 @@ Config lives at `~/.claude/hobson.json`. Key sections:
   "watchdog": { "enabled": true, "minutes": 10 },
   "presence": { "enabled": true, "mode": "signals|auto|continuous", "idle_seconds": 60, "away_after": 30, "greetings": true, "waves": true, "preview": false, "paused": false, "exit_after": 1800, "call_apps": [], "phone": null, "adb": null },
   "face": { "enabled": true, "commentary": false, "hold_waiting": true, "width": 280 },
+  "push": { "backend": "off|ntfy", "url": "", "kinds": ["waiting", "broken", "stalled"], "per_hour": 6 },
+  "focus": { "enabled": true, "min_tool_calls": 2, "min_seconds": 15.0, "cooldown": 4.0, "min_words": 2, "max_words": 6 },
   "decider": { "backend": "local|jev", "model": "typesafe/jev-1.13", "timeout_ms": 4000, "dedup_restates_max": 0.5 }
 }
 ```
@@ -777,7 +1233,23 @@ P(worth) ≥ 1 − chattiness.
 `mute_until` is an epoch timestamp (0 = not muted); `quiet_hours` is `[start_hour, end_hour]` and
 wraps midnight. Both are read only through `silence_reason()`.
 
-`load_config()` in `home.py` merges user config with `DEFAULT_CONFIG` (shallow top-level, deep merge for sub-dicts). It also migrates the deprecated `kokoro.realtime_events` key to the top-level `events` key.
+`load_config()` in `home.py` merges user config with `DEFAULT_CONFIG` (`with_defaults`: shallow top-level, deep merge for sub-dicts; `BaseEngine` applies the same merge to whatever config it is given, so no engine read carries a fallback of its own). It also migrates the deprecated `kokoro.realtime_events` key to the top-level `events` key.
+
+Every write to `hobson.json` goes through `home.update_config({dotted: value})` (or
+`write_config` for `hobson config reset`): under a lock (`hobson-config.lock`), written whole to a
+temp file and `os.replace`d (through a symlink, keeping the mode), with a value equal to its default
+removed rather than written, so the default keeps flowing. The CLI calls it as `home.py --set KEY
+VALUE` or through `config_py`, its arguments in `sys.argv`, never pasted into Python source.
+It reads the same way, `config_get KEY` (`home.py --get`, through `load_config`), so it keeps no
+copy of a default: one left at its default is not in the file.
+Every state file is written the same way, `home.write_atomic` / `write_json_atomic`: a temp
+file, `os.replace`, the temp removed however it fails, and with a `mode` never wider than 600
+before it has it (the face record, `hobson.env`). `loopback.issue_token` keeps its own `O_EXCL`.
+The one exception is `install.sh`'s first write of a new install, which must leave a file behind
+(the installer reads one as "installed before"), and copies an invalid one aside itself. Before,
+13 inline writers truncated the file and rewrote it, and a hook reading in between took the
+half-written file for no file at all: unmuted, every default. An unreadable file is kept aside as
+`hobson.json.unreadable-<time>`, not written over.
 
 ## Key paths
 
@@ -785,24 +1257,25 @@ Every path under `~/.claude` comes from `scripts/home.py`, resolved from `$HOME`
 asked for (`state_dir()`), so a test isolates all of it by setting HOME. The shell scripts keep their
 own copies; the TTS daemons take theirs from `home.py` through `tts_daemon.py`.
 
-- Config: `~/.claude/hobson.json` (engine, personality, events, cooldown, volume, Ollama models, per-engine settings)
+- Config: `~/.claude/hobson.json` (engine, personality, events, cooldown, volume, Ollama models, per-engine settings), written only through `home.update_config`/`write_config` under `hobson-config.lock`; an unreadable one is kept as `hobson.json.unreadable-<time>`
 - Personalities: `scripts/personalities/<name>/personality.json` (templates)
 - Presets: `scripts/presets.json` (one-shot config appliers)
 - Hooks: injected into `~/.claude/settings.json` by `scripts/settings-merge.py`
 - Lock: `~/.claude/hobson.lock` (file-based lock + cooldown timestamp)
-- Commentary lock: `~/.claude/hobson-commentary.lock`
-- Voice lock: `~/.claude/hobson-voice.lock` (held by the player for as long as a clip plays, `voice.py`); `hobson-reading.lock` (held by `hobson say` for a whole reading)
+- Commentary lock: `~/.claude/hobson-commentary.lock`; `hobson-focus.lock`, the same for watched flushes only
+- Voice lock: `~/.claude/hobson-voice.lock` (held by the player for as long as a clip plays, `voice.py`); `hobson-reading.lock` (held by `hobson say` for a whole reading, and by `hobson coach`); `hobson-coaching.lock` (held by `hobson coach` for a whole run: others' announcements are held meanwhile)
 - Nudge/watchdog locks: `~/.claude/hobson-nudge-<key>.lock`, `hobson-watchdog-<key>.lock` (`home.project_file`; `<key>` is `home.project_key`)
 - Session state: `~/.claude/hobson-sessions/<hash>.json` (pending queue, fingerprints, recent phrases), with `<hash>.lock` beside it for `transaction()`
-- Liveness: `~/.claude/hobson-alive-<key>`, one per project (last tool call or permission request: time, event, tool, timeout — never its contents; read by the watchdog)
+- Liveness: `~/.claude/hobson-alive-<key>`, one per project (last tool call or permission request: time, event, tool, timeout, and the terminal identity from that call -- the tmux pane, or outside tmux the tty -- never the call's contents; read by the watchdog and by the face's Take me there button, `scripts/terminal_jump.py`)
 - Activity token: `~/.claude/hobson-activity-<key>`, one per project (written by the UserPromptSubmit hook; cancels that project's nudge)
+- Plugin notes: `~/.claude/hobson-plugin-notes.json` (the notes already said, `{"said": [[session, shownAt], …]}`) and `hobson-plugin-notes.lock`; the source it reads is the plugin's store, `~/.claude/plugins/store/cc-plugin-you-should-know_builtin-*.json`, which Hobson never writes
 - Presence: `~/.claude/hobson-presence.json` (the helper's state, rewritten every second; removed when it exits), `hobson-presence.lock` (one helper), `hobson-presence.spawn` (spawn throttle), `hobson-presence-lines.json` (the last greeting/farewell said, and when); the salver `hobson-held.json` + `hobson-held.lock`; the helper at `build/HobsonPresence.app` (gitignored)
 - Face: `~/.claude/hobson-face.json` (the last line for the window, mode 600, read by the helper at SIGUSR2); the page at `presence/face/`, the window in `presence/Face.swift`, built into the same helper
 - Setup record: `~/.claude/hobson-setup.json` (the wizard sections this install has seen); the wizard's page at `setup/ui/` (its voice clips in `setup/ui/voice/`), its window at `build/HobsonSetup.app` (gitignored)
-- Decider key: `~/.claude/hobson.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider.find_key()`, never logged)
+- Decider key: `~/.claude/hobson.env` (`OPENROUTER_API_KEY=…`, mode 600; read by `decider.find_key()`, never logged); the phone push token is `NTFY_TOKEN=…` in the same file (`push.find_token()`); its rate limit is `hobson-push.json` + `hobson-push.lock`
 - Log: `~/.claude/hobson.log` — `[YYYY-MM-DD HH:MM:SS] [project] [engine] msg` (engine lines) or `[…] [project] msg`; older lines have only `HH:MM:SS`. Written and read only through `scripts/log_record.py`
 - Daemon pid/log/token: `~/.claude/{kokoro,pocket-tts}-daemon.{pid,log,token}` (the token mode 600, written by the daemon once it holds its port); playback scratch WAVs at `~/.claude/{kokoro,pocket-tts}-playback-*.wav`, one per phrase, removed when it has played (and by the next phrase after an hour, if its player was killed)
-- Caches: `~/.claude/voice-cache-chatterbox/` (pre-gen), `~/.claude/voice-cache-kokoro-realtime/` (runtime)
+- Cache: `~/.claude/voice-cache-chatterbox/` (pre-gen); the daemon engines keep none
 - Venvs: `venvs/{kokoro,chatterbox,pocket-tts,dev}/` (created by the wizard or `hobson setup <engine>`, gitignored)
 - Models: `models/` (kokoro ONNX models, chatterbox reference audio -- gitignored)
 
@@ -820,12 +1293,14 @@ hobson commentary on|off   # Toggle running commentary
 hobson commentary verbosity [terse|normal|chatty|anomaly]  # Set commentary verbosity (picker if no arg)
 hobson commentary chattiness [0-1]  # How much commentary the decider lets through (picker if no arg)
 hobson volume [0-10]       # Get or set playback volume
-hobson voice [name]        # Switch Kokoro voice (interactive picker)
+hobson voice [name]        # Switch the engine's voice, kokoro-realtime or pocket-tts (picker: the wizard's VOICES)
 hobson test                # Play a test bark
 hobson recap [minutes]     # Speak a summary of recent activity (default 10m)
 hobson say [TEXT|-f FILE]  # Read text aloud (or standard input), a passage at a time; returns when done
+hobson coach [-f FILE]     # Run spoken steps on Hobson's clock: say, wait, countdown, ready (NDJSON out)
 hobson presence [status|on|off|mode [signals|auto|continuous]|greetings on|off|waves on|off|preview on|off|phone [auto|off|SERIAL]|look|setup|stop]
 hobson face [status|on|off|test [LINE] [KIND]]  # the window where Hobson says each line
+hobson push [status|on URL|off|test]  # send what is held while you are away to the phone (ntfy)
 hobson ask [status|recap|failed]  # What needs me? / What have you been doing? / What failed?
 hobson lines [category]    # Show voice lines (from active personality)
 hobson monitor             # Watch bark activity in real time (and decider spend to date)
@@ -855,12 +1330,18 @@ python3 -m venv venvs/dev && ./venvs/dev/bin/pip install -r requirements-dev.txt
 ```
 
 Coverage is report-only (no failing threshold). The kokoro / pocket-tts backends (model load and
-synthesis) and `_speak_live` native paths are intentionally uncovered — they need ML models; the
+synthesis) and the daemon's real rendering are intentionally uncovered — they need ML models; the
 runner both backends share, its guard included, is tested over real HTTP with a stand-in. So is the presence helper (`presence/main.swift`, and the face's window, `presence/Face.swift`): it needs a camera and a desk, and is
-checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run; the face's page is laid out in headless Chrome, where there is one (`tests/test_face_layout.py`, skipped without it). The suite is **1099 tests** and runs in about ten seconds, three of them `tests/test_daemon_cli.py`
+checked by hand with `HobsonPresence --signals`, `hobson presence look` and a live run; the face's page is laid out in headless Chrome, where there is one (`tests/test_face_layout.py`, skipped without it). The suite is **1524 tests** and runs in about 40 seconds, three of them `tests/test_daemon_cli.py`
 driving the real CLI against a stand-in daemon on loopback (two `hobson say` runs at once, with a
 stand-in afplay that logs when each clip starts and ends) and `tests/test_voice.py` timing real players; if it takes much longer, something is
 reaching the network.
+
+A test must not depend on the terminal it runs in. `no_audio` patches `subprocess.Popen` on the shared
+module, so `subprocess.run` is faked too, and outside tmux `nudge.terminal_info` walks the process tree
+with `ps` through it. The fake once lacked the context-manager protocol, and the four tests that record
+liveness passed in tmux (`$TMUX_PANE` short-circuits the walk) and failed in CI. Run the suite with
+`env -u TMUX -u TMUX_PANE` as well.
 
 Do not read a pass from a pipeline: `pytest | tail` masks pytest's exit code, so an `&&`
 chain will happily proceed past a real failure. Check the exit status explicitly.
@@ -898,7 +1379,7 @@ python3 scripts/settings-merge.py --check
 ## Important constraints
 
 - macOS only (depends on `afplay` and `say` commands, and `fcntl` for file locking)
-- `bark_hash()` must produce identical output in all files -- changing the hash function breaks all caches
+- `bark_hash()` (in `bark_templates.py`, the only definition) -- changing it breaks all caches
 - `settings-merge.py` identifies our hooks by their entrypoint, `…/scripts/hobson.py` in the command (plus the legacy `claude-bark` / `voice-bark` names) -- hook commands must keep that path. Not the bare word: a bare name claims the hooks of anyone whose home is named after it, and uninstall deletes them -- and Hobson is a surname. Ownership is per hook, not per matcher group (`_without_ours`): a foreign hook in the same entry as ours stays, where dropping the entry deleted it. Every cleanup of an old link checks for our `scripts/settings-merge.py` first, so another tool's command is never touched
 - Legacy names: `migrate_legacy_state()` in `home.py` moves a `claude-bark.json` to `hobson.json`, only when the target is missing, and turns `personality: alfred` into `hobson`; the installer, the CLI and every hook but UserPromptSubmit call it, one `lstat` once done. The chatterbox lookup still finds `models/alfred-reference.*`
 - The `${CLAUDE_PLUGIN_ROOT}` variable in `hooks/hooks.json` is for future plugin mode; standalone install uses absolute paths via `settings-merge.py --install-dir`
@@ -919,5 +1400,5 @@ python3 scripts/settings-merge.py --check
   rebuild loses the camera grant. It never writes a frame anywhere
 - Presence fails to today's behaviour: missing/stale state is `unknown` and speaks. The phone
   switch is the one exception and fails the other way: unreadable = camera off
-- Changing personality invalidates chatterbox cache (different template text = different audio); kokoro-realtime cache is fine (keyed by phrase text, auto-evicted)
+- Changing personality invalidates chatterbox cache (different template text = different audio)
 - `chatterbox.py` reference audio lookup: tries `<personality>-reference.wav`, then `hobson-reference.wav`, then `reference.wav`

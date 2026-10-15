@@ -26,7 +26,12 @@ MIN_WORDS = 4
 MAX_WORDS = 12
 
 
-def _fits_budget(written, spoken):
+def _budget(words):
+    """The (min, max) word budget: `words`, or the default pair."""
+    return words if words else (MIN_WORDS, MAX_WORDS)
+
+
+def _fits_budget(written, spoken, words=None):
     """Is a phrase within the word budget? Too long only if too long both as
     the model wrote it and as it will be spoken: spelling a name out is ours,
     not the model's, and 5 of the 25 over-budget rejections in the log were
@@ -34,11 +39,57 @@ def _fits_budget(written, spoken):
     "CLAUDE.md" spoken as "CLAUDE dot M D" took 10 words to 13. Too short
     counts what is heard: "I'm starting on APP-1201." is spoken "I'm starting
     on." once the ticket number is dropped."""
-    return spoken >= MIN_WORDS and min(written, spoken) <= MAX_WORDS
+    low, high = _budget(words)
+    return spoken >= low and min(written, spoken) <= high
 
 
-# Last raw Ollama output for debugging
-last_raw = None
+class Generation(tuple):
+    """What generate_or_skip came to. Unpacks as (category, phrase), the pair
+    it has always returned; when phrase is None, verdict and detail say why:
+    SKIP (the model chose silence, the only normal one), ERROR (the call
+    failed), REJECTED (a guard refused every phrase) or UNUSABLE (nothing
+    could be parsed). Conflated, a real Ollama timeout logged as "skipped"
+    read like working-as-intended, which is how 366 of them sat unnoticed."""
+
+    def __new__(cls, category, phrase, verdict=None, detail=None):
+        self = super().__new__(cls, (category, phrase))
+        self.verdict, self.detail = verdict, detail
+        return self
+
+    @property
+    def category(self):
+        return self[0]
+
+    @property
+    def phrase(self):
+        return self[1]
+
+    def log_line(self, event, notes, batch=None):
+        """The one log line for this result: log_record.outcome() when there
+        is a phrase, else the verdict and why."""
+        if self.phrase:
+            return log_record.outcome(event, notes, self.category, self.phrase, batch=batch)
+        size = f"batch of {batch} " if batch is not None else ""
+        return f"[{event}] {size}{self.verdict}: {self.detail}"
+
+
+def _no_phrase(category, raw):
+    """A Generation with no phrase, judged from the model's raw reply or
+    _chat's "(error: ...)" string."""
+    text = "" if raw is None else str(raw)
+    if text.startswith("(error:"):
+        inner = text[len("(error:"):].rstrip(")").strip()
+        if "timed out" in inner:
+            return Generation(category, None, "ERROR", f"ollama timed out — {inner}")
+        if "refused" in inner or "URLError" in inner:
+            return Generation(category, None, "ERROR", f"ollama unreachable — {inner}")
+        return Generation(category, None, "ERROR", f"ollama call failed — {inner}")
+    stripped = text.strip().strip("'\"")
+    if not stripped:
+        return Generation(category, None, "ERROR", "ollama returned nothing")
+    if stripped.upper() == "SKIP":
+        return Generation(category, None, "SKIP", "model chose not to speak")
+    return Generation(category, None, "UNUSABLE", f"could not parse a phrase from {stripped!r}")
 
 
 def _truncate_detail(text, limit=120):
@@ -190,7 +241,8 @@ _AWAITING_ANSWER_NOTE = (
 
 
 def _build_messages(event_type, event_detail, session_context, project=None,
-                    custom_prompt=None, verbosity="terse", awaiting_answer=False):
+                    custom_prompt=None, verbosity="terse", awaiting_answer=False,
+                    words=None):
     """Build chat messages for the unified decide+generate call.
 
     verbosity:
@@ -203,6 +255,7 @@ def _build_messages(event_type, event_detail, session_context, project=None,
     so the shared prefix Ollama caches stays the same.
     """
     project_tag = f"[Project: {project}] " if project else ""
+    low, high = _budget(words)
 
     persona = (
         "You are the voice of an AI coding agent, reporting to a developer "
@@ -227,7 +280,7 @@ def _build_messages(event_type, event_detail, session_context, project=None,
             + rules
             + ("Reply: category | phrase\n" if decided
                else "If voicing, reply: category | phrase\n")
-            + f"Rules: {MIN_WORDS}-{MAX_WORDS} words, starts with 'I', "
+            + f"Rules: {low}-{high} words, starts with 'I', "
             "use the task name not ticket numbers\n"
             "- Describe what a thing does in plain words; never speak class "
             "names, file names, or identifiers. Say 'the account settings screen', "
@@ -254,6 +307,7 @@ def _build_messages(event_type, event_detail, session_context, project=None,
         f"Session: {session_context}\n\n"
         f"Event: [{event_type}] {project_tag}{event_detail}"
         + (_AWAITING_ANSWER_NOTE if awaiting_answer else "")
+        + (f"\n\nSay it in {low}-{high} words." if words else "")
     )})
     return messages
 
@@ -581,10 +635,10 @@ def _plain_verbs(phrase):
     return re.sub(r"\b[A-Za-z]+\b", sub, phrase)
 
 
-def _clean_phrase(raw):
+def _clean_phrase(raw, words=None):
     """Strip quotes, markdown, think tags, and take just the first sentence.
 
-    An over-budget result is not simply discarded (see MAX_WORDS below): if
+    An over-budget result is not simply discarded (see MAX_WORDS below, or the per-call `words` budget): if
     dropping a short throwaway lead-in ("Ok.", "Sure thing.") the model
     tacked on before the real sentence brings the rest within budget, that
     shorter-but-complete sentence is used instead. Mirrors _repair_phrase's
@@ -594,6 +648,7 @@ def _clean_phrase(raw):
     """
     if not raw:
         return None
+    budget = _budget(words)
     raw = re.sub(r'<think>.*?</think>', '', raw, flags=re.DOTALL).strip()
     raw = raw.strip().strip('"\'').strip("*").strip()
     raw = re.sub(r'\*+', '', raw)
@@ -630,7 +685,7 @@ def _clean_phrase(raw):
         # de-camelling ("GitHub" -> "Git Hub") looks like a model error.
         log_record.write(f"norm: {before!r} -> {raw!r}")
 
-    words = raw.split()
+    spoken_words = raw.split()
 
     # A trailing single-character "word" (other than "a"/"I") is what a
     # token-cutoff mid-word looks like -- "...investigating l" left over
@@ -644,14 +699,14 @@ def _clean_phrase(raw):
     # speech that happen to end on a bare digit. Checked against every
     # phrase hobson has actually spoken: without this condition the guard
     # silences 75 real utterances to catch 2 defects; with it, 0 and 2.
-    if words and not raw.rstrip().endswith((".", "!", "?")):
-        last = words[-1].strip(".,!?;:")
+    if spoken_words and not raw.rstrip().endswith((".", "!", "?")):
+        last = spoken_words[-1].strip(".,!?;:")
         if len(last) == 1 and last.lower() not in ("a", "i"):
-            log_record.write(f"truncated: trailing fragment {words[-1]!r} in {raw!r}")
+            log_record.write(f"truncated: trailing fragment {spoken_words[-1]!r} in {raw!r}")
             return None
 
     n_written = len(before.split())
-    if min(len(words), n_written) > MAX_WORDS:
+    if min(len(spoken_words), n_written) > budget[1]:
         salvaged = None
         rwords = None
         if lead_in_end and candidate:
@@ -659,21 +714,21 @@ def _clean_phrase(raw):
             if written:
                 remainder = _plain_verbs(tts_normalize(written))
                 rwords = remainder.split()
-                if _fits_budget(len(written.split()), len(rwords)):
+                if _fits_budget(len(written.split()), len(rwords), budget):
                     salvaged = remainder
         if salvaged is None:
-            log_record.write(f"over budget: {len(words)} words - {raw!r}")
+            log_record.write(f"over budget: {len(spoken_words)} words - {raw!r}")
             return None
-        log_record.write(f"salvage: dropped lead-in, over budget ({len(words)} words) -> {salvaged!r}")
-        raw, words = salvaged, rwords
-    elif not _fits_budget(n_written, len(words)):
+        log_record.write(f"salvage: dropped lead-in, over budget ({len(spoken_words)} words) -> {salvaged!r}")
+        raw, spoken_words = salvaged, rwords
+    elif not _fits_budget(n_written, len(spoken_words), budget):
         return None
 
     raw = _ensure_first_person(raw.strip())
     return raw if raw else None
 
 
-def _parse_response(text):
+def _parse_response(text, words=None):
     """Parse 'category | phrase' or 'SKIP' from Ollama output."""
     if not text:
         return None
@@ -687,7 +742,7 @@ def _parse_response(text):
         category = parts[0].strip().lower().rstrip(".,!?")
         if "skip" in category:
             return None
-        phrase = _clean_phrase(parts[1])
+        phrase = _clean_phrase(parts[1], words)
         if not phrase:
             return None
         # An unrecognised category still must not reach TTS — speak only the
@@ -697,7 +752,7 @@ def _parse_response(text):
             return "done", phrase
         return category, phrase
 
-    phrase = _clean_phrase(stripped)
+    phrase = _clean_phrase(stripped, words)
     if phrase:
         return "done", phrase
 
@@ -890,17 +945,12 @@ def _off_batch_reason(phrase, event_detail):
     return None
 
 
-def _guard_reject_reason(event_type, phrase, recent_voiced,
-                         seconds_since_last_voiced=None, event_detail=None):
+def _guard_reject_reason(event_type, phrase, recent_voiced, event_detail=None):
     """Why this phrase must not be spoken, or None if it is fine.
 
-    seconds_since_last_voiced is advisory only -- it is time since *any*
-    phrase was voiced, not since the matching one, so it can no longer gate
-    the whole duplicate check (that used to make `stale` nearly always
-    false in a busy session, since something is voiced every few tens of
-    seconds). Decay is now per-match, inside is_near_duplicate, keyed off
-    each recent entry's own timestamp. The parameter stays in the signature
-    because three call sites pass it and removing it is a separate change.
+    Duplicate decay is per match, inside is_near_duplicate, keyed off each
+    recent entry's own timestamp: time since *any* phrase was voiced used to
+    gate the whole check, and in a busy session it was nearly never stale.
 
     event_detail is what the model was asked about; commentary must be
     about it (_off_batch_reason). Checked before the duplicate guard, which
@@ -920,7 +970,15 @@ def _guard_reject_reason(event_type, phrase, recent_voiced,
         reason = _off_batch_reason(phrase, event_detail)
         if reason:
             return reason
-    if is_near_duplicate(phrase, recent_voiced, decay_seconds=DUPE_DECAY_SECONDS):
+    # Not for a Stop: it is the signal that the turn ended, news even in the
+    # same words, and the retry a rejection buys makes things up. Told
+    # "Say something else" with nothing else true to say, llama3.2:3b turned
+    # 8 of 19 replayed real Stops "broken" ("I failed to fetch the ticket's
+    # Scope."), on complete input; accepting the duplicate turned none
+    # (exact McNemar 10-0 on bad outcomes, p=.002). 11 of the 40 silent
+    # Stops since 09-27 were this rejection.
+    if event_type != "Stop" and is_near_duplicate(phrase, recent_voiced,
+                                                  decay_seconds=DUPE_DECAY_SECONDS):
         if _decider_rescues_duplicate(phrase, recent_voiced):
             log_record.write(f"decider: overturned near-duplicate -> {phrase!r}")
             return None
@@ -973,7 +1031,7 @@ def _decider_blocks_restatement(phrase, recent_voiced, config=None):
 STOP_TEMPERATURE = 0.3
 
 
-def _words_over_budget(raw):
+def _words_over_budget(raw, words=None):
     """The phrase's word count when a reply failed only on length, else None.
 
     A Stop's richer context makes for longer sentences: 32 of 33 silent
@@ -982,7 +1040,7 @@ def _words_over_budget(raw):
     if not raw or "|" not in raw:
         return None
     n = len(raw.split("|", 1)[1].split())
-    return n if n > MAX_WORDS else None
+    return n if n > _budget(words)[1] else None
 
 
 def _retry_turn(raw, note):
@@ -994,24 +1052,24 @@ def _retry_turn(raw, note):
 
 def generate_or_skip(event_type, event_detail, session_context, project=None,
                      model=None, timeout=8, ollama_url=None, custom_prompt=None,
-                     verbosity="terse", recent_voiced=None,
-                     seconds_since_last_voiced=None, stop=None):
+                     verbosity="terse", recent_voiced=None, stop=None, words=None):
     """Single Ollama call: decide voice-or-skip AND generate the phrase.
 
-    Returns (category, phrase); (category, None) when the event was
-    classified but every phrase for it was rejected by a guard -- the
+    Returns a Generation: (category, phrase); (category, None) when the event
+    was classified but every phrase for it was rejected by a guard -- the
     classification is still true, and the nudge reads it for Stop; or
-    (None, None) for SKIP or failure.
+    (None, None) for SKIP or failure. Without a phrase, its verdict and
+    detail say which.
 
     verbosity controls the prompt bias (see _build_messages). Only set to
     "normal" for PreToolUse commentary when commentary.verbosity is "normal",
     or to "decided" once the decider has chosen to speak a batch;
     Stop/Permission/Notification should keep the default "terse" prompt.
 
-    Rejection policy is split by event: PreToolUse rejects to silence
-    (commentary is already routinely skipped and the hot path must stay
-    fast), Stop regenerates once then falls silent (silence there defeats
-    the notification's purpose).
+    A guard's rejection is silence. A Stop is never rejected (it is the
+    turn-ended signal, news in any words), and its second attempt is only
+    for a reply over the word budget or a "broken" its last message does
+    not bear out.
 
     `stop` is the Stop's stop_outcome.StopReading (event_detail is its
     context), None for every other event. Its rules decide the category from
@@ -1019,13 +1077,18 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
     question, SKIP and failure included; a SKIP otherwise is "done"; a
     "broken" whose last message names no failure is asked again, then
     "done". A failed call stays unknown.
-    """
-    global last_raw
 
+    `words` is a (min, max) budget for the phrase, None for the default. A
+    budget that is not the default is also restated after the event. On 100
+    real batch summaries x 2, told "2-6 words" only among the rules,
+    llama3.2:3b still wrote 7-11 and 67-76% of replies failed the length
+    check; restated where it reads it last, 92% passed the length and batch
+    guards (4.3 words on average, no recent phrases to repeat) against 83% at
+    4-12, and the off-batch guard took 7% against 4%.
+    """
     import time as _time
 
     attempts = 2 if event_type == "Stop" else 1
-    rejected_category = None
     awaiting_answer = stop.awaiting_answer if stop is not None else None
     temperature = STOP_TEMPERATURE if event_type == "Stop" else 0.7
     retry = []  # the rejected reply and why, so the second try is not the first again
@@ -1033,7 +1096,7 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
     for attempt in range(attempts):
         messages = _build_messages(
             event_type, event_detail, session_context, project, custom_prompt,
-            verbosity=verbosity, awaiting_answer=awaiting_answer,
+            verbosity=verbosity, awaiting_answer=awaiting_answer, words=words,
         ) + retry
         started = _time.monotonic()
         # 25 was too tight: a full MAX_WORDS=12 phrase plus the "category | "
@@ -1057,21 +1120,19 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
                                  _truncate_detail(event_detail), accumulated or "")
 
         if err and not accumulated:
-            last_raw = err
             log_record.write(f"{trace} FAILED {err}")
-            return (stop.settle(None, failed=True)[0] if stop is not None else None), None
+            return _no_phrase(stop.settle(None, failed=True)[0] if stop is not None else None, err)
 
-        last_raw = accumulated
-        result = _parse_response(accumulated or "")
+        result = _parse_response(accumulated or "", words)
         if not result:
-            too_long = _words_over_budget(accumulated)
+            too_long = _words_over_budget(accumulated, words)
             if too_long and attempt + 1 < attempts:
                 log_record.write(f"{trace} -> over budget, retrying")
                 retry = _retry_turn(accumulated, f"That is {too_long} words. Say it in "
-                                                 f"at most {MAX_WORDS} words.")
+                                                 f"at most {_budget(words)[1]} words.")
                 continue
             log_record.write(f"{trace} -> SKIP")
-            return (stop.settle(None)[0] if stop is not None else None), None
+            return _no_phrase(stop.settle(None)[0] if stop is not None else None, accumulated)
 
         category, phrase = result
         steps = []
@@ -1093,17 +1154,15 @@ def generate_or_skip(event_type, event_detail, session_context, project=None,
             steps.append("(tense)")
 
         reason = _guard_reject_reason(event_type, phrase, recent_voiced,
-                                      seconds_since_last_voiced, event_detail=event_detail)
+                                      event_detail=event_detail)
         if reason is None:
             log_record.write(f"{trace} {log_record.verdict(category, steps, phrase)}")
-            return category, phrase
+            return Generation(category, phrase)
 
+        # No retry: a guard never rejects a Stop, the one event with a second
+        # attempt, and a retry told only "Say something else" made things up.
         log_record.write(f"{trace} {log_record.verdict(category, steps, phrase, reason)}")
-        last_raw = f"(rejected: {reason})"
-        rejected_category = category
-        retry = _retry_turn(accumulated, f"Not that: it is a {reason}. Say something else.")
-
-    return rejected_category, None
+        return Generation(category, None, "REJECTED", f"guard rejected — {reason}")
 
 
 # CLI testing
@@ -1112,9 +1171,9 @@ if __name__ == "__main__":
     import time
     text = sys.stdin.read().strip() if not sys.stdin.isatty() else "I fixed the bug and all tests pass now."
     t0 = time.monotonic()
-    cat, phrase = generate_or_skip("Stop", text, "No prior context.", "hobson")
+    gen = generate_or_skip("Stop", text, "No prior context.", "hobson")
     elapsed = time.monotonic() - t0
-    print(f"category: {cat}")
-    print(f"phrase:   {phrase}")
-    print(f"raw:      {last_raw!r}")
+    print(f"category: {gen.category}")
+    print(f"phrase:   {gen.phrase}")
+    print(f"verdict:  {gen.verdict} {gen.detail or ''}")
     print(f"time:     {elapsed:.1f}s")

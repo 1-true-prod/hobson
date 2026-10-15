@@ -192,6 +192,14 @@ def test_a_lying_content_length_is_a_400(daemon, length):
     assert daemon.calls == []
 
 
+def test_the_daemon_log_holds_a_phrase_s_length_and_not_its_words(daemon):
+    assert _send(daemon, "POST", "/generate", {"text": "zanzibar quokka"})[0] == 200
+    with open(daemon.log_file, encoding="utf-8") as f:
+        log = f.read()
+    assert "15 chars" in log
+    assert "zanzibar" not in log and "quokka" not in log
+
+
 def test_a_request_with_no_host_is_refused(daemon):
     """HTTP/1.0 may leave Host out; a guard that needs one must not pass None."""
     import socket

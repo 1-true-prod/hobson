@@ -18,6 +18,7 @@ import time
 
 import engines.base as base
 import home
+import kinds
 import log_record
 import phrase_gen
 
@@ -53,8 +54,8 @@ def _extract_phrase(body):
 # What Hobson says for himself, not about the work: a briefing, a greeting,
 # an answer, a nudge. Read back as activity, one recap summarised the last,
 # and a briefing was retold as something a session had done.
-OWN_KINDS = frozenset({"answer", "thinking", "briefing", "nudge", "stalled"})
-_OWN_TAGS = ("[presence]", "[face]", "[ask]", "[nudge]", "[watchdog]", "[read]")
+OWN_KINDS = kinds.named("own_talk")
+_OWN_TAGS = ("[presence]", "[face]", "[ask]", "[nudge]", "[watchdog]", "[read]", "[coach]", "[push]")
 
 
 def _own_talk(body):
@@ -357,13 +358,6 @@ def _clean_recap(raw):
     return text or None
 
 
-def _read_log_lines():
-    try:
-        with open(home.log_file(), encoding="utf-8", errors="replace") as f:
-            return f.readlines()
-    except OSError:
-        return []
-
 
 def _parse_minutes(argv):
     if len(argv) > 1:
@@ -380,7 +374,7 @@ def main():
     config = home.load_config()
     project = home.derive_project_label() or "this project"
 
-    items = recent_activity(_read_log_lines(), project, minutes=minutes)
+    items = recent_activity(log_record.lines(), project, minutes=minutes)
     if not items:
         print(f"Nothing to recap for {project} in the last {int(minutes)} minute(s).")
         return
@@ -398,7 +392,9 @@ def main():
 
     import hobson
     engine = hobson.load_engine(config)
-    engine.speak_dynamic(text, allow_cold_start=True)
+    # You asked: an answer, never held for your return, and Hobson's own
+    # talk to the next recap.
+    engine.speak(text, "answer", cold_start=True)
 
 
 if __name__ == "__main__":

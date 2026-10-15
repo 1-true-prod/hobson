@@ -17,6 +17,11 @@ length, so a second reading waits for the first rather than alternating with
 it passage by passage. Announcements take only the voice, so they are heard
 between passages.
 
+A guided run (`hobson coach`, coach.py) takes `reading()` and `coaching()`.
+While `coaching_busy()`, presence holds every other session's announcement
+for the run's end (presence.audience): between the steps of a countdown
+there is no room for one.
+
 A lock that stays busy past its wait is passed over, not waited on for ever:
 a clip then plays over whatever holds it, as before this module existed.
 """
@@ -43,6 +48,10 @@ def lock_path():
 
 def reading_lock_path():
     return home.path("hobson-reading.lock")
+
+
+def coaching_lock_path():
+    return home.path("hobson-coaching.lock")
 
 
 def _open(path):
@@ -91,6 +100,11 @@ def reading_busy():
     return _busy(reading_lock_path())
 
 
+def coaching_busy():
+    """A guided run is going: everything else waits for its end."""
+    return _busy(coaching_lock_path())
+
+
 def _busy(path):
     try:
         fd = _open(path)
@@ -108,12 +122,22 @@ def _busy(path):
 
 
 @contextlib.contextmanager
-def reading(timeout):
-    """Held for a whole reading. Yields False when another reading was still
-    going after `timeout` seconds."""
-    fd = _wait_for(reading_lock_path(), timeout)
+def _held(path, timeout):
+    fd = _wait_for(path, timeout)
     try:
         yield fd is not None
     finally:
         if fd is not None:
             os.close(fd)
+
+
+def reading(timeout):
+    """Held for a whole reading. Yields False when another reading was still
+    going after `timeout` seconds."""
+    return _held(reading_lock_path(), timeout)
+
+
+def coaching():
+    """Held for a whole guided run, inside reading(). Yields False when
+    another run holds it, which it cannot while this one holds the reading."""
+    return _held(coaching_lock_path(), 0)

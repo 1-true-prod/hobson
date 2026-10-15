@@ -1,5 +1,6 @@
 """decider.py — the seam for hobson's optional remote decision model (Jev),
-and the one place where anything Hobson knows leaves the Mac for it.
+and the place where session text leaves the Mac. (Phone push, push.py, is the
+other: a fixed sentence and a project name.)
 
 Jev is a non-generative classifier reached through OpenRouter's Decisions
 API. It answers a typed question with a calibrated probability, instead of
@@ -79,7 +80,6 @@ import re
 import time
 from collections import namedtuple
 from urllib.error import HTTPError, URLError
-from urllib.parse import urlsplit
 from urllib.request import Request, urlopen
 
 import home
@@ -115,19 +115,7 @@ def find_key():
     key = os.environ.get("OPENROUTER_API_KEY")
     if key:
         return key
-    try:
-        with open(home.env_file(), encoding="utf-8") as f:
-            for line in f:
-                line = line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                k, _, v = line.partition("=")
-                if k.strip() == "OPENROUTER_API_KEY":
-                    v = v.strip().strip('"').strip("'")
-                    return v or None
-    except OSError:
-        pass
-    return None
+    return home.read_env("OPENROUTER_API_KEY")
 
 
 # ── Redaction: what may leave the machine ──────────────────────────────────
@@ -207,13 +195,6 @@ def _render(state):
 # ── The request ──────────────────────────────────────────────────────────
 
 
-def _endpoint_ok(url):
-    """Whether the key may go to `url`: https, or http to this machine only."""
-    parts = urlsplit(url or "")
-    return parts.scheme == "https" or (
-        parts.scheme == "http" and parts.hostname in ("127.0.0.1", "localhost", "::1"))
-
-
 def _post(payload, key, endpoint, timeout):
     """The one request that carries the key. Returns the parsed body; raises
     whatever urlopen and json raise."""
@@ -221,6 +202,10 @@ def _post(payload, key, endpoint, timeout):
                   headers={"Content-Type": "application/json", "Authorization": f"Bearer {key}"})
     with urlopen(req, timeout=timeout) as resp:
         return json.loads(resp.read())
+
+
+def _endpoint_refusal(endpoint):
+    return "the endpoint is not https" if home.is_valid_url(endpoint) else "the endpoint is not a valid URL"
 
 
 def check_key(key, config=None):
@@ -234,8 +219,8 @@ def check_key(key, config=None):
     if not key:
         return {"ok": False, "reason": "no key"}
     decider_cfg = _decider_config(config)
-    if not _endpoint_ok(decider_cfg["endpoint"]):
-        return {"ok": False, "reason": "the endpoint is not https"}
+    if not home.https_or_loopback(decider_cfg["endpoint"]):
+        return {"ok": False, "reason": _endpoint_refusal(decider_cfg["endpoint"])}
     payload = {"model": decider_cfg["model"], "state": "Hobson's setup is checking this key.",
                "questions": {"answer": {"type": "noul", "instructions": "This is a connection test."}}}
     started = time.monotonic()
@@ -298,8 +283,8 @@ def _ask(state, question, decider_cfg):
     place to keep a copy of what left; only the question type, model and
     cost are logged.
     """
-    if not _endpoint_ok(decider_cfg["endpoint"]):
-        log_record.write("[decider] the endpoint is not https -- falling back to local")
+    if not home.https_or_loopback(decider_cfg["endpoint"]):
+        log_record.write(f"[decider] {_endpoint_refusal(decider_cfg['endpoint'])} -- falling back to local")
         return None
     key = find_key()
     if not key:

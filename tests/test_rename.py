@@ -350,13 +350,13 @@ class TestEngineRegistry(unittest.TestCase):
 # ── Event map ─────────────────────────────────────────────────────────
 
 class TestEventMap(unittest.TestCase):
-    """Verify BaseEngine EVENT_MAP is correct."""
+    """Verify home.EVENT_KEYS is correct."""
 
     def test_event_map_keys(self):
-        from engines.base import BaseEngine
+        import home
         expected = {"Stop": "stop", "PermissionRequest": "permission",
                     "Notification": "notification", "PreToolUse": "commentary"}
-        self.assertEqual(BaseEngine.EVENT_MAP, expected)
+        self.assertEqual(home.EVENT_KEYS, expected)
 
 
 # ── Personality loading ───────────────────────────────────────────────

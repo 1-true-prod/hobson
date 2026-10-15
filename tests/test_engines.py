@@ -1,8 +1,9 @@
-"""Engine registry + per-engine run() dispatch.
+"""Engine registry + run() dispatch.
 
-Two families behave differently:
-  - BaseEngine (say, chatterbox): templates for Permission/Notification, classify for Stop.
-  - KokoroRealtimeEngine: every non-PreToolUse event goes through generate_or_skip.
+One dispatcher for every engine; the families differ in their phrase source:
+  - static (say, chatterbox): templates for Permission/Notification, classify for Stop.
+  - daemon (kokoro-realtime, pocket-tts): generate_or_skip for any event that
+    is not a fixed announcement.
 """
 
 import json
@@ -12,7 +13,7 @@ import pytest
 import engines.base as base
 
 # Captured before the autouse no_audio fixture swaps it out for every test.
-_REAL_SAY_WITH_VOLUME = base.BaseEngine._say_with_volume
+_REAL_RENDER_SAY = base.BaseEngine._render_say
 
 
 def _cfg(engine="say"):
@@ -97,13 +98,13 @@ def test_chatterbox_cache_miss_falls_back_to_say(claude_home, no_audio):
 def _kokoro(monkeypatch, recorded):
     from engines.kokoro_realtime import KokoroRealtimeEngine
     eng = KokoroRealtimeEngine(_cfg("kokoro-realtime"))
-    monkeypatch.setattr(eng, "_speak_live", lambda phrase, **k: recorded.append(phrase))
+    monkeypatch.setattr(eng, "speak", lambda phrase, kind, cold_start=False: recorded.append(phrase))
     return eng
 
 
 def test_kokoro_permission_routes_through_generate(claude_home, monkeypatch):
     import phrase_gen
-    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: ("done", "I asked permission."))
+    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: phrase_gen.Generation("done", "I asked permission."))
     spoken = []
     eng = _kokoro(monkeypatch, spoken)
     eng.run({"hook_event_name": "PermissionRequest", "tool_name": "Bash"})
@@ -112,7 +113,7 @@ def test_kokoro_permission_routes_through_generate(claude_home, monkeypatch):
 
 def test_kokoro_notification_routes_through_generate(claude_home, monkeypatch):
     import phrase_gen
-    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: ("done", "I have a notification."))
+    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: phrase_gen.Generation("done", "I have a notification."))
     spoken = []
     eng = _kokoro(monkeypatch, spoken)
     eng.run({"hook_event_name": "Notification", "message": "hey"})
@@ -126,7 +127,7 @@ def test_kokoro_stop_uses_transcript_and_generate(claude_home, monkeypatch, tmp_
     def fake_gen(event, detail, ctx, **k):
         seen["event"] = event
         seen["detail"] = detail
-        return ("done", "I finished everything.")
+        return phrase_gen.Generation("done", "I finished everything.")
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip", fake_gen)
     spoken = []
@@ -152,7 +153,7 @@ def test_kokoro_describe_event_branches(claude_home):
 
 def test_kokoro_skip_does_not_speak(claude_home, monkeypatch):
     import phrase_gen
-    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: (None, None))
+    monkeypatch.setattr(phrase_gen, "generate_or_skip", lambda *a, **k: phrase_gen.Generation(None, None, "SKIP", "model chose not to speak"))
     spoken = []
     eng = _kokoro(monkeypatch, spoken)
     eng.run({"hook_event_name": "PermissionRequest", "tool_name": "Bash"})
@@ -168,7 +169,7 @@ def test_a_realtime_stop_that_asks_is_flagged_and_gets_the_task(engine, claude_h
 
     def fake_gen(event, detail, ctx, **k):
         seen.update(ctx=ctx, awaiting=k["stop"].awaiting_answer)
-        return ("question", "I need your pick on the cat's stats.")
+        return phrase_gen.Generation("question", "I need your pick on the cat's stats.")
 
     monkeypatch.setattr(phrase_gen, "generate_or_skip", fake_gen)
     t = tmp_path / "t.jsonl"
@@ -184,7 +185,7 @@ def test_a_realtime_stop_that_asks_is_flagged_and_gets_the_task(engine, claude_h
     else:
         from engines.kokoro_realtime import KokoroRealtimeEngine as Eng
     eng = Eng(_cfg(engine))
-    monkeypatch.setattr(eng, "_speak_live", lambda phrase, **k: None)
+    monkeypatch.setattr(eng, "speak", lambda phrase, kind, cold_start=False: None)
     eng.run({"hook_event_name": "Stop", "transcript_path": str(t)})
     assert seen["awaiting"] is True
     # The request fell out of the four-turn window, so it rides as the Task.
@@ -196,8 +197,8 @@ def test_say_reads_the_phrase_as_text_never_as_an_option(phrase, no_audio, monke
     """A phrase is model output. Before `--`, "-o<path>" wrote audio over that file."""
     import shlex
     from engines.say import SayEngine
-    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
-    SayEngine(_cfg())._say_with_volume(phrase)
+    monkeypatch.setattr(base.BaseEngine, "_render_say", _REAL_RENDER_SAY)
+    SayEngine(_cfg()).speak(phrase, "done")
     [say] = [a for a in no_audio["popen"] if a[0] == "say"]
     assert say[-2:] == ["--", phrase] and say.index("--") > say.index("-o")
     # Played from the rendered clip; the phrase never reaches a shell.
@@ -234,7 +235,7 @@ def test_a_cached_template_goes_on_the_face_after_afplay(claude_home, no_audio, 
     clip = _cached(claude_home, phrase)
     seen = []
     _face_after_voice(monkeypatch, no_audio, seen)
-    ChatterboxEngine(_cfg("chatterbox")).try_bark(phrase, kind="done")
+    ChatterboxEngine(_cfg("chatterbox")).speak(phrase, "done")
     [shown] = seen
     assert (shown["phrase"], shown["kind"], shown["audio"]) == (phrase, "done", str(clip))
     assert shown["spawned"][-1][0] == "afplay" and shown["spawned"][-1][-1] == str(clip)
@@ -243,10 +244,10 @@ def test_a_cached_template_goes_on_the_face_after_afplay(claude_home, no_audio, 
 def test_the_say_path_renders_first_then_plays_and_shows_the_clip(no_audio, monkeypatch):
     """The face needs the audio to move to, so say renders before playback."""
     from engines.say import SayEngine
-    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    monkeypatch.setattr(base.BaseEngine, "_render_say", _REAL_RENDER_SAY)
     seen = []
     _face_after_voice(monkeypatch, no_audio, seen)
-    SayEngine(_cfg()).speak_dynamic("I pushed the branch.", kind="waiting")
+    SayEngine(_cfg()).speak("I pushed the branch.", "waiting")
     [shown] = seen
     say, played = shown["spawned"]
     assert say[0] == "say" and shown["audio"] == say[say.index("-o") + 1]
@@ -264,12 +265,15 @@ def test_a_say_that_cannot_render_plays_and_shows_nothing(no_audio, monkeypatch)
         def wait(self, *a, **k):
             return 1
 
-    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    monkeypatch.setattr(base.BaseEngine, "_render_say", _REAL_RENDER_SAY)
     monkeypatch.setattr(base.subprocess, "Popen", FailingSay)
     seen = []
     _face_after_voice(monkeypatch, no_audio, seen)
-    SayEngine(_cfg())._say_with_volume("I pushed the branch.")
+    assert SayEngine(_cfg()).speak("I pushed the branch.", "done") is True
     assert [a[0] for a in no_audio["popen"]] == ["say"] and seen == []
+    # Nothing played, so nothing is logged as played.
+    import log_record
+    assert not [r for r in log_record.read() if "barked" in r.body]
 
 
 def test_a_failing_face_still_plays_and_logs_the_bark(claude_home, no_audio, monkeypatch):
@@ -282,7 +286,7 @@ def test_a_failing_face_still_plays_and_logs_the_bark(claude_home, no_audio, mon
     monkeypatch.setattr(face, "show", broken)
     phrase = "The migration is finished."
     _cached(claude_home, phrase)
-    ChatterboxEngine(_cfg("chatterbox")).try_bark(phrase, kind="done")
+    ChatterboxEngine(_cfg("chatterbox")).speak(phrase, "done")
     assert no_audio["popen"][-1][0] == "afplay"
     log = (claude_home / "hobson.log").read_text()
     assert "face failed (no face today)" in log and "barked (template-cache)" in log
@@ -292,8 +296,8 @@ def test_a_phrase_presence_holds_never_reaches_the_face(no_audio, no_face, monke
     import presence
     from engines.say import SayEngine
     monkeypatch.setattr(presence, "route", lambda config, kind, phrase, project=None: None)
-    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", _REAL_SAY_WITH_VOLUME)
+    monkeypatch.setattr(base.BaseEngine, "_render_say", _REAL_RENDER_SAY)
     eng = SayEngine(_cfg())
-    eng.try_bark("The migration is finished.", kind="done")
-    assert eng.speak_dynamic("I pushed the branch.", kind="waiting") is False
+    assert eng.speak("The migration is finished.", "done") is False
+    assert eng.speak("I pushed the branch.", "waiting") is False
     assert no_audio["popen"] == [] and no_face == []

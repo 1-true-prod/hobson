@@ -11,13 +11,18 @@ every change of state. Everything that decides what to say is here.
 States: present, away, call (a call app has the microphone), company (two or
 more people in frame), and unknown -- no helper, a stale file, presence off.
 Unknown behaves exactly as Hobson did before presence existed: that is the
-fallback for every failure in this module.
+fallback for every failure in this module. One more comes from Hobson, not
+the sensor: coaching, while a guided run (`hobson coach`, coach.py) holds
+voice.coaching(), whether presence is on or not.
 
 What each state does to a phrase (route, at the engines' speak seams):
 
     present, unknown   spoken, as always
-    away, call         held on the salver (held_path()); commentary is dropped,
-                       since a mid-work remark is stale by the time you are back
+    away, call,        held on the salver (held_path()); commentary is dropped,
+    coaching           since a mid-work remark is stale by the time you are back;
+                       a run tells what it held when it ends
+    away also          pushed to the phone for the kinds push.kinds names, when
+                       push.backend is on (push.py): never on a call or with company
     company            a wait goes out as one detail-free sentence (COMPANY_LINE)
                        -- the project and what it wants stay private -- and the
                        rest is held
@@ -36,8 +41,10 @@ that remarks on every movement gets switched off: no greeting after less
 than MIN_AWAY_FOR_GREETING, at most one farewell per FAREWELL_EVERY, never
 the same line twice running.
 
-A nudge pauses while you are away without spending a step (nudge._run), and a
-watchdog line is held like anything else.
+A nudge pauses while you are away or a run goes, without spending a step
+(nudge._run), and a watchdog line is held like anything else. Nothing is said
+at a transition or a wave while a run goes: the run's own briefing tells
+what was held.
 
 The phone switch (presence.phone): an Android phone face down turns the camera
 off, face up turns it on, and Hobson says so. The helper reads it over adb and
@@ -63,7 +70,10 @@ import time
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import home  # noqa: E402
+import kinds  # noqa: E402
 import log_record  # noqa: E402
+import session_status  # noqa: E402
+import voice  # noqa: E402
 
 STATES = ("present", "away", "call", "company")
 
@@ -81,13 +91,11 @@ LOOK_WAIT_SECONDS = 4.0
 MAX_HELD = 20
 HELD_MAX_AGE = 12 * 3600
 
-# Most urgent first: what the briefing leads with.
-URGENCY = {"waiting": 0, "broken": 1, "stalled": 2, "done": 3, "info": 4}
+# What is held, dropped or never held, and the briefing's order (most urgent
+# first), are properties of each kind: kinds.py.
 
-# Never held: the briefing itself, a nudge, which checks for itself and
-# pauses rather than piling up (nudge._run), and an answer (ask.py): you
-# asked, at the menu, whatever the camera makes of it.
-NEVER_HELD = ("briefing", "nudge", "answer")
+# A guided run is going (voice.coaching): what is said meanwhile waits for it.
+COACHING = "coaching"
 
 COMPANY_LINE = "Something needs your attention when you have a moment."
 
@@ -96,6 +104,7 @@ GREETINGS = {
     "call": "Now that your call's over:",
     "company": "Now that it's just you:",
     "wave": "Hello.",
+    COACHING: "In the meantime:",
 }
 
 # A return after less than this says nothing about sessions that are merely
@@ -103,17 +112,11 @@ GREETINGS = {
 # anything held while you were gone is always told.
 MIN_AWAY_FOR_WAITS = 60.0
 
-# How old a permission request or a question can be and still count as
-# "waiting on you" for the lines at the door. An abandoned session from this
-# morning is not what "before you go" means.
-PERMISSION_WAIT_SECONDS = 600
-QUESTION_WAIT_SECONDS = 2 * 3600
-
 # Spawns of the helper at most this often: every hook may ask, and one is
 # plenty.
 SPAWN_THROTTLE_SECONDS = 15
 
-NEED = {"approval": "your approval", "answer": "an answer from you", "you": "you"}
+NEED = session_status.NEED
 
 # Said when the phone is turned over (the helper runs --switch).
 SWITCH_LINES = {"down": "Camera off.", "up": "Camera on."}
@@ -267,7 +270,12 @@ def _look(record, timeout=LOOK_WAIT_SECONDS):
 
 def audience(config, look=True, now=None):
     """(state, record): who is listening right now. Takes a look first when
-    that is allowed and would settle it (needs_look). Never raises."""
+    that is allowed and would settle it (needs_look). Coaching while a
+    guided run goes, before the sensor is read or a look taken: the
+    listener is busy with the run, and may be across the room from the
+    keyboard. Never raises."""
+    if voice.coaching_busy():
+        return COACHING, {}
     cfg = settings(config)
     if not cfg.get("enabled"):
         return "unknown", {}
@@ -280,17 +288,64 @@ def audience(config, look=True, now=None):
     return state, record
 
 
+# ── Is this session the one you are looking at ─────────────────────────────
+
+def watching(terminal, frontmost, client, app_of):
+    """Is the session running in `terminal` the one on screen? terminal:
+    {"tmux_pane": "%3"}, {"tty": "/dev/ttys004"} or {} (where it runs).
+    frontmost: the frontmost app's bundle path, or None. client: (tty, pane)
+    of the tmux client used most recently, or None. app_of: tty -> the .app
+    that owns it, or None (terminal_jump._owning_app). Pure; the pane is
+    compared before app_of, which shells out."""
+    if not frontmost:
+        return False
+    pane = terminal.get("tmux_pane")
+    if pane:
+        if client is None or client[1] != pane:
+            return False
+        return app_of(client[0]) == frontmost
+    tty = terminal.get("tty")
+    return bool(tty) and app_of(tty) == frontmost
+
+
+def watched(config, project, now=None):
+    """You are present, the frontmost app is the terminal showing this
+    session, and (in tmux) its pane is the active one of the client you used
+    last. Costs no subprocess until the record says you are present with an
+    app in front. Never raises: any failure is False."""
+    try:
+        if not home.with_defaults(config)["focus"]["enabled"]:
+            return False
+        state, record = audience(config, look=False, now=now)
+        frontmost = record.get("frontmost")
+        if state != "present" or not frontmost:
+            return False
+        import nudge
+        import terminal_jump
+        pane = os.environ.get("TMUX_PANE")
+        if pane:
+            terminal = {"tmux_pane": pane}
+        else:
+            tty = nudge.read_alive(project).get("tty")
+            terminal = {"tty": tty} if tty else {}
+        client = terminal_jump.active_tmux_client() if pane else None
+        return watching(terminal, frontmost, client, terminal_jump._owning_app)
+    except Exception:
+        return False
+
+
 # ── What to do with a phrase ───────────────────────────────────────────────
 
 def decision(state, kind):
     """What happens to a phrase of this kind, said to this audience:
     "speak", "hold", "drop" or "company". Pure; see the module docstring."""
-    if kind in NEVER_HELD or state not in ("away", "call", "company"):
+    props = kinds.of(kind)
+    if props.never_held or state not in ("away", "call", "company", COACHING):
         return "speak"
-    if kind == "commentary":
+    if props.passing:
         return "drop"
     if state == "company":
-        return "company" if kind == "waiting" else "hold"
+        return "company" if props.waits_on_you else "hold"
     return "hold"
 
 
@@ -299,24 +354,42 @@ def route(config, kind, phrase, project=None):
     it was held for your return or dropped. Called at the speak seams, so
     every engine and every event goes through it once. Commentary never
     triggers a look: it is dropped while away, and not worth the camera."""
-    if kind in NEVER_HELD or not phrase:
+    props = kinds.of(kind)
+    if props.never_held or not phrase:
         return phrase
-    state, _ = audience(config, look=kind != "commentary")
+    state, _ = audience(config, look=not props.passing)
     what = decision(state, kind)
     if what == "speak":
         return phrase
     if what == "drop":
         log_record.write(f"[presence] dropped ({state}, {kind}) -> {phrase!r}")
         return None
-    hold(project if project is not None else home.derive_project_label(), kind, phrase)
+    project = project if project is not None else home.derive_project_label()
+    hold(project, kind, phrase)
     log_record.write(f"[presence] held ({state}, {kind}) -> {phrase!r}")
+    if state == "away":
+        _push(config, project, kind, phrase)
     return COMPANY_LINE if what == "company" else None
+
+
+def _push(config, project, kind, phrase):
+    """Send a held phrase to the phone, if push is on. Whatever happens, the
+    caller's result is the same as with push off."""
+    section = config.get("push") if isinstance(config, dict) else None
+    if not isinstance(section, dict) or section.get("backend") != "ntfy":
+        return
+    try:
+        import push
+        push.notify(config, project, kind, phrase)
+    except Exception as e:
+        log_record.write(f"[push] could not start: {type(e).__name__}")
 
 
 def pauses_nudge(state):
     """A nudge waits for you to come back rather than talking to an empty
-    room or over a call. Company hears it: its phrases name nothing."""
-    return state in ("away", "call")
+    room, over a call or into a run. Company hears it: its phrases name
+    nothing."""
+    return state in ("away", "call", COACHING)
 
 
 # ── The salver: what is held for your return ───────────────────────────────
@@ -345,16 +418,29 @@ def _held_items():
         items = [i for i in items if isinstance(i, dict) and now - float(i.get("ts") or 0) <= HELD_MAX_AGE]
         yield items
         items[:] = items[-MAX_HELD:]
-        tmp = f"{held_path()}.{os.getpid()}.tmp"
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump({"items": items}, f, indent=2)
-        os.replace(tmp, held_path())
+        home.write_json_atomic(held_path(), {"items": items})
 
 
 def hold(project, kind, phrase, now=None):
+    item = {"ts": time.time() if now is None else now, "project": project or "",
+            "kind": kind, "phrase": phrase}
+    if isinstance(phrase, log_record.Unlogged):
+        item["logged"] = phrase.logged
     with _held_items() as items:
-        items.append({"ts": time.time() if now is None else now, "project": project or "",
-                      "kind": kind, "phrase": phrase})
+        items.append(item)
+
+
+def told(item, project=None):
+    """A held item as it is told: a sentence, kept out of the log as it was
+    when held, and opened with "On `project`:" unless it already names it
+    so (another session's note does)."""
+    text = _sentence(item.get("phrase"))
+    if item.get("logged"):
+        text = log_record.Unlogged(text, item["logged"])
+    text = kinds.guarded(text, item.get("kind"))
+    if project and not text.startswith(f"On {project}:"):
+        return log_record.joined([f"On {project}:", text])
+    return text
 
 
 def take_held():
@@ -371,76 +457,6 @@ def held():
         return list(items)
 
 
-# ── Who is waiting on you ──────────────────────────────────────────────────
-
-def _lock_busy(path):
-    """True while some process holds the flock on `path` (a running nudge)."""
-    try:
-        with open(path, "a+", encoding="utf-8") as fd:
-            try:
-                fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
-            except BlockingIOError:
-                return True
-            fcntl.flock(fd, fcntl.LOCK_UN)
-    except OSError:
-        pass
-    return False
-
-
-def _read_float(path):
-    try:
-        with open(path, encoding="utf-8") as f:
-            return float(f.read().strip())
-    except (OSError, ValueError):
-        return 0.0
-
-
-def waiting_on_you(now=None):
-    """[(project, need)] for every session blocked on you, need being a key
-    of NEED. Read from what already exists -- a running nudge, the last
-    Stop's category, the liveness record -- and answered by anything that
-    happened since: a prompt you typed, a later turn, a later tool call.
-
-    Known false positive: an approved Bash call that runs long (a build)
-    leaves the liveness record at PermissionRequest until the next tool
-    call, so for up to PERMISSION_WAIT_SECONDS it reads as waiting on your
-    approval. The window is what bounds it; nothing records the approval."""
-    import nudge
-    now = time.time() if now is None else now
-    found = []
-    try:
-        names = sorted(os.listdir(home.sessions_dir()))
-    except OSError:
-        return found
-    for name in names:
-        if not name.endswith(".json"):
-            continue
-        try:
-            with open(os.path.join(home.sessions_dir(), name), encoding="utf-8") as f:
-                state = json.load(f)
-        except (OSError, ValueError):
-            continue
-        project = state.get("project") or ""
-        activity = _read_float(nudge.activity_path(project))
-        alive = nudge.read_alive(project)
-        alive_ts = float(alive.get("ts") or 0)
-        last_stop = float(state.get("last_stop_time") or 0)
-        need = None
-        if _lock_busy(home.project_file("nudge", project, ".lock")):
-            need = "you"
-        elif (state.get("last_stop_category") == "question"
-              and last_stop > max(activity, alive_ts)
-              and now - last_stop <= QUESTION_WAIT_SECONDS):
-            need = "answer"
-        elif (alive_ts > max(activity, last_stop) and now - alive_ts <= PERMISSION_WAIT_SECONDS
-              and (alive.get("event") == "PermissionRequest"
-                   or alive.get("tool") in nudge.USER_WAIT_TOOLS)):
-            need = "answer" if alive.get("tool") in nudge.USER_WAIT_TOOLS else "approval"
-        if need:
-            found.append((project, need))
-    return found
-
-
 # ── What is said at the door ───────────────────────────────────────────────
 
 def _sentence(text):
@@ -451,7 +467,7 @@ def _sentence(text):
 def compose_briefing(items, waits, came_from):
     """One briefing for your return, or None when there is nothing to tell.
 
-    Most urgent first (URGENCY), two told in full and the rest counted. A
+    Most urgent first (kinds.Kind.urgency), two told in full and the rest counted. A
     session's repeated waiting lines collapse to its latest, and a session
     that is still waiting but held nothing is named once. Pure.
     """
@@ -462,30 +478,30 @@ def compose_briefing(items, waits, came_from):
             latest_wait[item.get("project") or ""] = item
         else:
             others.append(item)
-    # (urgency, ts, project or None for a line that names its own, text)
-    entries = [(URGENCY["waiting"], float(i.get("ts") or 0), i.get("project") or "",
-                _sentence(i.get("phrase"))) for i in latest_wait.values()]
+    # (urgency, ts, project or None for a line that names its own, held item or text)
+    waiting = kinds.of("waiting").urgency
+    entries = [(waiting, float(i.get("ts") or 0), i.get("project") or "", i)
+               for i in latest_wait.values()]
     for project, need in waits:
         if project not in latest_wait:
             # After the held waits of the same urgency: those carry the words.
-            entries.append((URGENCY["waiting"], float("inf"), None,
+            entries.append((waiting, float("inf"), None,
                             f"{project or 'A session'} is still waiting on {NEED.get(need, 'you')}."))
-    entries += [(URGENCY.get(i.get("kind"), URGENCY["info"]), float(i.get("ts") or 0),
-                 i.get("project") or "", _sentence(i.get("phrase"))) for i in others]
+    entries += [(kinds.of(i.get("kind")).urgency, float(i.get("ts") or 0),
+                 i.get("project") or "", i) for i in others]
     if not entries:
         return None
     entries.sort(key=lambda e: (e[0], e[1]))
-    told, named = [], None
-    for _, _, project, text in entries[:2]:
+    said, named = [], None
+    for _, _, project, entry in entries[:2]:
         # Name the project once for a run of its lines, not before each.
-        if project and project != named:
-            text = f"On {project}: {text}"
+        name = project if project != named else None
+        said.append(entry if isinstance(entry, str) else told(entry, name))
         named = project
-        told.append(text)
-    rest = len(entries) - len(told)
+    rest = len(entries) - len(said)
     if rest:
-        told.append(f"Plus {rest} more {'update' if rest == 1 else 'updates'}.")
-    return " ".join([GREETINGS.get(came_from, GREETINGS["away"])] + told)
+        said.append(f"Plus {rest} more {'update' if rest == 1 else 'updates'}.")
+    return log_record.joined([GREETINGS.get(came_from, GREETINGS["away"])] + said)
 
 
 def compose_departure(waits):
@@ -498,10 +514,38 @@ def compose_departure(waits):
     return f"Before you go — {len(waits)} sessions are waiting on you."
 
 
+def compose_unmuted(waits):
+    """What is said on unmute: the sessions still waiting on you, in one line,
+    never the backlog. You mute so a meeting does not hear Hobson; what he
+    would have said meanwhile is stale by the time it ends. Pure."""
+    if not waits:
+        return None
+    if len(waits) == 1:
+        project, need = waits[0]
+        return f"{project or 'A session'} is waiting on {NEED.get(need, 'you')}."
+    return f"{len(waits)} sessions are waiting on you."
+
+
+def on_unmute(config=None, now=None):
+    """You unmuted (`hobson on`): say who is still waiting on you, if anyone.
+    The Stops that came while muted were read by the rules
+    (hobson._read_silent_stop), so this knows. Returns what was said."""
+    config = home.load_config() if config is None else config
+    waits = session_status.waiting_on_you(now)
+    log_record.write(f"[mute] off ({len(waits)} waiting on you)")
+    reason = home.silence_reason(config)
+    if reason:
+        return None  # quiet hours: the next thing said will do
+    text = compose_unmuted(waits)
+    if text:
+        _speak(config, text)
+    return text
+
+
 def _speak(config, text):
     import hobson
     engine = hobson.load_engine(config)
-    engine.speak_dynamic(text, allow_cold_start=True, kind="briefing")
+    engine.speak(text, "briefing", cold_start=True)
 
 
 def on_transition(came_from, to, source, away_for=0.0, config=None, now=None):
@@ -512,6 +556,9 @@ def on_transition(came_from, to, source, away_for=0.0, config=None, now=None):
     log_record.write(f"[presence] {came_from} -> {to} ({source}, after {away_for:.0f}s)")
     if not cfg.get("enabled"):
         return None
+    if voice.coaching_busy():
+        log_record.write("[presence] a run is going: nothing said, held items kept for its end")
+        return None
     reason = home.silence_reason(config)
 
     if to == "present" and came_from in ("away", "call", "company"):
@@ -519,7 +566,7 @@ def on_transition(came_from, to, source, away_for=0.0, config=None, now=None):
             log_record.write(f"[presence] briefing skipped ({reason}), held items kept")
             return None
         items = take_held()
-        waits = waiting_on_you(now) if away_for >= MIN_AWAY_FOR_WAITS else []
+        waits = session_status.waiting_on_you(now) if away_for >= MIN_AWAY_FOR_WAITS else []
         text = compose_briefing(items, waits, came_from)
         if text:
             log_record.write(f"[presence] briefing ({len(items)} held) -> {text!r}")
@@ -535,7 +582,7 @@ def on_transition(came_from, to, source, away_for=0.0, config=None, now=None):
     leaving = to == "away" and came_from in ("present", "company") and (
         source == "lock" or (source == "camera" and cfg.get("mode") == "continuous"))
     if leaving and not reason:
-        text = compose_departure(waiting_on_you(now))
+        text = compose_departure(session_status.waiting_on_you(now))
         if not text and cfg.get("greetings") and _farewell_due(now):
             text = _pick_line("farewell", FAREWELLS, now=now)
         if text:
@@ -602,10 +649,7 @@ def _note_line(key, value):
 
 
 def _save_lines(record):
-    tmp = f"{_lines_path()}.{os.getpid()}.tmp"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(record, f)
-    os.replace(tmp, _lines_path())
+    home.write_json_atomic(_lines_path(), record, indent=None)
 
 
 def on_wave(config=None, now=None):
@@ -613,11 +657,11 @@ def on_wave(config=None, now=None):
     config = home.load_config() if config is None else config
     now = time.time() if now is None else now
     log_record.write("[presence] wave")
-    if not settings(config).get("enabled") or home.silence_reason(config):
+    if not settings(config).get("enabled") or home.silence_reason(config) or voice.coaching_busy():
         return None
     if now - float(_read_lines().get("wave_ts") or 0) < WAVE_EVERY:
         return None
-    text = compose_briefing(take_held(), waiting_on_you(now), "wave")
+    text = compose_briefing(take_held(), session_status.waiting_on_you(now), "wave")
     if text:
         _note_line("wave_ts", now)
     else:
@@ -649,14 +693,16 @@ def face_page():
     return os.path.join(home.ROOT, "presence", "face")
 
 
-def expected(config):
+def expected(config, silenced=False):
     """What a helper should be running with -- the fields of its record that
     ensure_running compares -- or None when none should run. With presence off
     and the face on it runs face only: it senses nothing, like a pause, with
-    no preview, phone or pause of its own (and nothing to wave at). Pure."""
+    no preview, phone or pause of its own (and nothing to wave at). So does a
+    helper that has to be started while Hobson is silenced: a muted meeting
+    must not turn the camera on for a line only the face shows. Pure."""
     cfg = settings(config)
     face = face_on(config)
-    if not cfg.get("enabled"):
+    if not cfg.get("enabled") or silenced:
         if not face:
             return None
         return {"mode": cfg.get("mode") or "auto", "phone_setting": None, "preview": False,
@@ -722,23 +768,55 @@ def stop_helper(record=None):
     return False
 
 
+def _exited(pid, seconds=2.0):
+    """Wait, at most `seconds`, for a stopped helper's process to be gone."""
+    deadline = time.time() + seconds
+    while True:
+        try:
+            os.getpgid(pid)
+        except ProcessLookupError:
+            return True
+        except OSError:
+            return False
+        if time.time() >= deadline:
+            return False
+        time.sleep(0.1)
+
+
 def ensure_running(config, now=None):
     """Start the helper if presence or the face is on, it is built, and none
     is running with these settings (expected). Cheap when one is: a stat and a
     read. A helper built before the face writes no "face", so it is restarted
     as this one. Launched through `open`, so the camera permission is the
-    bundle's own, not the terminal's that ran the hook."""
+    bundle's own, not the terminal's that ran the hook.
+
+    One that disagrees is stopped, and the new one started in this call once
+    the old process is gone (two seconds at most): `open` without -n hands a
+    launch to a running instance of the same bundle, so one issued while the
+    old helper is still exiting is lost. Silenced is such a disagreement for a
+    helper with the camera: a mute turns it off, and unmuting turns it back on.
+    With the face off there is no face only helper to turn into, so it is
+    stopped and none started."""
     cfg = settings(config)
-    want = expected(config)
-    if want is None or not helper_built():
+    silenced = bool(home.silence_reason(config))
+    want = expected(config, silenced)
+    if not helper_built():
         return False
     now = time.time() if now is None else now
     record = read_state()
-    if helper_alive(record, now):
+    alive = helper_alive(record, now)
+    if want is None:
+        if silenced and alive and not record.get("face_only"):
+            stop_helper(record)
+        return False
+    if alive:
         if _matches(record, want):
             return False
-        stop_helper(record)  # restarted with the new settings by the next hook
-        return False
+        pid = int(record.get("pid") or 0)
+        if not stop_helper(record) or not _exited(pid):
+            return False
+        with contextlib.suppress(OSError):
+            os.remove(_spawn_marker())
     try:
         if now - os.path.getmtime(_spawn_marker()) < SPAWN_THROTTLE_SECONDS:
             return False
@@ -809,7 +887,7 @@ def status(config=None, now=None):
         "camera": record.get("camera"), "call_app": record.get("call_app"),
         "idle": record.get("idle"), "people": record.get("people"),
         "phone": record.get("phone"), "camera_allowed": record.get("camera_allowed"),
-        "held": len(held()), "waiting": waiting_on_you(now),
+        "held": len(held()), "waiting": session_status.waiting_on_you(now),
     }
 
 
@@ -903,29 +981,19 @@ def doctor_lines(config=None):
 def set_setting(key, value, section_name="presence"):
     """Write <section>.<key> (presence, or face) to the config file. The
     running helper is restarted with it by the next hook (ensure_running)."""
-    path = home.config_file()
-    try:
-        with open(path, encoding="utf-8") as f:
-            config = json.load(f)
-    except (OSError, ValueError):
-        config = {}
-    section = config.get(section_name) if isinstance(config.get(section_name), dict) else {}
-    section[key] = value
-    config[section_name] = section
-    tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(config, f, indent=2)
-        f.write("\n")
-    os.replace(tmp, path)
+    home.update_config({f"{section_name}.{key}": value})
 
 
 def _restart():
-    """Now, not at the next hook: whoever changed a setting is watching."""
-    if stop_helper():
+    """Now, not at the next hook: whoever changed a setting is watching.
+    Silenced, the helper is face only whatever the setting, so ensure_running
+    alone decides: it leaves a face only one be and turns a full one into it."""
+    config = home.load_config()
+    if not home.silence_reason(config) and stop_helper():
         time.sleep(1.0)
     with contextlib.suppress(OSError):
         os.remove(_spawn_marker())
-    ensure_running(home.load_config())
+    ensure_running(config)
 
 
 def main(argv=None):
@@ -949,8 +1017,12 @@ def main(argv=None):
     parser.add_argument("--camera-status", action="store_true")
     # From the helper, about the face's window: EVENT PHRASE PROJECT DETAIL.
     parser.add_argument("--face-event", nargs=4, metavar=("EVENT", "PHRASE", "PROJECT", "DETAIL"))
+    # From the helper, its Skip / Take me there buttons: ACTION PROJECT.
+    parser.add_argument("--face-action", nargs=2, metavar=("ACTION", "PROJECT"))
     # From the menu's Ask Hobson: status, failed or recap (ask.py).
     parser.add_argument("--ask", metavar="QUESTION")
+    # From `hobson on`, when it ended a mute.
+    parser.add_argument("--unmuted", action="store_true")
     # From the helper, as it exits: why (it writes no log of its own).
     parser.add_argument("--sensor-exit", metavar="REASON")
     args = parser.parse_args(argv)
@@ -958,12 +1030,21 @@ def main(argv=None):
     if args.face_event:
         import face
         face.log_event(*args.face_event)
+    elif args.face_action:
+        import terminal_jump
+        action, project = args.face_action
+        if action == "skip":
+            terminal_jump.skip(project)
+        elif action == "take-there":
+            terminal_jump.take_there(project)
     elif args.ask:
         import ask
         home.migrate_legacy_state()
         ask.answer(args.ask, source="menu")
     elif args.sensor_exit:
         log_record.write(f"[presence] sensor exited ({args.sensor_exit})")
+    elif args.unmuted:
+        on_unmute()
     elif args.wave:
         on_wave()
     elif args.switch:

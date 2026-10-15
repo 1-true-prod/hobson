@@ -796,8 +796,16 @@ final class DebugWindow: NSObject, NSWindowDelegate {
 
 // MARK: - The menu bar
 
+/// One line of the session list: `state` is waiting, failed, working or
+/// finished, `text` what session_status.py --json says of it.
+struct SessionRow: Equatable {
+    let project: String
+    let state: String
+    let text: String
+}
+
 /// The icon in the menu bar, and its menu. Main thread only.
-final class MenuBar: NSObject {
+final class MenuBar: NSObject, NSMenuDelegate {
     let item = NSStatusBar.system.statusItem(withLength: NSStatusItem.squareLength)
     let menu = NSMenu()
     let status = NSMenuItem(title: "Hobson Presence", action: nil, keyEquivalent: "")
@@ -806,6 +814,14 @@ final class MenuBar: NSObject {
     let wavesItem = NSMenuItem(title: "Answer Waves", action: #selector(toggleWaves), keyEquivalent: "")
     let faceItem = NSMenuItem(title: "Show Hobson", action: #selector(toggleFace), keyEquivalent: "")
     let askItem = NSMenuItem(title: "Ask Hobson", action: nil, keyEquivalent: "")
+    let sessionsHeader = NSMenuItem(title: "Sessions", action: nil, keyEquivalent: "")
+    private var sessionItems: [NSMenuItem] = []
+    private var sessionRows: [SessionRow]?
+    private var updating = false
+    private var stale = false
+    private var badge = ""
+    var onJump: ((String) -> Void)?
+    var onOpen: (() -> Void)?
     /// The questions, by the key presence.py --ask takes (ask.py).
     static let questions = [("status", "What needs me?"), ("recap", "What have you been doing?"),
                             ("failed", "What failed?")]
@@ -825,8 +841,13 @@ final class MenuBar: NSObject {
         super.init()
         for entry in [previewItem, presenceItem, wavesItem, faceItem] { entry.target = self }
         status.isEnabled = false
+        sessionsHeader.isEnabled = false
         menu.autoenablesItems = false
+        menu.delegate = self
         menu.addItem(status)
+        menu.addItem(.separator())
+        menu.addItem(sessionsHeader)
+        placeSessionItems([NSMenuItem(title: "Reading sessions…", action: nil, keyEquivalent: "")])
         menu.addItem(.separator())
         let questions = NSMenu()
         for (key, title) in MenuBar.questions {
@@ -851,6 +872,75 @@ final class MenuBar: NSObject {
     @objc func togglePresence() { onPresence?() }
     @objc func toggleWaves() { onWaves?() }
     @objc func toggleFace() { onFace?() }
+    func menuWillOpen(_ menu: NSMenu) { onOpen?() }
+
+    @objc func jump(_ sender: NSMenuItem) {
+        if let project = sender.representedObject as? String { onJump?(project) }
+    }
+
+    private func placeSessionItems(_ items: [NSMenuItem]) {
+        for entry in sessionItems { menu.removeItem(entry) }
+        let at = menu.index(of: sessionsHeader) + 1
+        for (offset, entry) in items.enumerated() {
+            entry.isEnabled = entry.action != nil
+            menu.insertItem(entry, at: at + offset)
+        }
+        sessionItems = items
+    }
+
+    /// The session list and the count on the icon. Rows the list already
+    /// shows are left alone: swapping them under the pointer moves the row
+    /// being aimed at.
+    func setSessions(_ rows: [SessionRow], waiting: Int) {
+        stale = false
+        refreshHeader()
+        if rows != sessionRows {
+            sessionRows = rows
+            placeSessionItems(rows.isEmpty
+                ? [NSMenuItem(title: "No sessions to show", action: nil, keyEquivalent: "")]
+                : rows.map { row -> NSMenuItem in
+                    let entry = NSMenuItem(title: row.text, action: #selector(jump(_:)), keyEquivalent: "")
+                    entry.target = self
+                    entry.representedObject = row.project
+                    let dot = NSMutableAttributedString(
+                        string: "\u{25CF} ", attributes: [.foregroundColor: MenuBar.dotColors[row.state] ?? NSColor.labelColor])
+                    dot.append(NSAttributedString(string: row.text, attributes: [.foregroundColor: NSColor.labelColor]))
+                    entry.attributedTitle = dot
+                    return entry
+                })
+        }
+        let text = waiting > 0 ? " \(waiting)" : ""
+        if text != badge {
+            badge = text
+            render()
+        }
+    }
+
+    /// A read that failed or timed out: the rows stay, marked as old, or, with
+    /// nothing read yet, the list says so.
+    func sessionsUnread() {
+        if sessionRows == nil {
+            placeSessionItems([NSMenuItem(title: "Could not read sessions", action: nil, keyEquivalent: "")])
+        } else {
+            stale = true
+        }
+        refreshHeader()
+    }
+
+    /// "Sessions (updating)" while a slow read is still running.
+    func setUpdating(_ on: Bool) {
+        updating = on
+        refreshHeader()
+    }
+
+    private func refreshHeader() {
+        sessionsHeader.title = updating ? "Sessions (updating)" : stale ? "Sessions (last read failed)" : "Sessions"
+    }
+
+    static let dotColors: [String: NSColor] = [
+        "waiting": .systemOrange, "failed": .systemRed, "working": .systemBlue, "finished": .systemGreen,
+    ]
+
     @objc func ask(_ sender: NSMenuItem) {
         if let key = sender.representedObject as? String { onAsk?(key) }
     }
@@ -874,15 +964,24 @@ final class MenuBar: NSObject {
     }
 
     private func show(_ state: String) {
-        guard state != shown, let button = item.button else { return }
+        guard state != shown else { return }
         shown = state
-        let name = MenuBar.symbols[state] ?? "person.fill"
-        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Hobson: \(state)") {
+        render()
+    }
+
+    /// The icon for the state, with the count of sessions waiting on you
+    /// beside it.
+    private func render() {
+        guard !shown.isEmpty, let button = item.button else { return }
+        let name = MenuBar.symbols[shown] ?? "person.fill"
+        if let image = NSImage(systemSymbolName: name, accessibilityDescription: "Hobson: \(shown)") {
             image.isTemplate = true
             button.image = image
-            button.title = ""
+            button.imagePosition = .imageLeft
+            button.title = badge
+            item.length = badge.isEmpty ? NSStatusItem.squareLength : NSStatusItem.variableLength
         } else {
-            button.title = "H"
+            button.title = "H" + badge
         }
     }
 }
@@ -896,9 +995,46 @@ final class Controls {
     var session: AVCaptureSession?
     var face: FaceController?
 
+    /// How often the session list is read with nobody looking, which also
+    /// sets the badge. A face event reads it too, and opening the menu.
+    static let sessionsEvery: TimeInterval = 15
+    /// A read slower than this puts "(updating)" on the open menu.
+    static let slowRead: TimeInterval = 0.3
+    private var sessionsTimer: Timer?
+    private var sessionsReading = false
+    private var slowMark: DispatchWorkItem?
+
+    /// One read at a time: a trigger that finds one running does nothing, so
+    /// a slow Python cannot pile up. The read runs off the main thread (the
+    /// menu opens on what it last drew), and the rows are replaced when it
+    /// returns.
+    func refreshSessions() {
+        guard !sessionsReading else { return }
+        sessionsReading = true
+        let mark = DispatchWorkItem { [weak self] in self?.menuBar.setUpdating(true) }
+        slowMark = mark
+        DispatchQueue.main.asyncAfter(deadline: .now() + Controls.slowRead, execute: mark)
+        monitor.readSessions { [weak self] rows, waiting in
+            DispatchQueue.main.async {
+                guard let self = self else { return }
+                self.slowMark?.cancel()
+                self.menuBar.setUpdating(false)
+                self.sessionsReading = false
+                if let rows = rows {
+                    self.menuBar.setSessions(rows, waiting: waiting)
+                } else {
+                    self.menuBar.sessionsUnread()
+                }
+            }
+        }
+    }
+
     init(_ monitor: Monitor) {
         self.monitor = monitor
-        monitor.onFaceSignal = { [weak self] in self?.lineArrived() }
+        monitor.onFaceSignal = { [weak self] in
+            self?.refreshSessions()
+            self?.lineArrived()
+        }
         monitor.camera.onSession = { [weak self] session in
             DispatchQueue.main.async {
                 self?.session = session
@@ -922,9 +1058,17 @@ final class Controls {
         }
         // Answered by presence.py --ask, detached: the model can take a while.
         menuBar.onAsk = { [weak monitor] key in monitor?.runScript(["--ask", key]) }
+        menuBar.onJump = { [weak monitor] project in monitor?.runScript(["--face-action", "take-there", project]) }
+        menuBar.onOpen = { [weak self] in self?.refreshSessions() }
         menuBar.onFace = { [weak monitor] in
             monitor?.work.async { monitor?.setFace(!(monitor?.faceOn ?? false)) }
         }
+        refreshSessions()
+        let timer = Timer(timeInterval: Controls.sessionsEvery, repeats: true) { [weak self] _ in
+            self?.refreshSessions()
+        }
+        RunLoop.main.add(timer, forMode: .common)
+        sessionsTimer = timer
         if monitor.preview { showPreview(true) }
         // A line written just before this helper started (face.py started it).
         if monitor.faceOn { lineArrived() }
@@ -1295,6 +1439,43 @@ final class Monitor {
         try? p.run()
     }
 
+    /// session_status.py --json, run on a global queue and ended after
+    /// `timeout` seconds. Calls back with nil rows when it failed or timed out.
+    func readSessions(timeout: TimeInterval = 10, _ done: @escaping ([SessionRow]?, Int) -> Void) {
+        guard let python = o.python, let script = o.script else { return done(nil, 0) }
+        let sessions = (script as NSString).deletingLastPathComponent + "/session_status.py"
+        DispatchQueue.global(qos: .utility).async { [home = o.home] in
+            let p = Process()
+            p.executableURL = URL(fileURLWithPath: python)
+            p.arguments = [sessions, "--json"]
+            var env = ProcessInfo.processInfo.environment
+            env["HOME"] = (home as NSString).deletingLastPathComponent
+            p.environment = env
+            let pipe = Pipe()
+            p.standardOutput = pipe
+            p.standardError = FileHandle.nullDevice
+            guard (try? p.run()) != nil else { return done(nil, 0) }
+            DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + timeout) {
+                guard p.isRunning else { return }
+                p.terminate()
+                DispatchQueue.global(qos: .utility).asyncAfter(deadline: .now() + 2) {
+                    if p.isRunning { kill(p.processIdentifier, SIGKILL) }
+                }
+            }
+            let data = pipe.fileHandleForReading.readDataToEndOfFile()
+            p.waitUntilExit()
+            guard p.terminationStatus == 0,
+                  let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+                  let rows = json["rows"] as? [[String: Any]] else { return done(nil, 0) }
+            let parsed = rows.compactMap { r -> SessionRow? in
+                guard let project = r["project"] as? String, let state = r["state"] as? String,
+                      let text = r["text"] as? String else { return nil }
+                return SessionRow(project: project, state: state, text: text)
+            }
+            done(parsed, json["waiting"] as? Int ?? 0)
+        }
+    }
+
     /// presence.py, waited for: true when it succeeded.
     func runScriptAndWait(_ args: [String]) -> Bool {
         guard let python = o.python, let script = o.script else { return false }
@@ -1336,6 +1517,7 @@ final class Monitor {
         record["face"] = faceOn
         record["face_only"] = false
         record["waves"] = wavesOn
+        record["frontmost"] = NSWorkspace.shared.frontmostApplication?.bundleURL?.path ?? NSNull()
         record["camera_allowed"] = cameraStatus == "authorized" && o.mode != "signals"
             && (phone?.allowsCamera ?? true)
         for (k, v) in lastSignals { record[k] = v }

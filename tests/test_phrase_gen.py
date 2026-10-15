@@ -212,13 +212,20 @@ def test_clean_phrase_still_rejects_unterminated_fragment():
 
 
 def test_a_rejected_phrase_keeps_its_category(fake_ollama, claude_home):
-    """The phrase failed a guard; the classification did not. The nudge
-    reads a Stop's category, and "done" must not become "unknown" just
-    because "I finished it" was said a moment ago."""
+    """The phrase failed a guard; the classification did not."""
     fake_ollama.chat("done | I finished the invoice view.")
     recent = [["I finished the invoice view.", time.time()]]
     assert phrase_gen.generate_or_skip(
-        "Stop", "d", "c", recent_voiced=recent, seconds_since_last_voiced=5) == ("done", None)
+        "Notification", "d", "c", recent_voiced=recent) == ("done", None)
+
+
+def test_a_stop_said_a_moment_ago_is_said_again(fake_ollama, claude_home):
+    """A Stop is the turn-ended signal: a near-duplicate is spoken, with its
+    category, not rejected."""
+    fake_ollama.chat("done | I finished the invoice view.")
+    recent = [["I finished the invoice view.", time.time()]]
+    assert phrase_gen.generate_or_skip(
+        "Stop", "d", "c", recent_voiced=recent) == ("done", "I finished the invoice view.")
 
 
 # ── context window ─────────────────────────────────────────────────────────
@@ -319,15 +326,6 @@ def test_commentary_is_not_retried_and_keeps_its_temperature(monkeypatch, claude
     sent = _scripted_chat(monkeypatch, ["done | " + " ".join(["word"] * 15) + "."])
     assert phrase_gen.generate_or_skip("PreToolUse", "Bash: push", "ctx") == (None, None)
     assert len(sent) == 1 and sent[0][1] == 0.7
-
-
-def test_a_guard_rejection_is_retried_with_the_reason(monkeypatch, claude_home):
-    sent = _scripted_chat(monkeypatch, ["done | I pushed the voice branch.",
-                                        "done | I merged the review fixes."])
-    recent = [["I pushed the voice branch.", time.time()]]
-    assert phrase_gen.generate_or_skip("Stop", "Last message: x", "ctx", recent_voiced=recent) == \
-        ("done", "I merged the review fixes.")
-    assert "near-duplicate" in sent[1][0][-1]["content"]
 
 
 def test_an_unfounded_broken_stop_is_retried_then_done(monkeypatch, claude_home):

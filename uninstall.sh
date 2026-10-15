@@ -52,7 +52,12 @@ echo ""
 
 # ── Stop daemons and detached nudges ─────────────────────────────────
 
-for spec in "kokoro:19849" "pocket-tts:19850"; do
+# The configured ports, not the defaults: a daemon on another port never got
+# its /shutdown. Read before the config goes, below.
+ports=$("$PYTHON" "$SCRIPT_DIR/scripts/home.py" --get kokoro.daemon_port pocket_tts.daemon_port 2>/dev/null \
+    | tr '\n' ' ' || true)
+read -r kokoro_port pocket_port <<< "$ports"
+for spec in "kokoro:${kokoro_port:-19849}" "pocket-tts:${pocket_port:-19850}"; do
     name="${spec%%:*}" port="${spec##*:}"
     pid_file="$CLAUDE_DIR/$name-daemon.pid"
     [[ -f "$pid_file" ]] || continue
@@ -91,14 +96,23 @@ ok "Hooks removed"
 
 # ── Remove config and state ──────────────────────────────────────────
 
+# Every file the scripts write here must be named below, or it outlives the
+# uninstall: tests/test_uninstall.py checks the scripts against this list.
 shopt -s nullglob
 state=(
     "$CLAUDE_DIR/hobson.json"
     "$CLAUDE_DIR/hobson.muted"
     "$CLAUDE_DIR/hobson.lock"
     "$CLAUDE_DIR/hobson-commentary.lock"
+    "$CLAUDE_DIR/hobson-focus.lock"
     "$CLAUDE_DIR/hobson-voice.lock"
     "$CLAUDE_DIR/hobson-reading.lock"
+    "$CLAUDE_DIR/hobson-coaching.lock"
+    "$CLAUDE_DIR/hobson-config.lock"
+    "$CLAUDE_DIR"/hobson.json.unreadable-*
+    "$CLAUDE_DIR"/hobson.json.backup-*
+    "$CLAUDE_DIR/hobson.json.invalid"
+    "$CLAUDE_DIR"/hobson*.tmp-*  # home.write_atomic's, if its process was killed
     "$CLAUDE_DIR"/hobson-nudge-*.lock
     "$CLAUDE_DIR"/hobson-watchdog-*.lock
     "$CLAUDE_DIR"/hobson-activity-*
@@ -107,8 +121,14 @@ state=(
     "$CLAUDE_DIR/hobson-presence.lock"
     "$CLAUDE_DIR/hobson-presence.spawn"
     "$CLAUDE_DIR/hobson-presence-lines.json"
+    "$CLAUDE_DIR"/hobson-presence-look.*.json
+    "$CLAUDE_DIR"/hobson-presence-signals.*.json
     "$CLAUDE_DIR/hobson-held.json"
     "$CLAUDE_DIR/hobson-held.lock"
+    "$CLAUDE_DIR/hobson-push.json"
+    "$CLAUDE_DIR/hobson-push.lock"
+    "$CLAUDE_DIR/hobson-plugin-notes.json"
+    "$CLAUDE_DIR/hobson-plugin-notes.lock"
     "$CLAUDE_DIR/hobson-face.json"
     "$CLAUDE_DIR/hobson-setup.json"
     "$CLAUDE_DIR/kokoro-daemon.log"
@@ -174,7 +194,7 @@ if [[ -f "$CLAUDE_DIR/hobson.log" ]] && ask "Remove the log ($CLAUDE_DIR/hobson.
     ok "Log removed"
 fi
 
-if [[ -f "$CLAUDE_DIR/hobson.env" ]] && ask "Remove $CLAUDE_DIR/hobson.env (your OpenRouter key for Jev)?"; then
+if [[ -f "$CLAUDE_DIR/hobson.env" ]] && ask "Remove $CLAUDE_DIR/hobson.env (your OpenRouter key for Jev and your ntfy token)?"; then
     rm -f "$CLAUDE_DIR/hobson.env"
     ok "Key file removed"
 fi

@@ -63,16 +63,22 @@ def claude_home(tmp_path, monkeypatch):
 def no_audio(monkeypatch):
     """Record audio side-effects instead of invoking afplay/say/nudge/watchdog.
 
-    Returns a dict with 'popen' (list of arg-lists) and 'say' (list of texts).
+    Returns a dict with 'popen' (list of arg-lists) and 'say' (the texts
+    rendered by macOS say, each to a clip that is then played as any other).
 
-    autouse — not opt-in — because engines.base.subprocess.Popen is also the
-    call site for _maybe_start_nudge/_maybe_start_watchdog: any test that
+    autouse — not opt-in — because patching subprocess.Popen (the module's,
+    so every importer sees it) also stops nudge.start/start_watchdog: any test that
     drives a real commentary flush without requesting this fixture would
     otherwise spawn a genuine detached nudge.py/--watchdog process. That
     happened for real during this series (test_commentary_batching.py's
     tests construct engines without requesting no_audio) before this was
     made autouse — a hard rule violation this fixture must make structurally
     impossible, not just documented against.
+
+    The patch is the shared module's, so subprocess.run is faked too: the fake
+    is a context manager that prints nothing, which a `ps` lookup reads as "no
+    terminal". Without that, outside tmux nudge.terminal_info walked the
+    runner's process tree through the fake and raised.
     """
     import engines.base as base
 
@@ -80,18 +86,47 @@ def no_audio(monkeypatch):
 
     class FakePopen:
         def __init__(self, args, *a, **k):
+            self.args = args
             calls["popen"].append(args)
+
+        returncode = 0
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            return False
 
         def wait(self, *a, **k):
             return 0
 
+        def communicate(self, *a, **k):
+            return "", ""
+
+        def poll(self):
+            return 0
+
+        def kill(self):
+            pass
+
     monkeypatch.setattr(base.subprocess, "Popen", FakePopen)
 
-    def fake_say(self, text, kind=None):
+    def fake_render_say(self, text):
         calls["say"].append(text)
+        return f"/tmp/hobson-say-fake-{len(calls['say'])}.aiff"
 
-    monkeypatch.setattr(base.BaseEngine, "_say_with_volume", fake_say)
+    monkeypatch.setattr(base.BaseEngine, "_render_say", fake_render_say)
     return calls
+
+
+@pytest.fixture(autouse=True)
+def helper_still_exiting(monkeypatch):
+    """A stopped helper has not exited when ensure_running looks: its tests
+    fake os.kill, so no process is really going, and a real wait would cost
+    two seconds each. The restart then happens at the next hook. Tests of the
+    same-call restart set presence._exited themselves."""
+    import presence
+    monkeypatch.setattr(presence, "_exited", lambda pid, seconds=2.0: False)
 
 
 @pytest.fixture(autouse=True)
@@ -105,17 +140,19 @@ def no_face(monkeypatch):
     with os.kill and ensure_running stubbed.
 
     Returns a list of (phrase, kind, audio), with "asked" appended for a
-    line shown because you asked (ask.py).
+    line shown because you asked (ask.py), and "silent" for one shown while
+    Hobson is silenced.
     """
     import face
 
     shown = []
 
-    def fake_show(config, phrase, kind, audio=None, project=None, now=None, asked=False):
-        shown.append((phrase, kind, audio) + (("asked",) if asked else ()))
+    def fake_show(config, phrase, kind, audio=None, project=None, now=None, asked=False, silent=False):
+        shown.append((phrase, kind, audio) + (("asked",) if asked else ()) + (("silent",) if silent else ()))
         return True
 
     monkeypatch.setattr(face, "show", fake_show)
+    monkeypatch.setattr(face, "deliver", lambda *a, **k: face.SIGNALLED if fake_show(*a, **k) else None)
     monkeypatch.setattr(face, "_failed", False)
     return shown
 

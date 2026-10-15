@@ -281,3 +281,23 @@ def test_a_reply_that_copies_the_prompts_example_is_dropped(monkeypatch):
     assert "login redirect" not in prompt and "flush gate" not in prompt  # no examples to copy
     assert not recap._echoes_the_prompt("Added thinking modes to the page.", prompt)
     assert recap._echoes_the_prompt("Used only what the notes say about the page.", prompt)
+
+
+def test_the_recap_is_spoken_as_an_answer(monkeypatch):
+    """A recap is a pull answer: never held for your return, and read back
+    by the next recap as Hobson's own talk (OWN_KINDS), not as work."""
+    import hobson
+    import recap
+    spoken = []
+
+    class Engine:
+        def speak(self, text, kind, cold_start=False):
+            spoken.append((text, kind))
+
+    monkeypatch.setattr(recap, "recent_activity", lambda *a, **k: ["I ran the tests."])
+    monkeypatch.setattr(recap, "summarise", lambda *a, **k: ("I ran the tests.", None))
+    monkeypatch.setattr(hobson, "load_engine", lambda config: Engine())
+    monkeypatch.setattr(recap.sys, "argv", ["recap.py"])
+    recap.main()
+    assert spoken == [("I ran the tests.", "answer")]
+    assert spoken[0][1] in recap.OWN_KINDS

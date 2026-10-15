@@ -7,6 +7,7 @@ pure or file-backed, and tested as such.
 
 import json
 import os
+import subprocess
 import time
 
 import pytest
@@ -124,6 +125,8 @@ def test_commentary_never_triggers_a_look(claude_home, monkeypatch):
     ("company", "waiting", "company"), ("company", "done", "hold"),
     ("company", "commentary", "drop"),
     ("away", "briefing", "speak"), ("call", "nudge", "speak"),
+    ("coaching", "done", "hold"), ("coaching", "waiting", "hold"),
+    ("coaching", "commentary", "drop"), ("coaching", "answer", "speak"),
 ])
 def test_decision_matrix(state, kind, expected):
     assert presence.decision(state, kind) == expected
@@ -226,38 +229,10 @@ def test_before_you_go_only_when_something_waits():
         "Before you go — 2 sessions are waiting on you.")
 
 
-# ── Who is waiting on you ──────────────────────────────────────────────────
-
 def _session(project, **fields):
     import session_state
     with session_state.transaction(project) as state:
         state.update(fields)
-
-
-def test_an_unanswered_question_waits(claude_home):
-    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
-    assert presence.waiting_on_you() == [("webapp", "answer")]
-
-
-def test_an_answered_question_does_not(claude_home):
-    import nudge
-    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
-    with open(nudge.activity_path("webapp"), "w") as f:
-        f.write(str(time.time()))
-    assert presence.waiting_on_you() == []
-
-
-def test_a_fresh_permission_request_waits_and_an_old_one_does_not(claude_home):
-    import nudge
-    _session("webapp", last_stop_time=time.time() - 900)
-    nudge.record_alive("webapp", {"hook_event_name": "PermissionRequest", "tool_name": "Bash"})
-    assert presence.waiting_on_you() == [("webapp", "approval")]
-    assert presence.waiting_on_you(now=time.time() + presence.PERMISSION_WAIT_SECONDS + 5) == []
-
-
-def test_a_finished_turn_is_not_waiting(claude_home):
-    _session("webapp", last_stop_category="done", last_stop_time=time.time() - 30)
-    assert presence.waiting_on_you() == []
 
 
 # ── Transitions ────────────────────────────────────────────────────────────
@@ -495,7 +470,8 @@ def test_the_face_setting_is_written_to_its_own_section(claude_home, monkeypatch
     presence.main(["--set", "face.enabled", "true"])                     # from the CLI
     assert restarted == [1]
     written = json.loads((claude_home / "hobson.json").read_text())
-    assert written["face"] == {"enabled": True, "width": 320} and "presence" not in written
+    # face.enabled set back to its default is removed, not written (home.update_config).
+    assert written["face"] == {"width": 320} and "presence" not in written
 
 
 def test_presence_off_with_the_face_on_restarts_as_face_only(claude_home, monkeypatch):
@@ -555,19 +531,19 @@ def test_a_daemon_permission_request_while_on_a_call_is_held(claude_home, no_aud
     assert [i["kind"] for i in presence.held()] == ["waiting"]
 
 
-def test_speak_dynamic_reports_a_hold(claude_home, no_audio):
+def test_speak_reports_a_hold(claude_home, no_audio):
     from engines.say import SayEngine
     _state(claude_home, state="away", source="lock")
     eng = SayEngine({"engine": "say", "personality": "hobson"})
-    assert eng.speak_dynamic("Nothing's moved.", kind="stalled") is False
-    assert eng.speak_dynamic("Welcome back.", kind="briefing") is True
+    assert eng.speak("Nothing's moved.", "stalled") is False
+    assert eng.speak("Welcome back.", "briefing") is True
     assert no_audio["say"] == ["Welcome back."]
 
 
 def test_a_broken_presence_module_speaks(claude_home, no_audio, monkeypatch):
     from engines.say import SayEngine
     monkeypatch.setattr(presence, "route", lambda *a, **k: 1 / 0)
-    SayEngine({"engine": "say", "personality": "hobson"}).speak_dynamic("Still here.", kind="done")
+    SayEngine({"engine": "say", "personality": "hobson"}).speak("Still here.", "done")
     assert no_audio["say"] == ["Still here."]
 
 
@@ -777,3 +753,175 @@ def test_waving_on_gets_one_answer_every_few_seconds(claude_home, spoken):
 def test_a_wave_while_muted_is_not_answered(claude_home, spoken):
     assert presence.on_wave(config={**_config(enabled=True), "muted": True}) is None
     assert spoken == []
+
+
+# ── Unmuting ───────────────────────────────────────────────────────────────
+
+def test_unmuting_says_who_still_waits_in_one_line(claude_home, spoken):
+    _session("webapp", last_stop_category="question", last_stop_time=time.time() - 30)
+    assert presence.on_unmute(config=_config()) == "webapp is waiting on an answer from you."
+    assert spoken == ["webapp is waiting on an answer from you."]
+
+
+def test_unmuting_with_nothing_waiting_says_nothing(claude_home, spoken):
+    _session("webapp", last_stop_category="done", last_stop_time=time.time() - 30)
+    assert presence.on_unmute(config=_config()) is None and spoken == []
+
+
+def test_several_waits_are_counted_not_told():
+    assert presence.compose_unmuted([("a", "answer"), ("b", "approval")]) == \
+        "2 sessions are waiting on you."
+
+
+_REAL_EXITED = presence._exited
+_REAL_POPEN = subprocess.Popen  # no_audio replaces it
+
+
+# ── Silenced: the helper has no camera ──────────────────────────────────────────────
+
+def _silenced(kind, **presence_cfg):
+    hour = time.localtime().tm_hour
+    return {**_config(**presence_cfg), **{
+        "muted": {"muted": True},
+        "mute_until": {"mute_until": time.time() + 600},
+        "quiet_hours": {"quiet_hours": [(hour - 1) % 24, (hour + 1) % 24]},
+    }[kind]}
+
+
+SILENCES = ("muted", "mute_until", "quiet_hours")
+
+
+@pytest.mark.parametrize("kind", SILENCES)
+def test_silenced_a_helper_that_must_be_started_runs_face_only(kind, claude_home, no_audio, built):
+    presence.ensure_running(_silenced(kind, enabled=True, mode="continuous", preview=True, phone="auto"))
+    argv = no_audio["popen"][-1]
+    assert "--face" in argv and "--face-only" in argv
+    assert not {"--preview", "--phone"} & set(argv)
+    assert "sensor started (face only)" in (claude_home / "hobson.log").read_text()
+
+
+@pytest.fixture
+def exits(monkeypatch):
+    """A stopped helper is gone by the time ensure_running looks; the kills sent."""
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    monkeypatch.setattr(presence, "_exited", lambda pid, seconds=2.0: True)
+    return killed
+
+
+@pytest.mark.parametrize("kind", SILENCES)
+def test_silenced_a_helper_with_the_camera_is_stopped_and_a_face_only_one_started_in_the_call(
+        kind, claude_home, no_audio, built, exits):
+    _state(claude_home, mode="continuous", pid=701)
+    assert presence.ensure_running(_silenced(kind, enabled=True, mode="continuous"))
+    assert exits == [701]
+    assert "--face-only" in no_audio["popen"][-1]
+
+
+@pytest.mark.parametrize("kind", SILENCES)
+def test_silenced_a_helper_that_is_slow_to_exit_is_replaced_by_the_next_hook(
+        kind, claude_home, no_audio, built, monkeypatch):
+    """open without -n would hand the launch to the old helper, so nothing is
+    started until it is gone."""
+    _state(claude_home, mode="continuous", pid=701)
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    config = _silenced(kind, enabled=True, mode="continuous")
+    assert not presence.ensure_running(config) and killed == [701] and no_audio["popen"] == []
+    (claude_home / "hobson-presence.json").unlink()
+    assert presence.ensure_running(config)
+    assert "--face-only" in no_audio["popen"][-1]
+
+
+def test_silenced_with_the_face_off_a_helper_with_the_camera_is_stopped_and_none_started(
+        claude_home, no_audio, built, exits):
+    _state(claude_home, mode="continuous", pid=705)
+    config = {**_silenced("muted", enabled=True, mode="continuous"), "face": {"enabled": False}}
+    assert not presence.ensure_running(config)
+    assert exits == [705] and no_audio["popen"] == []
+
+
+def test_silenced_with_the_face_off_a_face_only_helper_is_left_alone(claude_home, no_audio, built, exits):
+    _state(claude_home, face_only=True, pid=706)
+    config = {**_silenced("muted", enabled=True), "face": {"enabled": False}}
+    presence.ensure_running(config)
+    assert exits == [] and no_audio["popen"] == []
+
+
+def test_the_real_wait_sees_a_process_go(tmp_path):
+    proc = _REAL_POPEN(["sleep", "30"])
+    try:
+        assert not _REAL_EXITED(proc.pid, seconds=0.3)
+        proc.kill()
+        proc.wait()
+        assert _REAL_EXITED(proc.pid, seconds=0.3)
+    finally:
+        proc.kill()
+
+
+def test_hooks_in_a_row_change_nothing_once_the_helper_matches(claude_home, no_audio, built, exits):
+    config = _silenced("muted", enabled=True, mode="continuous")
+    _state(claude_home, mode="continuous", pid=707)
+    presence.ensure_running(config)
+    assert exits == [707] and len(no_audio["popen"]) == 1
+    _state(claude_home, mode="continuous", state="off", source="face-only", pid=708, face_only=True)
+    for _ in range(5):
+        assert not presence.ensure_running(config)
+    assert exits == [707] and len(no_audio["popen"]) == 1
+    unsilenced = _config(enabled=True, mode="continuous")
+    presence.ensure_running(unsilenced)
+    assert exits == [707, 708] and len(no_audio["popen"]) == 2 and "--face-only" not in no_audio["popen"][-1]
+    _state(claude_home, mode="continuous", pid=709)
+    for _ in range(5):
+        assert not presence.ensure_running(unsilenced)
+    assert exits == [707, 708] and len(no_audio["popen"]) == 2
+
+
+@pytest.mark.parametrize("kind", SILENCES)
+def test_silenced_a_face_only_helper_is_left_alone(kind, claude_home, no_audio, built, monkeypatch):
+    _state(claude_home, mode="continuous", state="off", source="face-only", pid=702, face_only=True)
+    killed = []
+    monkeypatch.setattr(presence.os, "kill", lambda pid, sig: killed.append(pid))
+    assert not presence.ensure_running(_silenced(kind, enabled=True, mode="continuous"))
+    assert killed == [] and no_audio["popen"] == []
+
+
+def test_silenced_with_the_face_off_no_helper_is_started(claude_home, no_audio, built):
+    config = {**_silenced("muted", enabled=True), "face": {"enabled": False}}
+    assert not presence.ensure_running(config)
+    assert no_audio["popen"] == []
+
+
+def test_unsilenced_a_face_only_helper_from_a_mute_is_replaced_by_the_full_one(
+        claude_home, no_audio, built, exits):
+    config = _config(enabled=True, mode="continuous")
+    _state(claude_home, mode="continuous", state="off", source="face-only", pid=703, face_only=True)
+    assert presence.ensure_running(config)
+    assert exits == [703]
+    argv = no_audio["popen"][-1]
+    assert "--face-only" not in argv and argv[argv.index("--mode") + 1] == "continuous"
+
+
+def test_presence_off_and_presence_on_unsilenced_start_as_before(claude_home, no_audio, built):
+    presence.ensure_running(_config(enabled=False))
+    assert "--face-only" in no_audio["popen"][-1]
+    (claude_home / "hobson-presence.spawn").unlink()
+    presence.ensure_running(_config(enabled=True))
+    assert "--face-only" not in no_audio["popen"][-1]
+
+
+def test_a_setting_changed_while_silenced_leaves_a_face_only_helper_and_turns_a_full_one(
+        claude_home, no_audio, built, monkeypatch, exits):
+    """The menu's toggles and `hobson presence` run _restart: silenced, none may
+    start a helper with the camera, nor stop a face only one for nothing."""
+    (claude_home / "hobson.json").write_text(json.dumps({"muted": True, "presence": {"mode": "continuous"}}))
+    monkeypatch.setattr(presence.time, "sleep", lambda s: None)
+    _state(claude_home, mode="continuous", state="off", source="face-only", pid=704, face_only=True)
+    presence._restart()
+    assert exits == [] and no_audio["popen"] == []
+    _state(claude_home, mode="continuous", pid=704)
+    presence._restart()
+    assert exits == [704] and "--face-only" in no_audio["popen"][-1]
+    (claude_home / "hobson-presence.json").unlink()
+    presence._restart()
+    assert "--face-only" in no_audio["popen"][-1]

@@ -169,7 +169,7 @@ def test_an_unset_option_takes_the_config_default(fake_daemon):
 @pytest.mark.parametrize("cls", [KokoroRealtimeEngine, PocketTTSRealtimeEngine])
 def test_a_live_daemon_plays_the_phrase(cls, fake_daemon, no_audio, no_face, claude_home):
     eng = _engine(cls)
-    eng._speak_live("I pushed the branch.", allow_cold_start=True, kind="done")
+    eng.speak("I pushed the branch.", "done", cold_start=True)
     assert no_audio["say"] == []
     # Played, then removed: sh runs afplay and deletes the clip after it.
     shell, flag, script = no_audio["popen"][-1]
@@ -186,7 +186,7 @@ def test_a_down_daemon_falls_back_to_say_and_warms_up_for_next_time(
     eng = _engine(PocketTTSRealtimeEngine)
     started = []
     monkeypatch.setattr(eng, "_start_daemon_background", lambda: started.append(1))
-    eng._speak_live("I pushed the branch.", allow_cold_start=False)
+    eng.speak("I pushed the branch.", "done")
     assert no_audio["say"] == ["I pushed the branch."]
     assert started == [1]
     assert fake_daemon.requests == []
@@ -195,7 +195,7 @@ def test_a_down_daemon_falls_back_to_say_and_warms_up_for_next_time(
 def test_a_failing_daemon_falls_back_to_say(fake_daemon, no_audio):
     fake_daemon.fail = OSError("boom")
     eng = _engine(KokoroRealtimeEngine)
-    eng._speak_live("I pushed the branch.", allow_cold_start=True)
+    eng.speak("I pushed the branch.", "done", cold_start=True)
     assert no_audio["say"] == ["I pushed the branch."]
 
 
@@ -203,7 +203,7 @@ def test_a_phrase_right_after_another_is_dropped(fake_daemon, no_audio, claude_h
     """Async hooks: two utterances must not talk over each other."""
     (claude_home / "hobson.lock").write_text(str(time.time()))
     eng = _engine(PocketTTSRealtimeEngine)
-    eng._speak_live("I pushed the branch.", allow_cold_start=False)
+    eng.speak("I pushed the branch.", "done")
     assert no_audio["say"] == [] and fake_daemon.requests == []
 
 

@@ -74,10 +74,13 @@ For a **static** (cached-template) engine:
    takes its tag for part of the message (a test fails until it is there)
 6. Add the engine to the CLI picker in `hobson` and to `install.sh`
 
-For a **realtime** engine, override `speak_dynamic(phrase, allow_cold_start)` instead — that single
-seam is what routes speech through your daemon, and it means commentary, batching, nudges and the
-quiet controls all work without you reimplementing any of the gating. `kokoro_realtime.py` is the
-reference; `pocket_tts_realtime.py` is the same shape. Its `engine_name` goes in `ENGINE_TAGS` too.
+For a **realtime** engine backed by a local TTS daemon, subclass `DaemonEngine` and give it a
+`DaemonSpec` (`kokoro_realtime.py` is the reference; `pocket_tts_realtime.py` is the same shape).
+Any other engine overrides how a phrase becomes audio — `clip(phrase, kind, cold_start)`,
+`render(text, timeout)` and, if it needs warming, `warm()` — and never the speaking path itself:
+`BaseEngine.speak` keeps the audience, the bark lock, playback and the face the same for every
+engine, so commentary, batching, nudges and the quiet controls all work without you
+reimplementing any of the gating. Its `engine_name` goes in `ENGINE_TAGS` too.
 
 ## Code Style
 

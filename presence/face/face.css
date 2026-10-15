@@ -78,6 +78,31 @@ body { color: var(--ink); font: 13px/1.45 var(--mono); -webkit-user-select: none
 .bars i:nth-child(4) { height: 100%; }
 .bars[data-lvl="1"] i:nth-child(n+2), .bars[data-lvl="2"] i:nth-child(n+3), .bars[data-lvl="3"] i:nth-child(4) { opacity: 0.2; }
 
+/* Skip / Take me there: shown only while .showActions is set (face.js, for
+   a line that waits on you or reports a failure), so the overlay below
+   (Face.swift's FaceOverlay) knows how tall a bottom strip to let through
+   to these buttons -- it reads this row's real height from the "size"
+   message, never a guessed constant. */
+.actions { display: none; gap: 8px; }
+.win.showActions .actions { display: flex; }
+.act {
+  flex: 1 1 0;
+  appearance: none;
+  -webkit-appearance: none;
+  background: transparent;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  color: var(--ink);
+  font: 11px/1 var(--mono);
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  padding: 7px 6px;
+  cursor: pointer;
+}
+.act:hover { border-color: var(--faint); }
+.act.there { border-color: var(--tint); color: var(--tint); }
+.win[data-kind="broken"] .act.there { border-color: var(--warn); color: var(--warn); }
+
 /* In a browser (?mock): the window on a dark desk. */
 html.mock { background: #0b0d10; }
 html.mock body { padding: 28px; }

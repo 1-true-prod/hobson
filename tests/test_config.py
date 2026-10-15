@@ -74,7 +74,7 @@ def test_event_enabled_matrix(claude_home):
 
 
 def test_event_enabled_unknown_event_passes(claude_home):
-    # An event name not in EVENT_MAP is not gated (returns True).
+    # An event name not in home.EVENT_KEYS is not gated (returns True).
     eng = _engine({"events": [], "personality": "hobson"})
     assert eng._is_event_enabled({"hook_event_name": "SomethingElse"}) is True
 

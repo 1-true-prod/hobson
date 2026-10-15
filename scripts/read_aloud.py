@@ -94,29 +94,53 @@ def passages(text):
     return out
 
 
-def _wait(player):
-    """Wait for a passage to finish. Why it was cut short (hobson off, quiet
-    hours), or None when it played to the end."""
+# ── Playing a clip someone asked for (hobson say, hobson coach) ────────────
+
+def silenced():
+    """Why a reading must stop now (hobson off, quiet hours), as how it
+    ended, or None. Read fresh: it changes while a reading goes."""
+    reason = home.silence_reason(home.load_config())
+    return f"stopped ({reason})" if reason else None
+
+
+def play(engine, clip, text, source):
+    """Play a clip as kind "answer" (you asked: presence never holds it) and
+    log it under `source`, which recap reads as Hobson's own talk."""
+    player = engine.play(clip, text, "answer")
+    engine._log(log_record.playback(source, text, "answer"))
+    return player
+
+
+def wait(player):
+    """Wait for a clip to finish. Why it was cut short (silenced()), or None
+    when it played to the end."""
     while player is not None and player.poll() is None:
-        reason = home.silence_reason(home.load_config())
-        if reason:
-            return f"stopped ({reason})"
+        stopped = silenced()
+        if stopped:
+            return stopped
         with contextlib.suppress(subprocess.TimeoutExpired):
             player.wait(timeout=POLL_SECONDS)
     return None
 
 
-def _stop(player):
+def stop(player):
     if player is not None and player.poll() is None:
         player.terminate()
         with contextlib.suppress(subprocess.TimeoutExpired):
             player.wait(timeout=2)
 
 
-def _remove(path):
+def remove(path):
     if path:
         with contextlib.suppress(OSError):
             os.remove(path)
+
+
+def interrupt(signum, frame):
+    """A SIGTERM/SIGHUP handler: a reader killed by its caller (an agent's
+    background task, a closed terminal) stops its clip rather than leave it
+    playing."""
+    raise KeyboardInterrupt
 
 
 def _read(parts, engine, echo):
@@ -126,10 +150,10 @@ def _read(parts, engine, echo):
     try:
         for n, part in enumerate(parts, 1):
             rendered = engine.render(part, timeout=RENDER_TIMEOUT)  # while the last one plays
-            stopped = _wait(player)
+            stopped = wait(player)
             if stopped:
                 return stopped
-            _remove(clip)
+            remove(clip)
             player = clip = None
             if rendered is None:
                 engine._log(f"read-aloud: could not render passage {n}, skipped -> {part!r}")
@@ -138,15 +162,14 @@ def _read(parts, engine, echo):
                 time.sleep(GAP_SECONDS)
             echo(f"[{n}/{len(parts)}] {part[:70]}{'…' if len(part) > 70 else ''}")
             clip, rendered = rendered, None
-            player = engine._play(clip, part, "answer")
-            engine._log(log_record.playback("read-aloud", part, "answer"))
-        return _wait(player) or "read"
+            player = play(engine, clip, part, "read-aloud")
+        return wait(player) or "read"
     except KeyboardInterrupt:
         return "interrupted"
     finally:
-        _stop(player)
-        _remove(clip)
-        _remove(rendered)
+        stop(player)
+        remove(clip)
+        remove(rendered)
 
 
 def read(text, config=None, echo=print):
@@ -179,10 +202,6 @@ def read(text, config=None, echo=print):
 _EXIT = {"read": 0, "empty": 1, "busy": 1, "interrupted": 130}
 
 
-def _interrupt(signum, frame):
-    raise KeyboardInterrupt
-
-
 def main(argv=None):
     parser = argparse.ArgumentParser(
         prog="hobson say", description="Read text aloud, a passage at a time, one voice at a time.")
@@ -205,10 +224,8 @@ def main(argv=None):
         text = sys.stdin.read()
     else:
         parser.error("nothing to say: give the text, --file, or pipe it in")
-    # A reader killed by its caller (an agent's background task, a closed
-    # terminal) stops its passage too, rather than leave it playing.
-    signal.signal(signal.SIGTERM, _interrupt)
-    signal.signal(signal.SIGHUP, _interrupt)
+    signal.signal(signal.SIGTERM, interrupt)
+    signal.signal(signal.SIGHUP, interrupt)
     ended = read(text)
     if ended != "read":
         print(f"hobson say: {'nothing to read' if ended == 'empty' else ended}", file=sys.stderr)

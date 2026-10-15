@@ -226,7 +226,7 @@ def answers_from_config(config):
     """The answers a config (as load_config() returns it) already amounts to."""
     p = config.get("presence") or {}
     engine = config.get("engine")
-    voice = _get(config, VOICE_KEYS[engine]) if engine in VOICE_KEYS else None
+    voice = home.get_dotted(config, VOICE_KEYS[engine]) if engine in VOICE_KEYS else None
     return {
         "engine": engine,
         # A voice not in the catalogue (a clone of your own) is shown as
@@ -315,54 +315,6 @@ def desired_settings(answers, jev_verified, device_count):
         # One phone: "auto" follows it even if its wireless serial changes.
         want["presence.phone"] = None if not phone else ("auto" if device_count == 1 else phone)
     return want
-
-
-_MISSING = object()
-
-
-def _get(tree, dotted, default=_MISSING):
-    node = tree
-    for part in dotted.split("."):
-        if not isinstance(node, dict) or part not in node:
-            return default
-        node = node[part]
-    return node
-
-
-def apply_settings(user_config, desired, defaults=None):
-    """The user config with `desired` applied, and what changed.
-
-    A value equal to its default is removed rather than written, so the
-    default keeps flowing from DEFAULT_CONFIG; a different one is set.
-    Returns (new_config, changes); each change is {"key", "value", "op"}
-    with op "set" or "unset". `user_config` is not modified.
-    """
-    defaults = home.DEFAULT_CONFIG if defaults is None else defaults
-    config = json.loads(json.dumps(user_config if isinstance(user_config, dict) else {}))
-    changes = []
-    for dotted, value in desired.items():
-        default = _get(defaults, dotted)
-        current = _get(config, dotted)
-        parts = dotted.split(".")
-        if default is not _MISSING and value == default:
-            if current is _MISSING:
-                continue
-            parent = config
-            for part in parts[:-1]:
-                parent = parent[part]
-            del parent[parts[-1]]
-            if len(parts) == 2 and not config[parts[0]]:
-                del config[parts[0]]
-            changes.append({"key": dotted, "value": value, "op": "unset"})
-        elif current != value:
-            parent = config
-            for part in parts[:-1]:
-                if not isinstance(parent.get(part), dict):
-                    parent[part] = {}
-                parent = parent[part]
-            parent[parts[-1]] = value
-            changes.append({"key": dotted, "value": value, "op": "set"})
-    return config, changes
 
 
 def defaults_kept(config, defaults=None):
@@ -458,27 +410,6 @@ def set_env_value(text, key, value):
 
 # ── State files ────────────────────────────────────────────────────────────
 
-def _write_json_atomic(path, data, mode=None):
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp-{os.getpid()}"
-    with open(tmp, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-        f.write("\n")
-    if mode is not None:
-        os.chmod(tmp, mode)
-    os.replace(tmp, path)
-
-
-def read_user_config():
-    """hobson.json as written, not merged over the defaults. {} if absent."""
-    try:
-        with open(home.config_file(), encoding="utf-8") as f:
-            data = json.load(f)
-        return data if isinstance(data, dict) else {}
-    except (OSError, ValueError):
-        return {}
-
-
 def load_setup_state():
     try:
         with open(home.setup_state_file(), encoding="utf-8") as f:
@@ -491,7 +422,7 @@ def load_setup_state():
 def mark_seen(sections):
     state = load_setup_state()
     seen = sorted(set(state.get("seen") or []) | set(sections))
-    _write_json_atomic(home.setup_state_file(),
+    home.write_json_atomic(home.setup_state_file(),
                        {"version": SETUP_VERSION, "seen": seen, "updated": int(time.time())})
 
 
@@ -503,12 +434,7 @@ def save_key(key):
             text = f.read()
     except OSError:
         text = ""
-    os.makedirs(os.path.dirname(path), exist_ok=True)
-    tmp = f"{path}.tmp-{os.getpid()}"
-    fd = os.open(tmp, os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as f:
-        f.write(set_env_value(text, "OPENROUTER_API_KEY", key))
-    os.replace(tmp, path)
+    home.write_atomic(path, set_env_value(text, "OPENROUTER_API_KEY", key), mode=0o600)
 
 
 # ── Probe ──────────────────────────────────────────────────────────────────
@@ -760,7 +686,7 @@ class Wizard:
         facts = self.get_facts()
         devices = len(facts["phone"]["devices"])
         desired = desired_settings(answers, self.jev_verified, devices)
-        new_config, changes = apply_settings(read_user_config(), desired)
+        new_config, changes = home.apply_settings(home.read_user_config(), desired)
         writes = [{"key": c["key"], "value": c["value"]} if c["op"] == "set"
                   else {"key": c["key"], "value": "reset to default", "note": True} for c in changes]
         if answers.get("decider") == "jev" and not self.jev_verified:
@@ -895,8 +821,7 @@ class Wizard:
 
     def _task_config(self, answers, facts, emit):
         desired = desired_settings(answers, self.jev_verified, len(facts["phone"]["devices"]))
-        new_config, changes = apply_settings(read_user_config(), desired)
-        _write_json_atomic(home.config_file(), new_config)
+        changes = home.update_config(desired)
         mark_seen(SECTIONS)
         return "ok", f"{len(changes)} change{'s' if len(changes) != 1 else ''}"
 

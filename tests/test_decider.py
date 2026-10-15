@@ -243,7 +243,7 @@ def _jev_cfg(**over):
 def test_local_backend_leaves_the_rejection_standing(claude_home, fake_decider):
     """Default config must behave exactly as it did before the seam existed."""
     assert phrase_gen._guard_reject_reason(
-        "Stop", _CANDIDATE, _PRIOR) == "near-duplicate of a recent phrase"
+        "Notification", _CANDIDATE, _PRIOR) == "near-duplicate of a recent phrase"
     assert fake_decider.calls() == 0
 
 
@@ -448,6 +448,14 @@ def test_framing_goes_as_written_and_the_layout_is_unchanged(jev, claude_home):
 def test_session_text_must_say_what_kind_it_is(jev):
     with pytest.raises(TypeError):
         decider.probability("a", [("raw", "text")], "pick", {"a": "A"}, config=jev.config)
+
+
+def test_a_malformed_endpoint_falls_back_and_says_so(claude_home, fake_decider, monkeypatch):
+    monkeypatch.setenv("OPENROUTER_API_KEY", FAKE_KEY)
+    cfg = _jev_config(endpoint="http://[::1")
+    assert decider.probability("a", ["state"], "pick", {"a": "A"}, config=cfg) is None
+    assert decider.check_key(FAKE_KEY, cfg) == {"ok": False, "reason": "the endpoint is not a valid URL"}
+    assert fake_decider.calls() == 0
 
 
 @pytest.mark.parametrize("endpoint", ["http://decisions.example.com/x", "ftp://example.com", ""])

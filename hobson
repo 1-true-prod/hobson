@@ -10,10 +10,11 @@ set -euo pipefail
 #   hobson unmute              Unmute voice notifications
 #   hobson test                Play a test bark
 #   hobson say [TEXT|-f FILE]  Read text aloud (or standard input), one voice at a time
+#   hobson coach [-f FILE]     Run a script of spoken steps on Hobson's clock (or standard input)
 #   hobson recap [minutes]     Speak a summary of recent activity (default 10m)
 #   hobson cache-gen           Generate voice cache for current engine
 #   hobson cache-gen --force   Regenerate entire cache
-#   hobson voice [name]        Switch Kokoro voice
+#   hobson voice [name]        Switch the engine's voice
 #   hobson daemon start|stop|status  Manage realtime daemon
 
 SCRIPT_DIR="$(cd "$(dirname "$(readlink -f "$0" 2>/dev/null || realpath "$0")")" && pwd)"
@@ -36,26 +37,45 @@ GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 NC='\033[0m'
 
+# Every read and write of hobson.json goes through home.py: atomic, locked, and a
+# value equal to its default left out, so the default keeps flowing.
+config_set() {  # config_set KEY VALUE [KEY VALUE ...]; KEY dotted, VALUE JSON or a word
+    python3 "$SCRIPT_DIR/scripts/home.py" --set "$@"
+}
+
+# And every read: merged over DEFAULT_CONFIG, so no default is copied here.
+# One line per key; a list space-joined.
+config_get() {  # config_get KEY [KEY ...]
+    python3 "$SCRIPT_DIR/scripts/home.py" --get "$@" 2>/dev/null
+}
+
+# Python with scripts/ importable and sys, time and home imported. The
+# arguments after the code are its sys.argv[1:], never pasted into it.
+config_py() {
+    local code="$1"
+    shift
+    PYTHONPATH="$SCRIPT_DIR/scripts" python3 -c "import sys, time
+import home
+$code" "$@"
+}
+
 get_engine() {
-    python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        print(json.load(f).get('engine', 'say'))
-except:
-    print('say')
-" 2>/dev/null
+    config_get engine
 }
 
 get_personality() {
-    python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        print(json.load(f).get('personality', 'hobson'))
-except:
-    print('hobson')
-" 2>/dev/null
+    config_get personality
+}
+
+# The reference clip chatterbox would clone, or nothing: the engine's own
+# lookup, which two copies here had drifted from.
+chatterbox_reference() {
+    config_py '
+import os
+from engines.chatterbox import _find_reference_audio
+ref = _find_reference_audio(home.load_config()["personality"])
+print(ref if os.path.isfile(ref) else "")
+' 2>/dev/null
 }
 
 # Whether process $1 is the daemon script $2: a pid file a crash left behind
@@ -191,46 +211,12 @@ case "$cmd" in
     status)
         engine=$(get_engine)
         personality=$(get_personality)
-        voice=$(python3 -c "
-import json, os
-engine = '$engine'
-personality = '$personality'
-script_dir = os.path.dirname(os.path.abspath('$SCRIPT_DIR/scripts'))
-# Personality say_voice
-pfile = '$SCRIPT_DIR/scripts/personalities/' + personality + '/personality.json'
-say_voice = 'Daniel'
-try:
-    with open(pfile) as f:
-        say_voice = json.load(f).get('say_voice', 'Daniel')
-except: pass
-if engine == 'kokoro-realtime':
-    try:
-        with open(os.path.expanduser('~/.claude/hobson.json')) as f:
-            kv = json.load(f).get('kokoro', {}).get('voice', 'am_puck')
-        print(kv + '  (say fallback: ' + say_voice + ')')
-    except:
-        print('am_puck  (say fallback: ' + say_voice + ')')
-elif engine == 'chatterbox':
-    # Show reference audio
-    model_dir = '$SCRIPT_DIR/models'
-    ref = None
-    for ext in ['wav', 'mp3', 'flac', 'ogg', 'm4a']:
-        p = os.path.join(model_dir, personality + '-reference.' + ext)
-        if os.path.isfile(p):
-            ref = os.path.basename(p)
-            break
-    if not ref:
-        for ext in ['wav', 'mp3', 'flac', 'ogg', 'm4a']:
-            p = os.path.join(model_dir, 'hobson-reference.' + ext)
-            if os.path.isfile(p):
-                ref = os.path.basename(p)
-                break
-    if not ref:
-        ref = 'no reference audio'
-    print('voice clone (' + ref + ')')
-else:
-    print(say_voice)
-" 2>/dev/null)
+        # The engine names its own voice: a copy kept here showed Pocket
+        # TTS as the say voice, and missed chatterbox's other references.
+        voice=$(config_py '
+import hobson
+print(hobson.load_engine(home.load_config()).voice_label())
+' 2>/dev/null)
         echo "Engine:      $engine"
         echo "Personality: $personality"
         echo "Voice:       $voice"
@@ -245,30 +231,13 @@ print(silence_reason(load_config()) or '')
         else
             echo -e "Status:      ${GREEN}active${NC}"
         fi
-        events=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        c = json.load(f)
-    events = c.get('events', ['stop', 'permission', 'notification'])
-    verb = c.get('commentary', {}).get('verbosity', 'normal')
-    line = ', '.join(events)
-    if 'commentary' in events:
-        line += ' (verbosity: ' + verb + ')'
-    print(line)
-except:
-    print('stop, permission, notification')
-" 2>/dev/null)
-        echo "Events:      $events"
-        vol=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        print(json.load(f).get('volume', 3))
-except:
-    print(3)
-" 2>/dev/null)
-        echo "Volume:      $vol"
+        events=$(config_get events)
+        events_line="${events// /, }"
+        if [[ " $events " == *" commentary "* ]]; then
+            events_line="$events_line (verbosity: $(config_get commentary.verbosity))"
+        fi
+        echo "Events:      $events_line"
+        echo "Volume:      $(config_get volume)"
         presence_line=$(python3 "$SCRIPT_DIR/scripts/presence.py" --status-text 2>/dev/null | sed -n 1p || true)
         [[ -n "$presence_line" ]] && echo "$presence_line"
         face_line=$(python3 "$SCRIPT_DIR/scripts/face.py" --status-text 2>/dev/null | sed -n 1p || true)
@@ -325,95 +294,54 @@ except:
             *) echo -e "${RED}Unknown engine: $new_engine${NC}"; exit 1 ;;
         esac
 
-        python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-config['engine'] = '$new_engine'
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+        config_set engine "$new_engine"
         echo -e "${GREEN}Switched to: $new_engine${NC}"
         ;;
 
     off|mute)
         duration="${1:-}"
         if [[ -n "$duration" ]]; then
-            out=$(python3 -c "
-import json, sys, time
-sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from home import parse_duration
-secs = parse_duration('$duration')
+            out=$(config_py '
+secs = home.parse_duration(sys.argv[1])
 if secs is None:
-    print('BADDURATION')
-    raise SystemExit(0)
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except Exception:
-    config = {}
-config['mute_until'] = time.time() + secs
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-print(int(secs))
-" 2>/dev/null) || true
+    print("BADDURATION")
+else:
+    home.update_config({"mute_until": time.time() + secs})
+    import log_record
+    log_record.write(f"[mute] on for {int(secs // 60)}m")
+    print(int(secs))
+            ' "$duration" 2>/dev/null) || true
             if [[ "$out" == "BADDURATION" || -z "$out" ]]; then
                 echo -e "${YELLOW}Could not read that duration. Try: 45, 90s, 30m, 2h${NC}"
             else
                 echo -e "${YELLOW}Muted for $((out / 60))m${NC}"
             fi
         else
-            python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-config['muted'] = True
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-" 2>/dev/null
+            config_set muted true 2>/dev/null
+            config_py 'import log_record; log_record.write("[mute] on")' 2>/dev/null || true
             echo -e "${YELLOW}Muted${NC}"
         fi
+        nohup python3 "$SCRIPT_DIR/scripts/presence.py" --start >/dev/null 2>&1 &
         ;;
 
     on|unmute)
-        python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-    config['muted'] = False
-    config['mute_until'] = 0
-    with open('$CONFIG_FILE', 'w') as f:
-        json.dump(config, f, indent=2)
-        f.write('\n')
-except:
-    pass
-" 2>/dev/null
+        was=$(config_py 'print(home.silence_reason(home.load_config()) or "")' 2>/dev/null) || true
+        config_set muted false mute_until 0 2>/dev/null || true
         # Clean up legacy mute file if present
         rm -f "$HOME/.claude/hobson.muted"
         echo -e "${GREEN}Unmuted${NC}"
+        nohup python3 "$SCRIPT_DIR/scripts/presence.py" --start >/dev/null 2>&1 &
+        # Ended a mute: say who is still waiting on you, if anyone.
+        if [[ "$was" == muted* ]]; then
+            # Detached: a cold TTS daemon can take seconds to say it.
+            nohup python3 "$SCRIPT_DIR/scripts/presence.py" --unmuted >/dev/null 2>&1 &
+        fi
         ;;
 
     volume)
         new_vol="${1:-}"
         if [[ -z "$new_vol" ]]; then
-            cur_vol=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        print(json.load(f).get('volume', 3))
-except:
-    print(3)
-" 2>/dev/null)
+            cur_vol=$(config_get volume)
 
             _PICK_OPTIONS=("0" "1" "2" "3" "4" "5" "6" "7" "8" "9" "10")
             _PICK_DESCS=(
@@ -439,39 +367,20 @@ except:
             echo ""
             _pick_menu "$sel"
             new_vol="$PICK_RESULT"
-            python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-config['volume'] = int('$new_vol')
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-" 2>/dev/null
+            config_set volume "$new_vol" 2>/dev/null
             echo -e "${GREEN}Volume set to $new_vol${NC}"
         else
-            if ! python3 -c "
-v = float('$new_vol')
+            # A number from 0 to 10, written as a number: 4, or 4.5.
+            if ! new_vol=$(python3 -c '
+import sys
+v = float(sys.argv[1])
 assert 0 <= v <= 10
-" 2>/dev/null; then
+print(int(v) if v == int(v) else v)
+' "$new_vol" 2>/dev/null); then
                 echo -e "${RED}Volume must be a number between 0 and 10${NC}"
                 exit 1
             fi
-            python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-config['volume'] = float('$new_vol') if '.' in '$new_vol' else int('$new_vol')
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-" 2>/dev/null
+            config_set volume "$new_vol" 2>/dev/null
             echo -e "${GREEN}Volume set to $new_vol${NC}"
         fi
         ;;
@@ -498,7 +407,7 @@ sys.path.insert(0, '$SCRIPT_DIR/scripts')
 from bark_templates import CATEGORIES, NOTIFICATION_TEMPLATES, PERMISSION_LEADS, PERMISSION_ACTIONS, GENERIC_PERMISSION_PHRASES, COMMON_TOOLS
 
 B = '\033[1m'; D = '\033[2m'; G = '\033[32m'; R = '\033[0m'
-filter_arg = '$filter'.lower()
+filter_arg = sys.argv[1].lower()
 
 def print_category(name, title, cat_data):
     n = len(cat_data['lead']) * len(cat_data['tail'])
@@ -547,7 +456,7 @@ if not filter_arg:
     total += len(PERMISSION_LEADS) * len(PERMISSION_ACTIONS) * len(COMMON_TOOLS)
     total += len(GENERIC_PERMISSION_PHRASES)
     print(f'{D}{total} phrases total{R}')
-"
+" "$filter"
         ;;
 
     monitor|watch|tail)
@@ -621,6 +530,20 @@ if not filter_arg:
                     printf "  %s  %b  ${RED}▼ %s${NC}\n" "$ts" "$_tag" "$_body"
                 elif [[ "$_body" == phone\ up* ]]; then
                     printf "  %s  %b  ${GREEN}▲ %s${NC}\n" "$ts" "$_tag" "$_body"
+                else
+                    printf "  %s  %b  ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
+                fi
+                continue
+            fi
+
+            # Pushes to the phone: a failure is red, the rest quiet.
+            if [[ "$rest" == *"[push]"* ]]; then
+                _body="${rest#*\[push\] }"
+                _tag="${CYAN}push${NC}"
+                if [[ "$_body" == failed* || "$_body" == could\ not* || "$_body" == test\ failed* ]]; then
+                    printf "  %s  %b  ${RED}%s${NC}\n" "$ts" "$_tag" "$_body"
+                elif [[ "$_body" == sent* ]]; then
+                    printf "  %s  %b  ${GREEN}%s${NC}\n" "$ts" "$_tag" "$_body"
                 else
                     printf "  %s  %b  ${DIM}%s${NC}\n" "$ts" "$_tag" "$_body"
                 fi
@@ -760,23 +683,14 @@ if not filter_arg:
 
     events|realtime)
         # Interactive multi-select for voice events
-        current_events=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-    events = config.get('events', ['stop', 'permission', 'notification'])
-    print(' '.join(events))
-except:
-    print('stop permission notification')
-" 2>/dev/null)
+        current_events=$(config_get events)
 
         options=("stop" "permission" "notification" "commentary")
         descs=(
             "Speak when Claude finishes a task"
             "Speak when Claude requests tool permission"
             "Speak when Claude sends a notification"
-            "Running commentary on tool use (kokoro-realtime)"
+            "Running commentary on tool use"
         )
         # Initialize checked state from current config
         declare -a checked=()
@@ -850,18 +764,8 @@ except:
         [[ -z "$new_events" ]] && new_events="stop"  # default fallback
 
         # Write to config
-        python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-config['events'] = '$new_events'.split()
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+        # shellcheck disable=SC2086  # one argument per event
+        config_py 'home.update_config({"events": sys.argv[1:]})' $new_events
         echo -e "\n${GREEN}Events: ${new_events:-none}${NC}"
         ;;
 
@@ -950,21 +854,10 @@ print('Models downloaded.')
                 echo -e "${GREEN}Chatterbox dependencies installed.${NC}"
                 echo ""
 
-                PERSONALITY=$(jq -r '.personality // "hobson"' "$CONFIG_FILE" 2>/dev/null || echo "hobson")
+                PERSONALITY=$(get_personality)
                 USER_MODELS="$HOME/.claude/models"
 
-                # Show current ref audio status (mirrors _find_reference_audio lookup order)
-                _found_ref=""
-                for _name in "${PERSONALITY}-reference" "hobson-reference" "reference"; do
-                    for _ext in wav mp3 flac ogg m4a; do
-                        if [[ -f "$SCRIPT_DIR/models/${_name}.${_ext}" ]]; then
-                            _found_ref="$SCRIPT_DIR/models/${_name}.${_ext}"; break 2
-                        fi
-                        if [[ -f "$USER_MODELS/${_name}.${_ext}" ]]; then
-                            _found_ref="$USER_MODELS/${_name}.${_ext}"; break 2
-                        fi
-                    done
-                done
+                _found_ref=$(chatterbox_reference)
 
                 echo "Setting up Chatterbox voice cloning..."
                 echo ""
@@ -1104,7 +997,6 @@ print('Models downloaded.')
                     fi
                 done
                 rm -f "$DAEMON_PID_FILE"
-                rm -f "$HOME/.claude/kokoro-daemon-starting" 2>/dev/null || true
                 if [[ -n "$was" ]]; then
                     echo -e "${GREEN}Daemon stopped (pid $was)${NC}"
                 else
@@ -1136,26 +1028,31 @@ print('Models downloaded.')
 
     voice)
         new_voice="${1:-}"
-        _PICK_OPTIONS=("am_puck" "bm_daniel" "bm_george" "bm_lewis" "bf_emma" "bf_isabella" "af_heart" "am_adam")
-        _PICK_DESCS=(
-            "American male, Puck (default)"
-            "British male, Daniel"
-            "British male, George"
-            "British male, Lewis"
-            "British female, Emma"
-            "British female, Isabella"
-            "American female, Heart"
-            "American male, Adam"
-        )
+        engine=$(get_engine)
+        # The wizard's catalogue and config key for the engine in use: a
+        # copy here offered Kokoro alone, and on Pocket TTS set a voice
+        # nothing read.
+        voice_key=$(config_py '
+import setup_wizard
+print(setup_wizard.VOICE_KEYS.get(sys.argv[1], ""))
+' "$engine" 2>/dev/null)
+        if [[ -z "$voice_key" ]]; then
+            echo -e "${RED}The $engine engine has no voice to pick: hobson voice is for kokoro-realtime and pocket-tts.${NC}"
+            echo "Its voice: $(config_py 'import hobson; print(hobson.load_engine(home.load_config()).voice_label())' 2>/dev/null)"
+            exit 1
+        fi
+        _PICK_OPTIONS=()
+        _PICK_DESCS=()
+        while IFS=$'\t' read -r _id _desc; do
+            _PICK_OPTIONS+=("$_id")
+            _PICK_DESCS+=("$_desc")
+        done < <(config_py '
+import setup_wizard
+for i, v in enumerate(setup_wizard.VOICES[sys.argv[1]]):
+    print(v["id"] + "\t" + v["accent"] + " " + v["sex"] + ", " + v["name"] + (" (default)" if i == 0 else ""))
+' "$engine")
 
-        current_voice=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        print(json.load(f).get('kokoro', {}).get('voice', 'am_puck'))
-except:
-    print('am_puck')
-" 2>/dev/null)
+        current_voice=$(config_get "$voice_key")
 
         if [[ -z "$new_voice" ]]; then
             sel=0
@@ -1168,40 +1065,17 @@ except:
             new_voice="$PICK_RESULT"
         fi
 
-        python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-if 'kokoro' not in config:
-    config['kokoro'] = {}
-config['kokoro']['voice'] = '$new_voice'
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+        config_set "$voice_key" "$new_voice"
         echo -e "${GREEN}Voice set to: $new_voice${NC}"
 
-        # Restart kokoro daemon if running so new voice takes effect
-        if _daemon_vars_for_engine kokoro-realtime && pid=$(daemon_pid "$DAEMON_PID_FILE" 2>/dev/null); then
-            echo "Restarting kokoro daemon for new voice..."
+        # Restart the daemon if running so the new voice takes effect
+        if _daemon_vars_for_engine "$engine" && pid=$(daemon_pid "$DAEMON_PID_FILE" 2>/dev/null); then
+            echo "Restarting the $DAEMON_NAME daemon for the new voice..."
             daemon_shutdown "$DAEMON_PORT" "$DAEMON_TOKEN_FILE"
             sleep 0.5
             kill -0 "$pid" 2>/dev/null && kill "$pid" 2>/dev/null || true
             rm -f "$DAEMON_PID_FILE"
             echo -e "${YELLOW}Daemon stopped. It will restart automatically on next bark.${NC}"
-        fi
-
-        # Warn about cache invalidation
-        cache_dir="$HOME/.claude/voice-cache-kokoro"
-        if [[ -d "$cache_dir" ]]; then
-            count=$(find "$cache_dir" -type f -name "*.wav" 2>/dev/null | wc -l | tr -d ' ')
-            if [[ "$count" -gt 0 ]]; then
-                echo -e "${YELLOW}Note: $count cached WAVs were generated with a different voice.${NC}"
-                echo -e "${YELLOW}Run 'hobson cache-gen --force' to regenerate with $new_voice.${NC}"
-            fi
         fi
         ;;
 
@@ -1209,55 +1083,25 @@ with open('$CONFIG_FILE', 'w') as f:
         action="${1:-}"
         case "$action" in
             on)
-                python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-events = set(config.get('events', ['stop', 'permission', 'notification']))
-events.add('commentary')
-config['events'] = sorted(events)
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+                config_py '
+events = set(home.load_config()["events"])
+events.add("commentary")
+home.update_config({"events": sorted(events)})
+                '
                 echo -e "${GREEN}Commentary enabled${NC}"
-                engine=$(get_engine)
-                if [[ "$engine" != "kokoro-realtime" ]]; then
-                    echo -e "${YELLOW}Note: AI-generated commentary requires kokoro-realtime engine (current: $engine)${NC}"
-                fi
                 ;;
             off)
-                python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-events = set(config.get('events', ['stop', 'permission', 'notification']))
-events.discard('commentary')
-config['events'] = sorted(events) if events else ['stop']
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+                config_py '
+events = set(home.load_config()["events"])
+events.discard("commentary")
+home.update_config({"events": sorted(events) or ["stop"]})
+                '
                 echo -e "${YELLOW}Commentary disabled${NC}"
                 ;;
             verbosity)
                 new_verbosity="${2:-}"
                 if [[ -z "$new_verbosity" ]]; then
-                    current=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        c = json.load(f)
-    print(c.get('commentary', {}).get('verbosity', 'normal'))
-except:
-    print('normal')
-" 2>/dev/null)
+                    current=$(config_get commentary.verbosity)
                     sel=1
                     case "$current" in
                         terse) sel=0 ;;
@@ -1284,30 +1128,10 @@ except:
                         exit 1
                         ;;
                 esac
-                python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-commentary = config.get('commentary', {})
-commentary['verbosity'] = '$new_verbosity'
-config['commentary'] = commentary
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+                config_set commentary.verbosity "$new_verbosity"
                 echo -e "${GREEN}Commentary verbosity set to: $new_verbosity${NC}"
                 # Hint if commentary itself isn't enabled
-                cur_events=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        print(' '.join(json.load(f).get('events', [])))
-except:
-    print('')
-" 2>/dev/null)
+                cur_events=$(config_get events)
                 if [[ " $cur_events " != *" commentary "* ]]; then
                     echo -e "${YELLOW}Note: commentary itself is off. Run 'hobson commentary on' to enable.${NC}"
                 fi
@@ -1318,15 +1142,7 @@ except:
                 # P(worth) >= 1 - chattiness (scripts/gate.py).
                 new_chat="${2:-}"
                 if [[ -z "$new_chat" ]]; then
-                    current=$(python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        print(json.load(f).get('commentary', {}).get('chattiness', 0.6))
-except Exception:
-    print(0.6)
-PY
-)
+                    current=$(config_get commentary.chattiness)
                     _PICK_OPTIONS=("0.2" "0.4" "0.6" "0.8" "1.0")
                     _PICK_DESCS=(
                         "only the standout steps"
@@ -1343,65 +1159,30 @@ PY
                     _pick_menu "$sel"
                     new_chat="$PICK_RESULT"
                 fi
-                if ! python3 - "$CONFIG_FILE" "$new_chat" <<'PY'
-import json, sys
-path, raw = sys.argv[1], sys.argv[2]
+                if ! config_py '
 try:
-    value = float(raw)
+    value = float(sys.argv[1])
 except ValueError:
     sys.exit(1)
 if not 0.0 <= value <= 1.0:
     sys.exit(1)
-try:
-    with open(path) as f:
-        config = json.load(f)
-except Exception:
-    config = {}
-config.setdefault('commentary', {})['chattiness'] = value
-with open(path, 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-PY
+home.update_config({"commentary.chattiness": value})
+' "$new_chat"
                 then
                     echo -e "${RED}Invalid chattiness: $new_chat${NC}"
                     echo "Choose a number from 0 (next to nothing) to 1 (everything)"
                     exit 1
                 fi
                 echo -e "${GREEN}Commentary chattiness set to: $new_chat${NC}"
-                backend=$(python3 - "$CONFIG_FILE" <<'PY' 2>/dev/null
-import json, sys
-try:
-    with open(sys.argv[1]) as f:
-        print((json.load(f).get('decider') or {}).get('backend', 'local'))
-except Exception:
-    print('local')
-PY
-)
+                backend=$(config_get decider.backend)
                 if [[ "$backend" != "jev" ]]; then
                     echo -e "${YELLOW}Note: chattiness only applies with the decider on (decider.backend \"jev\"); verbosity decides until then.${NC}"
                 fi
                 ;;
             *)
                 # Show current status
-                current_events=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-    events = config.get('events', ['stop', 'permission', 'notification'])
-    print(' '.join(events))
-except:
-    print('stop permission notification')
-" 2>/dev/null)
-                current_verbosity=$(python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        c = json.load(f)
-    print(c.get('commentary', {}).get('verbosity', 'normal'))
-except:
-    print('normal')
-" 2>/dev/null)
+                current_events=$(config_get events)
+                current_verbosity=$(config_get commentary.verbosity)
                 if [[ " $current_events " == *" commentary "* ]]; then
                     echo -e "Commentary: ${GREEN}on${NC} (verbosity: $current_verbosity)"
                 else
@@ -1587,6 +1368,39 @@ print(presence.settings(home.load_config()).get('mode'))
         esac
         ;;
 
+    push)
+        # What presence holds while you are away, sent to the phone (scripts/push.py).
+        push_py="$SCRIPT_DIR/scripts/push.py"
+        case "${1:-status}" in
+            status)
+                python3 "$push_py" --status-text
+                ;;
+            on)
+                if [[ -z "${2:-}" ]]; then
+                    echo "Usage: hobson push on URL   (the ntfy topic's full URL, https)"
+                    exit 1
+                fi
+                if ! why="$(python3 "$push_py" --check-url "$2")"; then
+                    echo -e "${RED}Not turned on${NC}: $why"
+                    exit 1
+                fi
+                python3 "$SCRIPT_DIR/scripts/home.py" --set push.backend ntfy push.url "$2"
+                echo -e "${GREEN}Push on${NC}: put NTFY_TOKEN=... in ~/.claude/hobson.env, then hobson push test"
+                ;;
+            off)
+                python3 "$SCRIPT_DIR/scripts/home.py" --set push.backend off
+                echo -e "${YELLOW}Push off${NC}"
+                ;;
+            test)
+                python3 "$push_py" --test
+                ;;
+            *)
+                echo "Usage: hobson push [status|on URL|off|test]"
+                exit 1
+                ;;
+        esac
+        ;;
+
     doctor|check)
         echo "hobson doctor"
         echo "=================="
@@ -1635,7 +1449,7 @@ if issues:
         personality=$(get_personality)
         pjson="$SCRIPT_DIR/scripts/personalities/$personality/personality.json"
         if [[ -f "$pjson" ]]; then
-            pdesc=$(python3 -c "import json; print(json.load(open('$pjson')).get('display_name', '$personality'))" 2>/dev/null)
+            pdesc=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1])).get('display_name', sys.argv[2]))" "$pjson" "$personality" 2>/dev/null)
             echo -e "  ${GREEN}✓${NC} Personality: $personality ($pdesc)"
         else
             echo -e "  ${RED}✗${NC} Personality '$personality' not found"
@@ -1682,17 +1496,28 @@ if issues:
                     echo -e "  ${RED}✗${NC} Chatterbox venv not found"
                     errors=$((errors + 1))
                 fi
-                ref_found=false
-                for ext in wav mp3 flac ogg m4a; do
-                    for d in "$SCRIPT_DIR/models" "$HOME/.claude/models"; do
-                        [[ -f "$d/hobson-reference.$ext" ]] && ref_found=true && break 2
-                    done
-                done
-                if [[ "$ref_found" == "true" ]]; then
-                    echo -e "  ${GREEN}✓${NC} Reference audio found"
+                ref_found=$(chatterbox_reference)
+                if [[ -n "$ref_found" ]]; then
+                    echo -e "  ${GREEN}✓${NC} Reference audio found ($(basename "$ref_found"))"
                 else
                     echo -e "  ${YELLOW}!${NC} No reference audio (needed for cache generation)"
                     warnings=$((warnings + 1))
+                fi
+                ;;
+            pocket-tts)
+                # Without the venv or the weights every phrase falls back to
+                # macOS say, silently and for good. What counts as installed
+                # is the setup wizard's rule (engine_ready), asked, not copied.
+                if PYTHONPATH="$SCRIPT_DIR/scripts" python3 -c '
+import sys
+import setup_wizard
+sys.exit(0 if setup_wizard.engine_ready("pocket-tts") else 1)
+' 2>/dev/null; then
+                    echo -e "  ${GREEN}✓${NC} Pocket TTS venv and weights found"
+                else
+                    echo -e "  ${RED}✗${NC} Pocket TTS not installed (its venv or its weights are missing)"
+                    echo -e "    Fix: hobson setup pocket-tts"
+                    errors=$((errors + 1))
                 fi
                 ;;
         esac
@@ -1705,20 +1530,10 @@ if issues:
                 echo -e "  ${GREEN}✓${NC} Ollama server reachable"
                 # Check required models
                 ollama_models=$(ollama list 2>/dev/null || true)
-                # The fallback is the engine's own default, not a copy of it:
-                # a hard-coded one here went stale and sent people to pull a
+                # The default is the engine's own, not a copy of it: a
+                # hard-coded one here went stale and sent people to pull a
                 # model hobson does not use.
-                ollama_model=$(python3 - "$CONFIG_FILE" "$SCRIPT_DIR/scripts" <<'PY' 2>/dev/null
-import json, sys
-sys.path.insert(0, sys.argv[2])
-from ollama_client import DEFAULT_OLLAMA_MODEL
-try:
-    with open(sys.argv[1]) as f:
-        print(json.load(f).get("ollama", {}).get("model", DEFAULT_OLLAMA_MODEL))
-except Exception:
-    print(DEFAULT_OLLAMA_MODEL)
-PY
-)
+                ollama_model=$(config_get ollama.model)
                 if echo "$ollama_models" | grep -q "${ollama_model%%:*}.*${ollama_model##*:}" 2>/dev/null; then
                     echo -e "  ${GREEN}✓${NC} Model: $ollama_model"
                 else
@@ -1892,17 +1707,8 @@ print(json.dumps(config, indent=2))
                 # Preserve engine and personality selection
                 engine=$(get_engine)
                 personality=$(get_personality)
-                python3 -c "
-import json, sys
-sys.path.insert(0, '$SCRIPT_DIR/scripts')
-from home import DEFAULT_CONFIG
-config = dict(DEFAULT_CONFIG)
-config['engine'] = '$engine'
-config['personality'] = '$personality'
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+                # Only these two; every other key goes back to flowing from DEFAULT_CONFIG.
+                python3 "$SCRIPT_DIR/scripts/home.py" --replace engine "$engine" personality "$personality"
                 echo -e "${GREEN}Config reset to defaults (engine: $engine, personality: $personality)${NC}"
                 ;;
             *)
@@ -1921,8 +1727,8 @@ with open('$CONFIG_FILE', 'w') as f:
         for pdir in "$personalities_dir"/*/; do
             pjson="$pdir/personality.json"
             [[ -f "$pjson" ]] || continue
-            pname=$(python3 -c "import json; print(json.load(open('$pjson'))['name'])" 2>/dev/null) || continue
-            pdesc=$(python3 -c "import json; d=json.load(open('$pjson')); print(d.get('display_name','') + ' — ' + d.get('description',''))" 2>/dev/null) || continue
+            pname=$(python3 -c "import json, sys; print(json.load(open(sys.argv[1]))['name'])" "$pjson" 2>/dev/null) || continue
+            pdesc=$(python3 -c "import json, sys; d=json.load(open(sys.argv[1])); print(d.get('display_name','') + ' — ' + d.get('description',''))" "$pjson" 2>/dev/null) || continue
             _PICK_OPTIONS+=("$pname")
             _PICK_DESCS+=("$pdesc")
         done
@@ -1955,18 +1761,7 @@ with open('$CONFIG_FILE', 'w') as f:
             echo "Available: ${_PICK_OPTIONS[*]}"
             exit 1
         else
-            python3 -c "
-import json
-try:
-    with open('$CONFIG_FILE') as f:
-        config = json.load(f)
-except:
-    config = {}
-config['personality'] = '$new_personality'
-with open('$CONFIG_FILE', 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+            config_set personality "$new_personality"
             echo -e "${GREEN}Personality set to: $new_personality${NC}"
 
             # Warn about cache invalidation for chatterbox
@@ -2019,40 +1814,24 @@ for k, v in presets.items():
             new_preset="$PICK_RESULT"
         fi
 
-        # Apply preset: deep-merge preset config into current config (preserves volume, etc.)
-        python3 -c "
-import json, sys
-presets_file = '$presets_file'
-config_file = '$CONFIG_FILE'
-preset_name = '$new_preset'
-
-with open(presets_file) as f:
+        # Apply preset: its keys over the current config (volume and the rest kept).
+        config_py '
+import json
+with open(sys.argv[1]) as f:
     presets = json.load(f)
-
-if preset_name not in presets:
-    print(f'Unknown preset: {preset_name}', file=sys.stderr)
-    print(f'Available: {', '.join(presets.keys())}', file=sys.stderr)
+name = sys.argv[2]
+if name not in presets:
+    print(f"Unknown preset: {name}", file=sys.stderr)
+    print("Available: " + ", ".join(presets), file=sys.stderr)
     sys.exit(1)
-
-preset_config = presets[preset_name]['config']
-
-try:
-    with open(config_file) as f:
-        config = json.load(f)
-except:
-    config = {}
-
-# Deep merge: preset values override, but preserve keys not in preset
-for key, val in preset_config.items():
-    if isinstance(val, dict) and key in config and isinstance(config[key], dict):
-        config[key] = {**config[key], **val}
+desired = {}
+for key, val in presets[name]["config"].items():
+    if isinstance(val, dict):
+        desired.update({f"{key}.{k}": v for k, v in val.items()})
     else:
-        config[key] = val
-
-with open(config_file, 'w') as f:
-    json.dump(config, f, indent=2)
-    f.write('\n')
-"
+        desired[key] = val
+home.update_config(desired)
+' "$presets_file" "$new_preset"
         echo -e "${GREEN}Applied preset: $new_preset${NC}"
 
         # Show what was set
@@ -2084,6 +1863,12 @@ with open(config_file, 'w') as f:
         # Read text aloud on demand: arguments, -f FILE, or standard input.
         # Returns when the last passage has played (scripts/read_aloud.py).
         python3 "$SCRIPT_DIR/scripts/read_aloud.py" "$@"
+        ;;
+
+    coach)
+        # say / wait / countdown / ready, one per line, from -f FILE or
+        # standard input; a JSON line per step (scripts/coach.py).
+        python3 "$SCRIPT_DIR/scripts/coach.py" "$@"
         ;;
 
     update|upgrade)
@@ -2136,10 +1921,12 @@ with open(config_file, 'w') as f:
         echo "  hobson commentary on|off   Toggle running commentary"
         echo "  hobson commentary verbosity [terse|normal|chatty|anomaly]  Set commentary verbosity"
         echo "  hobson commentary chattiness [0-1]  How much commentary Jev lets through (decider on)"
+        echo "  hobson push [status|on URL|off|test]  Send what is held while you are away to your phone (ntfy)"
         echo "  hobson volume [0-10]       Get or set playback volume"
-        echo "  hobson voice [name]        Switch Kokoro voice"
+        echo "  hobson voice [name]        Switch the engine's voice (kokoro-realtime, pocket-tts)"
         echo "  hobson test                Play a test bark"
         echo "  hobson say [TEXT|-f FILE]  Read text aloud (or piped in), a passage at a time"
+        echo "  hobson coach [-f FILE]     Run spoken steps on Hobson's clock: say, wait, countdown, ready"
         echo "  hobson recap [minutes]     Speak a summary of recent activity (default 10m)"
         echo "  hobson presence [status|on|off|mode|greetings|waves|phone|look|setup]  Whether anyone is listening"
         echo "  hobson face [status|on|off|test]  The window where Hobson says each line"

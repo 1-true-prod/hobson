@@ -62,8 +62,8 @@ def test_a_turn_not_had_in_time_is_passed_over(claude_home):
 
 @pytest.mark.parametrize("cleanup", [False, True])
 def test_two_clips_never_play_at_once(claude_home, tmp_path, monkeypatch, cleanup):
-    """Through the one playback seam, _play: the second clip starts only once
-    the first has finished, though _play returns as soon as each starts.
+    """Through the one playback seam, play(): the second clip starts only once
+    the first has finished, though play returns as soon as each starts.
     With cleanup (every hook's clip) the player is `sh -c "afplay …; rm …"`,
     and the turn goes through sh to afplay and is let go when sh exits."""
     import engines.base as base
@@ -76,9 +76,9 @@ def test_two_clips_never_play_at_once(claude_home, tmp_path, monkeypatch, cleanu
         clip.write_bytes(b"FORM")
     engine = SayEngine({})
     began = time.monotonic()
-    first = engine._play(str(clips[0]), "I pushed the branch.", "done", cleanup=cleanup)
+    first = engine.play(str(clips[0]), "I pushed the branch.", "done", cleanup=cleanup)
     assert time.monotonic() - began < 0.2  # it did not wait for its own clip
-    second = engine._play(str(clips[1]), "I merged it.", "done", cleanup=cleanup)
+    second = engine.play(str(clips[1]), "I merged it.", "done", cleanup=cleanup)
     first.wait()
     second.wait()
 
@@ -101,10 +101,9 @@ def test_commentary_is_dropped_while_anything_plays(claude_home, no_audio):
     engine = SayEngine({})
     turn = voice.take_turn()
     try:
-        assert engine.speak_dynamic("I'm running the tests.", allow_cold_start=False,
-                                    kind="commentary") is True
+        assert engine.speak("I'm running the tests.", "commentary") is True
         assert no_audio["say"] == []
     finally:
         os.close(turn)
-    engine.speak_dynamic("I'm running the tests.", allow_cold_start=False, kind="commentary")
+    engine.speak("I'm running the tests.", "commentary")
     assert no_audio["say"] == ["I'm running the tests."]
