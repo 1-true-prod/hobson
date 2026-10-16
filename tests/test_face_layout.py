@@ -42,11 +42,18 @@ const measure = (project) => {
             off: (chip.offsetTop + chip.offsetHeight / 2) - (name.offsetTop + name.offsetHeight / 2),
             actionsH: actions.offsetHeight});
 };
+// The chip as the first frame's caption() fills it (MOODS in face.js). Headless Chrome runs
+// no animation frame here under --virtual-time-budget, and does on CI: measured without the
+// chip, the name had its room, and the test passed on a Mac and failed on CI.
+const CHIPS = {waiting: "needs you", done: "finished", broken: "failed"};
 let t = 0;
 // A third, optional element per line is the kind (default "waiting").
-for (const [project, text, kind] of lines) {
-  setTimeout(() => Face.say({text, kind: kind || "waiting", project, start: Date.now() / 1000}), t);
-  setTimeout(() => measure(project), t + 400);
+for (const [project, text, kind = "waiting"] of lines) {
+  setTimeout(() => Face.say({text, kind, project, start: Date.now() / 1000}), t);
+  setTimeout(() => {
+    document.querySelector(".chip").textContent ||= CHIPS[kind];
+    measure(project);
+  }, t + 400);
   t += 600;
 }
 setTimeout(() => { document.getElementById("out").textContent = JSON.stringify(out); }, t);
@@ -109,7 +116,7 @@ def test_a_long_project_name_wraps_and_leaves_the_bust_alone(tmp_path):
     # The same size and shape for every line, never stretched.
     assert {(m["w"], m["h"]) for m in (long, short, huge)} == {(short["w"], short["h"])}
     assert (short["lines"], short["cut"]) == (1, False)
-    assert (long["lines"], long["cut"]) == (2, False)
+    assert (long["lines"], long["cut"]) == (3, False)
     assert long["winH"] > short["winH"]
     assert (huge["lines"], huge["cut"]) == (3, True)
 
